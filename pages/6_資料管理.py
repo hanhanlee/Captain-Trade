@@ -45,12 +45,12 @@ else:
     # ── 狀態指示燈 ────────────────────────────────────────────
     if not s["running"]:
         st.error("🔴 工作器已停止")
-    elif s["pause_remaining_sec"] > 0:
+    elif s.get("pause_remaining_sec", 0) > 0:
         remain_min = s["pause_remaining_sec"] // 60
         remain_sec = s["pause_remaining_sec"] % 60
-        resume_at  = s["paused_until"].strftime("%H:%M:%S") if s["paused_until"] else "—"
+        resume_at  = s["paused_until"].strftime("%H:%M:%S") if s.get("paused_until") else "—"
         st.warning(
-            f"🟠 遇到 429 限額，暫停中（第 {s['rate_limit_count']} 次）　｜　"
+            f"🟠 遇到 429 限額，暫停中（第 {s.get('rate_limit_count', 1)} 次）　｜　"
             f"剩餘 **{remain_min} 分 {remain_sec} 秒**，預計 {resume_at} 自動恢復"
         )
     elif s["paused_for_market"]:
@@ -65,13 +65,13 @@ else:
     c3.metric("本次啟動累計", f"{s['total_fetched']} 次")
     c4.metric("待更新股票", f"{s['queue_size']} 檔")
     c5.metric("正在抓取", s["current_stock"] or "—")
-    c6.metric("遇到 429 次數", s["rate_limit_count"])
+    c6.metric("遇到 429 次數", s.get("rate_limit_count", 0))
 
     if s["last_fetch_at"]:
         st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%Y-%m-%d %H:%M:%S')}")
 
     # ── 控制按鈕 ──────────────────────────────────────────────
-    is_paused = s["pause_remaining_sec"] > 0
+    is_paused = s.get("pause_remaining_sec", 0) > 0
     col_start, col_stop, col_resume, col_refresh, _ = st.columns([1, 1, 1, 1, 4])
 
     if col_start.button("▶ 啟動工作器", disabled=s["running"], use_container_width=True):
