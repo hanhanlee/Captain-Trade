@@ -8,6 +8,7 @@ FinMind 免費帳號限制：每小時 600 次（註冊會員）
   - 非交易時間：每小時上限 500 次，快速填滿全市場快取
   - 每 7 秒抓一檔（≈ 514 次/小時，略低於上限）
   - 優先順序：① 完全無快取 → ② 快取 > 5 天舊 → ③ 其餘
+  - 遇到 429：暫停 20 分鐘後自動恢復；可手動提前恢復
 
 獨立執行：
   python -m scheduler.prefetch
@@ -25,6 +26,13 @@ HOURLY_LIMIT_OFFPEAK  = 500   # 非交易時間每小時上限
 HOURLY_LIMIT_TRADING  = 100   # 交易時間每小時上限
 FETCH_INTERVAL_SEC    = 7     # 每次請求最短間隔（秒）≈ 514 次/小時
 STALE_DAYS            = 5     # 快取幾天未更新視為過期
+RATE_LIMIT_PAUSE_MIN  = 20    # 遇到 429 後暫停幾分鐘
+
+
+def _is_429(exc: Exception) -> bool:
+    """判斷例外是否為 429 限額"""
+    msg = str(exc).lower()
+    return "429" in msg or "too many requests" in msg or "rate limit" in msg
 
 
 class PrefetchWorker:
@@ -32,24 +40,29 @@ class PrefetchWorker:
     背景資料預抓取工作器（單例，透過 get_worker() 取得）
 
     狀態屬性：
-        running (bool)           — 背景執行緒是否活著
-        hour_fetched (int)       — 本小時已消耗次數
-        total_fetched (int)      — 本次啟動累計次數
-        last_fetch_at            — 最近一次抓取時間
-        current_stock (str)      — 正在抓取的股票代碼
-        queue_size (int)         — 待抓取數量（快照）
-        paused_for_market (bool) — 是否因交易時間降速
+        running (bool)              — 背景執行緒是否活著
+        hour_fetched (int)          — 本小時已消耗次數
+        total_fetched (int)         — 本次啟動累計次數
+        last_fetch_at               — 最近一次抓取時間
+        current_stock (str)         — 正在抓取的股票代碼
+        queue_size (int)            — 待抓取數量（快照）
+        paused_for_market (bool)    — 是否因交易時間降速
+        paused_until (datetime|None)— 429 暫停到幾點（None = 未暫停）
+        rate_limit_count (int)      — 本次啟動共遇到幾次 429
     """
 
     def __init__(self):
         self.running = False
         self.hour_fetched: int = 0
         self.total_fetched: int = 0
-        self._hour_window: deque = deque()   # 儲存最近 1 小時內的請求時間戳
+        self._hour_window: deque = deque()
         self.last_fetch_at: datetime | None = None
         self.current_stock: str = ""
         self.queue_size: int = 0
-        self._stop_event = threading.Event()
+        self.paused_until: datetime | None = None
+        self.rate_limit_count: int = 0
+        self._resume_event = threading.Event()   # 手動恢復用
+        self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
     # ── 公開控制 ───────────────────────────────────────────────
@@ -69,13 +82,19 @@ class PrefetchWorker:
     def stop(self):
         """要求背景執行緒停止"""
         self._stop_event.set()
+        self._resume_event.set()   # 喚醒可能正在暫停的執行緒
         self.running = False
         logger.info("PrefetchWorker 已要求停止")
+
+    def resume(self):
+        """手動提前恢復（清除 429 暫停）"""
+        self.paused_until = None
+        self._resume_event.set()
+        logger.info("PrefetchWorker 手動恢復")
 
     # ── 私有方法 ───────────────────────────────────────────────
 
     def _within_trading_hours(self) -> bool:
-        """是否在交易時間（09:00–15:05）"""
         now = datetime.now().time()
         from datetime import time as _time
         return _time(9, 0) <= now <= _time(15, 5)
@@ -84,7 +103,6 @@ class PrefetchWorker:
         return HOURLY_LIMIT_TRADING if self._within_trading_hours() else HOURLY_LIMIT_OFFPEAK
 
     def _hour_count(self) -> int:
-        """滑動視窗：計算最近 60 分鐘內的請求數"""
         cutoff = datetime.now() - timedelta(hours=1)
         while self._hour_window and self._hour_window[0] < cutoff:
             self._hour_window.popleft()
@@ -95,13 +113,25 @@ class PrefetchWorker:
         self.hour_fetched = len(self._hour_window)
         self.total_fetched += 1
 
+    def _pause_for_rate_limit(self):
+        """遇到 429：記錄次數、設定暫停時間、等待（可被手動恢復打斷）"""
+        self.rate_limit_count += 1
+        self.paused_until = datetime.now() + timedelta(minutes=RATE_LIMIT_PAUSE_MIN)
+        resume_at_str = self.paused_until.strftime("%H:%M:%S")
+        logger.warning(
+            f"收到 429，第 {self.rate_limit_count} 次限額，"
+            f"暫停 {RATE_LIMIT_PAUSE_MIN} 分鐘至 {resume_at_str}"
+        )
+
+        self._resume_event.clear()
+        # 等待 20 分鐘，或等到手動 resume() / stop() 被呼叫
+        self._resume_event.wait(timeout=RATE_LIMIT_PAUSE_MIN * 60)
+
+        self.paused_until = None
+        if not self._stop_event.is_set():
+            logger.info("429 暫停結束，繼續抓取")
+
     def _get_stale_stocks(self) -> list[str]:
-        """
-        回傳需要更新的股票代碼清單，按優先順序排序：
-          1. price_cache 完全沒有的（新股或從未抓過）
-          2. 最新快取日期 > STALE_DAYS 天前
-          3. 其餘（定期更新）
-        """
         try:
             from data.finmind_client import get_stock_list
             from db.price_cache import get_cache_summary
@@ -125,19 +155,14 @@ class PrefetchWorker:
 
             missing = sorted(all_ids - cached_ids)
             stale   = sorted(stale_ids - set(missing))
-            # 新鮮的也放進去，讓定期巡迴更新
             fresh   = sorted(all_ids - set(missing) - stale_ids)
-
             return missing + stale + fresh
         except Exception as e:
             logger.warning(f"取得待抓清單失敗：{e}")
             return []
 
-    def _fetch_one(self, stock_id: str) -> bool:
-        """
-        抓取單一股票並存快取。
-        回傳 True = 實際呼叫了 API；False = 快取仍新鮮，跳過
-        """
+    # 回傳值：'ok'=成功抓取, 'cached'=快取新鮮跳過, 'rate_limit'=429, 'error'=其他錯誤
+    def _fetch_one(self, stock_id: str) -> str:
         try:
             from db.price_cache import get_cached_dates
             from data.finmind_client import smart_get_price
@@ -147,26 +172,25 @@ class PrefetchWorker:
                 max_date = _max if isinstance(_max, date) else \
                     datetime.strptime(str(_max), "%Y-%m-%d").date()
                 if (date.today() - max_date).days <= STALE_DAYS:
-                    return False  # 快取還新鮮，跳過
+                    return "cached"
 
             smart_get_price(stock_id, required_days=150)
-            return True
+            return "ok"
         except Exception as e:
+            if _is_429(e):
+                return "rate_limit"
             logger.debug(f"抓取 {stock_id} 失敗：{e}")
-            return False
+            return "error"
 
     def _run_loop(self):
-        """背景主迴圈"""
         logger.info("PrefetchWorker 迴圈開始")
         while not self._stop_event.is_set():
 
-            # 檢查小時配額
+            # 檢查小時配額（滑動視窗）
             used = self._hour_count()
             limit = self._current_hourly_limit()
             if used >= limit:
-                wait_sec = 60  # 等 1 分鐘後再檢查滑動視窗
-                logger.debug(f"本小時配額已用 {used}/{limit}，等待 {wait_sec}s")
-                self._stop_event.wait(wait_sec)
+                self._stop_event.wait(60)
                 continue
 
             # 取得待抓清單
@@ -179,44 +203,61 @@ class PrefetchWorker:
                 continue
 
             # 逐檔抓取
+            hit_rate_limit = False
             for stock_id in queue:
                 if self._stop_event.is_set():
                     break
-
-                # 再次確認配額（滑動視窗，每輪都檢查）
                 if self._hour_count() >= self._current_hourly_limit():
                     break
 
                 self.current_stock = stock_id
-                consumed = self._fetch_one(stock_id)
-                if consumed:
+                result = self._fetch_one(stock_id)
+
+                if result == "ok":
                     self._record_request()
                     self.last_fetch_at = datetime.now()
-                    logger.debug(
-                        f"已抓 {stock_id}，本小時 {self.hour_fetched}/{limit}"
-                    )
+                    logger.debug(f"已抓 {stock_id}，本小時 {self.hour_fetched}/{limit}")
                     self._stop_event.wait(FETCH_INTERVAL_SEC)
 
+                elif result == "rate_limit":
+                    # 遇到 429，整體暫停，不繼續嘗試其他股票
+                    hit_rate_limit = True
+                    break
+
+                # "cached" 或 "error" 直接繼續，不等待
+
             self.current_stock = ""
-            self._stop_event.wait(5)
+
+            if hit_rate_limit and not self._stop_event.is_set():
+                self._pause_for_rate_limit()
+            else:
+                self._stop_event.wait(5)
 
         self.running = False
         logger.info("PrefetchWorker 迴圈結束")
 
     def status(self) -> dict:
-        """回傳目前狀態摘要（供 UI 顯示）"""
         used  = self._hour_count()
         limit = self._current_hourly_limit()
+        now   = datetime.now()
+
+        pause_remaining_sec = 0
+        if self.paused_until and self.paused_until > now:
+            pause_remaining_sec = int((self.paused_until - now).total_seconds())
+
         return {
-            "running":           self.running and bool(self._thread and self._thread.is_alive()),
-            "hour_fetched":      used,
-            "hourly_limit":      limit,
-            "hourly_remaining":  max(limit - used, 0),
-            "total_fetched":     self.total_fetched,
-            "queue_size":        self.queue_size,
-            "current_stock":     self.current_stock,
-            "last_fetch_at":     self.last_fetch_at,
-            "paused_for_market": self._within_trading_hours(),
+            "running":              self.running and bool(self._thread and self._thread.is_alive()),
+            "hour_fetched":         used,
+            "hourly_limit":         limit,
+            "hourly_remaining":     max(limit - used, 0),
+            "total_fetched":        self.total_fetched,
+            "queue_size":           self.queue_size,
+            "current_stock":        self.current_stock,
+            "last_fetch_at":        self.last_fetch_at,
+            "paused_for_market":    self._within_trading_hours(),
+            "paused_until":         self.paused_until,
+            "pause_remaining_sec":  pause_remaining_sec,
+            "rate_limit_count":     self.rate_limit_count,
         }
 
 
@@ -226,7 +267,6 @@ _worker_lock = threading.Lock()
 
 
 def get_worker() -> PrefetchWorker:
-    """取得全域 PrefetchWorker 單例"""
     global _worker
     if _worker is None:
         with _worker_lock:
@@ -238,7 +278,6 @@ def get_worker() -> PrefetchWorker:
 # ── 獨立執行入口 ────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
     from db.database import init_db
     init_db()
 
@@ -248,11 +287,13 @@ if __name__ == "__main__":
     try:
         while True:
             s = worker.status()
+            pause_str = f"  ⏸ 429暫停剩 {s['pause_remaining_sec']//60}分{s['pause_remaining_sec']%60}秒" \
+                        if s["pause_remaining_sec"] > 0 else ""
             print(
                 f"\r本小時 {s['hour_fetched']}/{s['hourly_limit']}  "
                 f"累計 {s['total_fetched']}  "
                 f"待抓 {s['queue_size']}  "
-                f"目前：{s['current_stock'] or '閒置'}",
+                f"目前：{s['current_stock'] or '閒置'}{pause_str}",
                 end="", flush=True,
             )
             time.sleep(2)

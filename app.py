@@ -69,10 +69,15 @@ st.markdown("""
 st.markdown("---")
 if worker is not None:
     s = worker.status()
-    status_icon = "🟢" if s["running"] and not s["paused_for_market"] else \
-                  "🟡" if s["paused_for_market"] else "🔴"
-    status_text = "運行中" if s["running"] and not s["paused_for_market"] else \
-                  "交易時間降速" if s["paused_for_market"] else "已停止"
+    if s["pause_remaining_sec"] > 0:
+        remain = f"{s['pause_remaining_sec']//60}分{s['pause_remaining_sec']%60}秒"
+        status_icon, status_text = "🟠", f"429 暫停中（剩 {remain}）"
+    elif not s["running"]:
+        status_icon, status_text = "🔴", "已停止"
+    elif s["paused_for_market"]:
+        status_icon, status_text = "🟡", "交易時間降速"
+    else:
+        status_icon, status_text = "🟢", "運行中"
     st.caption(
         f"{status_icon} 背景預抓取工作器：{status_text}　｜　"
         f"本小時已用 {s['hour_fetched']}/{s['hourly_limit']} 次　｜　"

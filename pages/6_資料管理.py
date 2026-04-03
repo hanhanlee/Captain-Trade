@@ -42,32 +42,50 @@ if worker is None:
 else:
     s = worker.status()
 
-    # 狀態指示燈
+    # ── 狀態指示燈 ────────────────────────────────────────────
     if not s["running"]:
         st.error("🔴 工作器已停止")
+    elif s["pause_remaining_sec"] > 0:
+        remain_min = s["pause_remaining_sec"] // 60
+        remain_sec = s["pause_remaining_sec"] % 60
+        resume_at  = s["paused_until"].strftime("%H:%M:%S") if s["paused_until"] else "—"
+        st.warning(
+            f"🟠 遇到 429 限額，暫停中（第 {s['rate_limit_count']} 次）　｜　"
+            f"剩餘 **{remain_min} 分 {remain_sec} 秒**，預計 {resume_at} 自動恢復"
+        )
     elif s["paused_for_market"]:
         st.warning("🟡 交易時間降速模式（09:00–15:05），每小時上限 100 次，保留額度給手動操作")
     else:
         st.success("🟢 工作器運行中（非交易時間，每小時上限 500 次）")
 
-    # 指標列
-    c1, c2, c3, c4, c5 = st.columns(5)
+    # ── 指標列 ────────────────────────────────────────────────
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("本小時已用", f"{s['hour_fetched']} 次", f"上限 {s['hourly_limit']} 次/小時")
     c2.metric("本小時剩餘", f"{s['hourly_remaining']} 次")
     c3.metric("本次啟動累計", f"{s['total_fetched']} 次")
     c4.metric("待更新股票", f"{s['queue_size']} 檔")
     c5.metric("正在抓取", s["current_stock"] or "—")
+    c6.metric("遇到 429 次數", s["rate_limit_count"])
 
     if s["last_fetch_at"]:
         st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # 控制按鈕
-    col_start, col_stop, col_refresh, _ = st.columns([1, 1, 1, 5])
+    # ── 控制按鈕 ──────────────────────────────────────────────
+    is_paused = s["pause_remaining_sec"] > 0
+    col_start, col_stop, col_resume, col_refresh, _ = st.columns([1, 1, 1, 1, 4])
+
     if col_start.button("▶ 啟動工作器", disabled=s["running"], use_container_width=True):
         worker.start()
         st.rerun()
     if col_stop.button("⏹ 停止工作器", disabled=not s["running"], use_container_width=True):
         worker.stop()
+        st.rerun()
+    if col_resume.button(
+        "⚡ 立即恢復", disabled=not is_paused, use_container_width=True,
+        help="跳過 429 暫停，立即繼續抓取",
+        type="primary" if is_paused else "secondary",
+    ):
+        worker.resume()
         st.rerun()
     if col_refresh.button("🔄 重新整理", use_container_width=True):
         st.rerun()
@@ -78,6 +96,7 @@ else:
     - **非交易時間**（15:05–隔日 09:00）：每小時最多 500 次，7 秒抓一檔
     - **交易時間**（09:00–15:05）：每小時上限降為 100 次，優先保留給手動掃描
     - 快取仍新鮮的股票（5 天內）自動跳過，不消耗額度
+    - **遇到 429**：整體暫停 20 分鐘，暫停期間可按「⚡ 立即恢復」提前繼續
     - FinMind 免費帳號：600 次/小時（註冊會員）
     """)
 
