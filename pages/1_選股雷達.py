@@ -334,7 +334,7 @@ with tab_scan:
         has_elite = (result_df["score"] > 100).any()
         if has_elite:
             n_elite = (result_df["score"] > 100).sum()
-            st.success(f"⭐ 本次發現 **{n_elite}** 檔「精選強勢股」（分數 > 100，週線 + RS 雙重確認）")
+            st.success(f"⭐ 其中 **{n_elite}** 檔為「精選強勢股」（分數 > 100，週線 + RS 雙重確認），列於下表最前方")
 
         display_df = result_df.rename(columns={
             "stock_id": "代碼", "stock_name": "名稱", "industry": "產業",
