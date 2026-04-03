@@ -69,7 +69,9 @@ st.markdown("""
 st.markdown("---")
 if worker is not None:
     s = worker.status()
-    if s["pause_remaining_sec"] > 0:
+    if s.get("rebuild_mode"):
+        status_icon, status_text = "🔴", "全速重建模式（勿手動掃描）"
+    elif s.get("pause_remaining_sec", 0) > 0:
         remain = f"{s['pause_remaining_sec']//60}分{s['pause_remaining_sec']%60}秒"
         status_icon, status_text = "🟠", f"429 暫停中（剩 {remain}）"
     elif not s["running"]:

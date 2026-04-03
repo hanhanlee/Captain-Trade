@@ -61,7 +61,8 @@ class PrefetchWorker:
         self.queue_size: int = 0
         self.paused_until: datetime | None = None
         self.rate_limit_count: int = 0
-        self._resume_event = threading.Event()   # 手動恢復用
+        self.rebuild_mode: bool = False          # 全速重建模式
+        self._resume_event = threading.Event()
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -92,14 +93,28 @@ class PrefetchWorker:
         self._resume_event.set()
         logger.info("PrefetchWorker 手動恢復")
 
+    def enable_rebuild_mode(self):
+        """啟用全速重建模式：額度開放至 600 次/小時，不受交易時間限制"""
+        self.rebuild_mode = True
+        logger.info("PrefetchWorker 進入全速重建模式（600次/小時）")
+
+    def disable_rebuild_mode(self):
+        """停止重建模式，恢復正常限速"""
+        self.rebuild_mode = False
+        logger.info("PrefetchWorker 退出重建模式，恢復正常限速")
+
     # ── 私有方法 ───────────────────────────────────────────────
 
     def _within_trading_hours(self) -> bool:
+        if self.rebuild_mode:
+            return False   # 重建模式：不受交易時間限制
         now = datetime.now().time()
         from datetime import time as _time
         return _time(9, 0) <= now <= _time(15, 5)
 
     def _current_hourly_limit(self) -> int:
+        if self.rebuild_mode:
+            return 600     # 重建模式：全速
         return HOURLY_LIMIT_TRADING if self._within_trading_hours() else HOURLY_LIMIT_OFFPEAK
 
     def _hour_count(self) -> int:
@@ -258,6 +273,7 @@ class PrefetchWorker:
             "paused_until":         self.paused_until,
             "pause_remaining_sec":  pause_remaining_sec,
             "rate_limit_count":     self.rate_limit_count,
+            "rebuild_mode":         self.rebuild_mode,
         }
 
 

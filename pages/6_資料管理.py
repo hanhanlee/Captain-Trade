@@ -43,7 +43,12 @@ else:
     s = worker.status()
 
     # ── 狀態指示燈 ────────────────────────────────────────────
-    if not s["running"]:
+    if s.get("rebuild_mode"):
+        st.error(
+            "🔴 **全速重建模式啟動中** — API 額度全開（600次/小時），"
+            "請勿進行選股掃描等手動操作，避免額度衝突。"
+        )
+    elif not s["running"]:
         st.error("🔴 工作器已停止")
     elif s.get("pause_remaining_sec", 0) > 0:
         remain_min = s["pause_remaining_sec"] // 60
@@ -99,6 +104,56 @@ else:
     - **遇到 429**：整體暫停 20 分鐘，暫停期間可按「⚡ 立即恢復」提前繼續
     - FinMind 免費帳號：600 次/小時（註冊會員）
     """)
+
+    st.markdown("---")
+
+    # ── 全速重建模式 ──────────────────────────────────────────
+    st.markdown("#### 🔨 全速重建本機資料庫")
+    is_rebuild = s.get("rebuild_mode", False)
+
+    if is_rebuild:
+        st.error(
+            "**重建模式進行中**  \n"
+            "API 額度已全開（600次/小時），請勿使用選股雷達或其他需要 API 的功能，"
+            "避免額度衝突。  \n"
+            "資料庫重建完成後，請手動按「停止重建模式」恢復正常運作。"
+        )
+        if st.button("⏹ 停止重建模式，恢復正常限速", type="secondary", use_container_width=False):
+            worker.disable_rebuild_mode()
+            st.rerun()
+    else:
+        st.markdown(
+            "適用情境：首次安裝、資料庫損毀、或長時間未更新需要全面補齊快取。  \n"
+            "啟動後 API 額度全開至 600 次/小時，**建議在非使用期間執行**（例如睡前）。"
+        )
+
+        # ── 第一步：按下重建按鈕 ──────────────────────────────
+        if "rebuild_confirm" not in st.session_state:
+            st.session_state.rebuild_confirm = False
+
+        if not st.session_state.rebuild_confirm:
+            if st.button("🔨 重建資料庫", type="secondary"):
+                st.session_state.rebuild_confirm = True
+                st.rerun()
+        else:
+            # ── 第二步：確認對話框 ────────────────────────────
+            st.warning(
+                "⚠️ **請確認以下事項後再繼續：**\n\n"
+                "1. 重建期間 API 額度全開（600次/小時），選股掃描會與背景搶額度\n"
+                "2. 全市場約 950 檔，每小時最多抓 600 檔，完整重建約需 1.5–2 小時\n"
+                "3. 建議在不使用系統期間（例如睡前）執行"
+            )
+            col_confirm, col_cancel, _ = st.columns([1.2, 1, 5])
+            if col_confirm.button("✅ 確認，全速重建", type="primary", use_container_width=True):
+                st.session_state.rebuild_confirm = False
+                if not worker.running:
+                    worker.start()
+                worker.resume()            # 清除任何 429 暫停
+                worker.enable_rebuild_mode()
+                st.rerun()
+            if col_cancel.button("取消", use_container_width=True):
+                st.session_state.rebuild_confirm = False
+                st.rerun()
 
 st.markdown("---")
 
