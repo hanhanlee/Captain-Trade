@@ -63,7 +63,8 @@ class PrefetchWorker:
         self.queue_size: int = 0
         self.paused_until: datetime | None = None
         self.rate_limit_count: int = 0
-        self.rebuild_mode: bool = False          # 全速重建模式
+        self.rebuild_mode: bool = False
+        self.initial_queue_size: int = 0         # 本次啟動時的初始待更新數量（進度條分母）
         self._resume_event = threading.Event()
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
@@ -244,6 +245,9 @@ class PrefetchWorker:
             needs_update, full_queue = self._get_stale_stocks()
             needs_update_set = set(needs_update)
             self.queue_size = len(needs_update)
+            # 第一次計算時記錄初始值，作為進度條的固定分母
+            if self.initial_queue_size == 0 and self.queue_size > 0:
+                self.initial_queue_size = self.queue_size
 
             if not full_queue:
                 logger.info("所有股票快取皆為最新，等待 30 分鐘")
@@ -310,6 +314,7 @@ class PrefetchWorker:
             "pause_remaining_sec":  pause_remaining_sec,
             "rate_limit_count":     self.rate_limit_count,
             "rebuild_mode":         self.rebuild_mode,
+            "initial_queue_size":   self.initial_queue_size,
         }
 
 

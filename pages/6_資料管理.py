@@ -79,11 +79,12 @@ else:
     c5.metric("正在抓取", s["current_stock"] or "—")
     c6.metric("遇到 429 次數", s.get("rate_limit_count", 0))
 
-    # ── 進度條 ────────────────────────────────────────────────
-    total_stocks = (s["queue_size"] or 0) + s["total_fetched"]
-    if total_stocks > 0:
-        progress = min(s["total_fetched"] / total_stocks, 1.0)
-        st.progress(progress, text=f"本次啟動進度：已完成 {s['total_fetched']} / 約 {total_stocks} 檔")
+    # ── 進度條（用初始待更新數量當固定分母，避免分母跟著長）──────
+    initial_q = s.get("initial_queue_size", 0)
+    fetched   = s["total_fetched"]
+    if initial_q > 0:
+        progress = min(fetched / initial_q, 1.0)
+        st.progress(progress, text=f"本次啟動進度：已完成 {fetched} / {initial_q} 檔（{progress*100:.1f}%）")
 
     if s["last_fetch_at"]:
         elapsed = int((datetime.now() - s["last_fetch_at"]).total_seconds())
