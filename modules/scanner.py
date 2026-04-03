@@ -1,5 +1,5 @@
 """
-選股雷達 — 核心篩選邏輯（v2，含三項策略增強）
+選股雷達 — 核心篩選邏輯（v3）
 混合型交易風格：波段為主 + 部分長期持有
 
 基礎技術條件（必要，全部達到才入選）：
@@ -8,12 +8,17 @@
   3. MACD 黃金交叉 或 RSI(14) 在 50–70 之間
   4. 收盤價不低於布林通道下軌
 
-進階加分條件（v2 新增）：
-  5. 多週期共振：週線 MA10 向上且收盤站上週線 MA10
-  6. 相對強度：近 3 個月漲幅優於大盤（抗跌 / 領漲特性）
+進階加分條件（v2）：
+  5. 多週期共振：週線 MA10 向上且收盤站上週線 MA10（+10）
+  6. 相對強度：近 3 個月漲幅優於大盤（+8）
+
+進階加分條件（v3 新增）：
+  7. 多頭排列：MA5 > MA10 > MA20（+5）
+  8. 量能品質：近 10 日上漲日成交量佔比 ≥ 60%（+7）
+  9. 突破盤整：收盤突破近 60 日最高收盤價（+8）
 
 分數說明：
-  基礎條件滿分 100，進階條件最多額外 +18
+  基礎條件滿分 100，進階條件最多額外 +38
   分數 > 100 代表強勢股中的精選標的
 """
 import pandas as pd
@@ -38,6 +43,10 @@ class ScanSignal:
     weekly_trend_up: bool = False      # 週線 MA10 向上且站上
     rs_positive: bool = False          # 相對強度優於大盤
     rs_score: float = 0.0             # RS 分數（0-100）
+    # ── v3 進階條件 ───────────────────────────────
+    ma_aligned: bool = False           # MA5 > MA10 > MA20 多頭排列
+    vol_quality: bool = False          # 近 10 日量集中在上漲日
+    breakout: bool = False             # 突破近 60 日收盤高點
 
     def passes_basic(self) -> bool:
         """必要技術條件全部通過才入選"""
@@ -66,6 +75,10 @@ class ScanSignal:
             # v2 進階加分
             "weekly_trend_up": 10,
             "rs_positive": 8,
+            # v3 進階加分
+            "ma_aligned": 5,
+            "vol_quality": 7,
+            "breakout": 8,
         }
         return round(sum(v for k, v in weights.items() if getattr(self, k)), 1)
 
@@ -81,6 +94,9 @@ class ScanSignal:
             "margin_clean": "籌碼乾淨",
             "weekly_trend_up": "週線多頭",
             "rs_positive": "相對強勢",
+            "ma_aligned": "多頭排列",
+            "vol_quality": "量能優質",
+            "breakout": "突破盤整",
         }
         return [v for k, v in label_map.items() if getattr(self, k)]
 
@@ -191,6 +207,30 @@ def analyze_stock(
             sig.rs_score = rs["rs_score"]
             if rs["outperforming"] and rs["rs_score"] >= 60:
                 sig.rs_positive = True
+
+    # 11. [v3] 多頭排列：MA5 > MA10 > MA20
+    if (pd.notna(latest.get("ma5")) and pd.notna(latest.get("ma10"))
+            and pd.notna(latest.get("ma20"))):
+        if latest["ma5"] > latest["ma10"] > latest["ma20"]:
+            sig.ma_aligned = True
+
+    # 12. [v3] 量能品質：近 10 日上漲日成交量佔 60% 以上
+    if vol_col and len(df) >= 11:
+        recent = df.tail(11).copy()
+        recent["up_day"] = recent["close"] >= recent["close"].shift(1)
+        recent = recent.dropna(subset=["up_day"])
+        total_vol = recent[vol_col].sum()
+        up_vol = recent.loc[recent["up_day"], vol_col].sum()
+        if total_vol > 0 and up_vol / total_vol >= 0.6:
+            sig.vol_quality = True
+
+    # 13. [v3] 突破盤整：今日收盤 > 近 60 日最高收盤（排除近 3 日避免自我比較）
+    if len(df) >= 20:
+        lookback = df.iloc[-63:-3] if len(df) >= 66 else df.iloc[:-3]
+        if not lookback.empty:
+            resistance = lookback["close"].max()
+            if pd.notna(resistance) and latest["close"] > resistance:
+                sig.breakout = True
 
     return sig
 
