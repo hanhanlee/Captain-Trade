@@ -69,15 +69,17 @@ else:
         st.success("🟢 工作器運行中（非交易時間，每小時上限 500 次）")
 
     # ── 指標列 ────────────────────────────────────────────────
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("本小時已用", f"{s['hour_fetched']} 次", f"上限 {s['hourly_limit']} 次/小時")
     c2.metric("本小時剩餘", f"{s['hourly_remaining']} 次")
-    c3.metric("✅ 本次累計已抓", f"{s['total_fetched']} 次",
-              help="這是最可靠的進度指標：只要這個數字在增加，工作器就在正常運作")
+    c3.metric("✅ 累計已抓", f"{s['total_fetched']} 次",
+              help="只要這個數字在增加，工作器就在正常運作")
     c4.metric("待更新股票", f"{s['queue_size']} 檔",
-              help="包含無快取 + 快取超過 5 天的股票（含 ETF、權證等，共約 1500+ 檔）")
+              help="無快取 + 快取超過 5 天（已排除無資料股票）")
     c5.metric("正在抓取", s["current_stock"] or "—")
-    c6.metric("遇到 429 次數", s.get("rate_limit_count", 0))
+    c6.metric("⏭ 略過（無資料）", s.get("skip_count", 0),
+              help="FinMind 無價格資料的股票（權證、下市股等），已從清單移除不再重試")
+    c7.metric("遇到 429 次數", s.get("rate_limit_count", 0))
 
     # ── 進度條（用初始待更新數量當固定分母，避免分母跟著長）──────
     initial_q = s.get("initial_queue_size", 0)

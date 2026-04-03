@@ -65,6 +65,7 @@ class PrefetchWorker:
         self.rate_limit_count: int = 0
         self.rebuild_mode: bool = False
         self.initial_queue_size: int = 0         # 本次啟動時的初始待更新數量（進度條分母）
+        self._skip_stocks: set = set()           # 無資料或抓了也不更新的股票，永久跳過
         self._resume_event = threading.Event()
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
@@ -197,9 +198,9 @@ class PrefetchWorker:
                     summary.loc[summary["latest"] < cutoff, "stock_id"].tolist()
                 )
 
-            missing = sorted(all_ids - cached_ids)
-            stale   = sorted(stale_ids - set(missing))
-            fresh   = sorted(all_ids - set(missing) - stale_ids)
+            missing = sorted(all_ids - cached_ids - self._skip_stocks)
+            stale   = sorted(stale_ids - set(missing) - self._skip_stocks)
+            fresh   = sorted(all_ids - set(missing) - stale_ids - self._skip_stocks)
 
             needs_update = missing + stale
             full_queue   = missing + stale + fresh
@@ -208,20 +209,35 @@ class PrefetchWorker:
             logger.warning(f"取得待抓清單失敗：{e}")
             return [], []
 
-    # 回傳值：'ok'=成功抓取, 'cached'=快取新鮮跳過, 'rate_limit'=429, 'error'=其他錯誤
+    # 回傳值：
+    #   'ok'         — 成功抓取並更新快取
+    #   'cached'     — 快取仍新鮮，跳過
+    #   'no_update'  — 呼叫了 API 但快取沒有更新（無資料 / 無新資料），加入永久跳過名單
+    #   'rate_limit' — 429
+    #   'error'      — 其他例外
     def _fetch_one(self, stock_id: str) -> str:
         try:
             from db.price_cache import get_cached_dates
             from data.finmind_client import smart_get_price
 
-            _min, _max = get_cached_dates(stock_id)
-            if _max is not None:
-                max_date = _max if isinstance(_max, date) else \
-                    datetime.strptime(str(_max), "%Y-%m-%d").date()
+            # 記錄呼叫前的最新日期
+            _, max_before = get_cached_dates(stock_id)
+
+            if max_before is not None:
+                max_date = max_before if isinstance(max_before, date) else \
+                    datetime.strptime(str(max_before), "%Y-%m-%d").date()
                 if (date.today() - max_date).days <= STALE_DAYS:
                     return "cached"
 
             smart_get_price(stock_id, required_days=PREFETCH_DAYS)
+
+            # 驗證快取是否真的有更新
+            _, max_after = get_cached_dates(stock_id)
+            if max_after is None or max_after == max_before:
+                # API 呼叫完成但沒有任何新資料存入（權證、下市股、無資料等）
+                logger.debug(f"{stock_id} 無新資料可存，加入跳過名單")
+                return "no_update"
+
             return "ok"
         except Exception as e:
             if _is_429(e):
@@ -275,6 +291,12 @@ class PrefetchWorker:
                     interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
                     self._stop_event.wait(interval)
 
+                elif result == "no_update":
+                    # 無資料可存，加入永久跳過名單，不再浪費 API 額度
+                    self._skip_stocks.add(stock_id)
+                    if stock_id in needs_update_set:
+                        self.queue_size = max(0, self.queue_size - 1)
+
                 elif result == "rate_limit":
                     hit_rate_limit = True
                     break
@@ -315,6 +337,7 @@ class PrefetchWorker:
             "rate_limit_count":     self.rate_limit_count,
             "rebuild_mode":         self.rebuild_mode,
             "initial_queue_size":   self.initial_queue_size,
+            "skip_count":           len(self._skip_stocks),
         }
 
 
