@@ -1,0 +1,29 @@
+name: Sync Manual to Notion
+
+on:
+  push:
+    paths:
+      - '使用說明手冊.md'
+  workflow_dispatch: # 支援手動觸發
+
+jobs:
+  notion-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install requests md2notion notion-client
+
+      - name: Run sync script
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID }}
+        run: python sync_to_notion.py
