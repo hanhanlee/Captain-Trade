@@ -1,0 +1,35 @@
+# 環境變數（含 API Token，絕對不上傳）
+.env
+
+# Claude Code 本機設定
+.claude/
+
+# 資料庫
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 本機快取與暫存
+data/cache/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
