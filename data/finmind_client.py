@@ -77,6 +77,37 @@ def get_institutional_investors(stock_id: str, days: int = 30) -> pd.DataFrame:
     return df
 
 
+def check_all_three_buying(idf: pd.DataFrame, days: int = 2) -> bool:
+    """
+    判斷三大法人是否連續 days 個交易日齊買
+
+    FinMind 的 name 欄位包含：
+      Foreign_Investor / Foreign_Dealer_Self → 外資
+      Investment_Trust                        → 投信
+      Dealer_self / Dealer_Hedging            → 自營商
+
+    回傳 True 代表三方在最近 days 個交易日每日都是淨買超
+    """
+    if idf.empty or "name" not in idf.columns:
+        return False
+
+    groups = {
+        "外資":   idf[idf["name"].str.contains("Foreign", case=False, na=False)],
+        "投信":   idf[idf["name"].str.contains("Investment_Trust", case=False, na=False)],
+        "自營商": idf[idf["name"].str.contains("Dealer", case=False, na=False)],
+    }
+
+    for name, grp in groups.items():
+        if grp.empty:
+            return False
+        daily = grp.groupby("date")["net"].sum().sort_index()
+        recent = daily.tail(days)
+        if len(recent) < days or (recent <= 0).any():
+            return False
+
+    return True
+
+
 def get_margin_trading(stock_id: str, days: int = 10) -> pd.DataFrame:
     """取得融資融券餘額"""
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")

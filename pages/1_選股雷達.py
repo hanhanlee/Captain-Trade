@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import time
 
-from data.finmind_client import get_stock_list, get_daily_price, get_institutional_investors
+from data.finmind_client import get_stock_list, get_daily_price, get_institutional_investors, check_all_three_buying
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
 
@@ -185,7 +185,7 @@ with tab_scan:
                 if include_institutional:
                     idf = get_institutional_investors(sid, days=10)
                     if not idf.empty:
-                        inst_data[sid] = float(idf.tail(5)["net"].sum())
+                        inst_data[sid] = check_all_three_buying(idf, days=2)
                 time.sleep(0.05)
             except Exception:
                 pass

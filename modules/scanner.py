@@ -37,7 +37,7 @@ class ScanSignal:
     rsi_healthy: bool = False
     above_bb_lower: bool = False
     # ── 籌碼面條件 ────────────────────────────────
-    institutional_buy: bool = False
+    institutional_buy: bool = False    # 三大法人連續 2 日齊買
     margin_clean: bool = False
     # ── v2 進階條件 ───────────────────────────────
     weekly_trend_up: bool = False      # 週線 MA10 向上且站上
@@ -90,7 +90,7 @@ class ScanSignal:
             "macd_cross": "MACD黃金交叉",
             "rsi_healthy": "RSI健康",
             "above_bb_lower": "布林正常",
-            "institutional_buy": "法人買超",
+            "institutional_buy": "三大法人齊買",
             "margin_clean": "籌碼乾淨",
             "weekly_trend_up": "週線多頭",
             "rs_positive": "相對強勢",
@@ -132,7 +132,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def analyze_stock(
     df: pd.DataFrame,
-    inst_net: float = 0.0,
+    inst_buying: bool = False,
     margin_trend: str = "flat",
     market_close: pd.Series = None,   # 大盤收盤序列，供 RS 計算（選填）
 ):
@@ -186,8 +186,8 @@ def analyze_stock(
     if pd.notna(latest["bb_lower"]) and latest["close"] >= latest["bb_lower"]:
         sig.above_bb_lower = True
 
-    # 7. 法人買超
-    if inst_net > 0:
+    # 7. 三大法人連續 2 日齊買
+    if inst_buying:
         sig.institutional_buy = True
 
     # 8. 融資減少
@@ -276,7 +276,7 @@ def run_scan(
 
         sig = analyze_stock(
             df,
-            inst_net=inst_data.get(stock_id, 0.0),
+            inst_buying=inst_data.get(stock_id, False),
             margin_trend=margin_data.get(stock_id, "flat"),
             market_close=market_close,
         )
