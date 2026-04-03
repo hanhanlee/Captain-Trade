@@ -10,7 +10,8 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import time
 
-from data.finmind_client import get_stock_list, get_daily_price, smart_get_price, get_institutional_investors, check_all_three_buying
+from data.finmind_client import get_daily_price, check_all_three_buying
+from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
 from db.scan_history import save_scan_session, load_scan_history, load_session_results, delete_scan_session
@@ -187,9 +188,12 @@ tab_scan, tab_sector, tab_chart, tab_history = st.tabs(
 # ══ Tab：掃描結果 ════════════════════════════════════════════
 with tab_scan:
     if st.button("🚀 開始掃描", type="primary", use_container_width=True):
+        # 建立資料來源管理器（每次掃描重新初始化，確保從 FinMind 優先）
+        dsm = DataSourceManager()
+
         with st.spinner("載入股票清單..."):
             try:
-                stock_list = get_stock_list()
+                stock_list = dsm.get_stock_list()
             except Exception as e:
                 st.error(f"無法取得股票清單：{e}")
                 st.stop()
@@ -210,6 +214,7 @@ with tab_scan:
 
         prog = st.progress(0)
         status_txt = st.empty()
+        fallback_banner = st.empty()
         price_data, inst_data = {}, {}
         api_calls, cache_hits = 0, 0
 
@@ -217,7 +222,7 @@ with tab_scan:
             prog.progress((i + 1) / total)
             try:
                 from db.price_cache import get_cached_dates
-                from datetime import date as _date, timedelta as _td
+                from datetime import date as _date
                 _min, _max = get_cached_dates(sid)
                 _fresh = _max is not None and (
                     (_date.today() - (_max if isinstance(_max, _date)
@@ -229,30 +234,41 @@ with tab_scan:
                     status_txt.text(f"快取：{sid}（{i+1}/{total}）")
                 else:
                     api_calls += 1
-                    status_txt.text(f"下載：{sid}（{i+1}/{total}）｜快取 {cache_hits} / API {api_calls}")
+                    src = "備援" if dsm.fallback_mode else "下載"
+                    status_txt.text(f"{src}：{sid}（{i+1}/{total}）｜快取 {cache_hits} / API {api_calls}")
 
-                df = smart_get_price(sid, required_days=150)
+                df = dsm.get_price(sid, required_days=150)
+
+                # 切換備援後顯示警告橫幅
+                if dsm.fallback_mode:
+                    fallback_banner.warning(FALLBACK_WARNING)
+
                 if not df.empty:
                     price_data[sid] = df
-                if include_institutional:
-                    idf = get_institutional_investors(sid, days=10)
+
+                # 法人資料：備援模式下 dsm.institutional_available 為 False，自動跳過
+                if include_institutional and dsm.institutional_available:
+                    idf = dsm.get_institutional(sid, days=10)
                     if not idf.empty:
                         inst_data[sid] = check_all_three_buying(idf, days=2)
-                if not _fresh:
-                    time.sleep(0.05)   # 只有真正呼叫 API 時才需要 rate limit
+
+                if not _fresh and not dsm.fallback_mode:
+                    time.sleep(0.05)   # 只有真正呼叫 FinMind API 時才需要 rate limit
             except Exception:
                 pass
 
-        st.info(f"資料取得完成：快取命中 **{cache_hits}** 檔 / API 呼叫 **{api_calls}** 次")
+        src_label = "yfinance 備援" if dsm.fallback_mode else "FinMind"
+        st.info(f"資料取得完成（{src_label}）：快取命中 **{cache_hits}** 檔 / API 呼叫 **{api_calls}** 次")
 
         prog.empty()
         status_txt.empty()
 
         with st.spinner("計算指標，篩選中..."):
+            use_inst = include_institutional and dsm.institutional_available
             result_df, sector_info = run_scan(
                 price_data=price_data,
                 stock_info=stock_list,
-                inst_data=inst_data if include_institutional else {},
+                inst_data=inst_data if use_inst else {},
                 min_price=min_price,
                 min_avg_volume=min_avg_volume,
                 top_volume_n=top_volume_n,
@@ -303,7 +319,7 @@ with tab_scan:
                 sector_filter=sector_filter_str,
                 require_weekly=require_weekly,
                 min_rs=float(min_rs),
-                include_institutional=include_institutional,
+                include_institutional=use_inst,
                 top_sectors=sector_info,
             )
 
