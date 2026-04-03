@@ -64,6 +64,7 @@ class PrefetchWorker:
         self.paused_until: datetime | None = None
         self.rate_limit_count: int = 0
         self.rebuild_mode: bool = False
+        self.rebuild_completed_at: datetime | None = None  # 重建完成時間
         self.initial_queue_size: int = 0         # 本次啟動時的初始待更新數量（進度條分母）
         self._skip_stocks: set = set()           # 無資料或抓了也不更新的股票，永久跳過
         self._resume_event = threading.Event()
@@ -265,6 +266,12 @@ class PrefetchWorker:
             if self.initial_queue_size == 0 and self.queue_size > 0:
                 self.initial_queue_size = self.queue_size
 
+            # 重建模式：待更新清單已清空，自動關閉重建模式
+            if self.rebuild_mode and self.queue_size == 0:
+                self.rebuild_mode = False
+                self.rebuild_completed_at = datetime.now()
+                logger.info("全速重建完成，自動退出重建模式，恢復正常限速")
+
             if not full_queue:
                 logger.info("所有股票快取皆為最新，等待 30 分鐘")
                 self._stop_event.wait(1800)
@@ -336,6 +343,7 @@ class PrefetchWorker:
             "pause_remaining_sec":  pause_remaining_sec,
             "rate_limit_count":     self.rate_limit_count,
             "rebuild_mode":         self.rebuild_mode,
+            "rebuild_completed_at": self.rebuild_completed_at,
             "initial_queue_size":   self.initial_queue_size,
             "skip_count":           len(self._skip_stocks),
         }

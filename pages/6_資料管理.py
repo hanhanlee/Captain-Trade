@@ -129,12 +129,18 @@ else:
     st.markdown("#### 🔨 全速重建本機資料庫")
     is_rebuild = s.get("rebuild_mode", False)
 
-    if is_rebuild:
+    completed_at = s.get("rebuild_completed_at")
+    if completed_at:
+        st.success(
+            f"✅ **全速重建已完成**（{completed_at.strftime('%m/%d %H:%M')}）  \n"
+            "所有待更新股票已全數處理，系統已自動退出重建模式，恢復正常限速。"
+        )
+    elif is_rebuild:
         st.error(
             "**重建模式進行中**  \n"
             "API 額度已全開（600次/小時），請勿使用選股雷達或其他需要 API 的功能，"
             "避免額度衝突。  \n"
-            "資料庫重建完成後，請手動按「停止重建模式」恢復正常運作。"
+            "待更新股票歸零後會**自動退出重建模式**，不需手動停止。"
         )
         if st.button("⏹ 停止重建模式，恢復正常限速", type="secondary", use_container_width=False):
             if hasattr(worker, "disable_rebuild_mode"):
