@@ -6,6 +6,7 @@
   - 本機快取狀態總覽
   - 手動觸發更新
 """
+import time
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -19,6 +20,10 @@ init_db()
 st.set_page_config(page_title="資料管理", page_icon="🗄️", layout="wide")
 st.title("🗄️ 資料管理")
 st.markdown("管理本機快取與背景預抓取工作器")
+
+# ── 自動刷新控制（放在最上方，讓用戶可以隨時開關）──────────────
+auto_refresh = st.toggle("🔄 自動刷新（每 5 秒）", value=False,
+                          help="開啟後頁面每 5 秒自動更新一次，方便觀察抓取進度")
 st.markdown("---")
 
 
@@ -67,13 +72,23 @@ else:
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("本小時已用", f"{s['hour_fetched']} 次", f"上限 {s['hourly_limit']} 次/小時")
     c2.metric("本小時剩餘", f"{s['hourly_remaining']} 次")
-    c3.metric("本次啟動累計", f"{s['total_fetched']} 次")
-    c4.metric("待更新股票", f"{s['queue_size']} 檔")
+    c3.metric("✅ 本次累計已抓", f"{s['total_fetched']} 次",
+              help="這是最可靠的進度指標：只要這個數字在增加，工作器就在正常運作")
+    c4.metric("待更新股票", f"{s['queue_size']} 檔",
+              help="包含無快取 + 快取超過 5 天的股票（含 ETF、權證等，共約 1500+ 檔）")
     c5.metric("正在抓取", s["current_stock"] or "—")
     c6.metric("遇到 429 次數", s.get("rate_limit_count", 0))
 
+    # ── 進度條 ────────────────────────────────────────────────
+    total_stocks = (s["queue_size"] or 0) + s["total_fetched"]
+    if total_stocks > 0:
+        progress = min(s["total_fetched"] / total_stocks, 1.0)
+        st.progress(progress, text=f"本次啟動進度：已完成 {s['total_fetched']} / 約 {total_stocks} 檔")
+
     if s["last_fetch_at"]:
-        st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+        elapsed = int((datetime.now() - s["last_fetch_at"]).total_seconds())
+        elapsed_str = f"{elapsed} 秒前" if elapsed < 60 else f"{elapsed//60} 分鐘前"
+        st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%H:%M:%S')}（{elapsed_str}）")
 
     # ── 控制按鈕 ──────────────────────────────────────────────
     is_paused = s.get("pause_remaining_sec", 0) > 0
@@ -269,3 +284,8 @@ if manual_fetch and manual_ids.strip():
     st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
     # 清除快取摘要快照，讓下次載入時重新計算
     st.session_state.pop("cache_summary", None)
+
+# ── 自動刷新執行（放在頁面最底部）────────────────────────────────
+if auto_refresh:
+    time.sleep(5)
+    st.rerun()
