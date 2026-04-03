@@ -119,7 +119,10 @@ else:
             "資料庫重建完成後，請手動按「停止重建模式」恢復正常運作。"
         )
         if st.button("⏹ 停止重建模式，恢復正常限速", type="secondary", use_container_width=False):
-            worker.disable_rebuild_mode()
+            if hasattr(worker, "disable_rebuild_mode"):
+                worker.disable_rebuild_mode()
+            else:
+                worker.rebuild_mode = False
             st.rerun()
     else:
         st.markdown(
@@ -148,8 +151,12 @@ else:
                 st.session_state.rebuild_confirm = False
                 if not worker.running:
                     worker.start()
-                worker.resume()            # 清除任何 429 暫停
-                worker.enable_rebuild_mode()
+                if hasattr(worker, "resume"):
+                    worker.resume()        # 清除任何 429 暫停
+                if hasattr(worker, "enable_rebuild_mode"):
+                    worker.enable_rebuild_mode()
+                else:
+                    worker.rebuild_mode = True
                 st.rerun()
             if col_cancel.button("取消", use_container_width=True):
                 st.session_state.rebuild_confirm = False
