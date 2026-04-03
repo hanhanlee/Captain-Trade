@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, UniqueConstraint, Boolean
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
@@ -52,6 +52,24 @@ class ScanResult(Base):
     score = Column(Float)
     signals = Column(Text)                         # JSON 字串，記錄觸發的條件
     created_at = Column(DateTime, default=datetime.now)
+
+
+class ScanSession(Base):
+    """選股雷達掃描歷史紀錄"""
+    __tablename__ = "scan_session"
+
+    id = Column(Integer, primary_key=True)
+    scanned_at = Column(DateTime, default=datetime.now, nullable=False)
+    scan_mode = Column(String(50))           # 快速/小型/全市場
+    min_price = Column(Float)
+    vol_filter = Column(String(100))         # 量能過濾描述
+    sector_filter = Column(Text)             # 產業過濾（選中的產業＋漲幅）
+    require_weekly = Column(Boolean, default=False)
+    min_rs = Column(Float, default=0)
+    include_institutional = Column(Boolean, default=False)
+    result_count = Column(Integer, default=0)
+    results_json = Column(Text)              # JSON：完整結果列表
+    top_sectors_json = Column(Text)          # JSON：產業漲幅排行
 
 
 class PriceCache(Base):

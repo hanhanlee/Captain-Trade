@@ -13,6 +13,10 @@ import time
 from data.finmind_client import get_stock_list, get_daily_price, get_institutional_investors, check_all_three_buying
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
+from db.scan_history import save_scan_session, load_scan_history, load_session_results, delete_scan_session
+from db.database import init_db
+
+init_db()
 
 st.set_page_config(page_title="選股雷達", page_icon="🔍", layout="wide")
 
@@ -175,7 +179,9 @@ st.title("🔍 選股雷達")
 st.markdown("掃描全市場，依技術強度找出值得關注的標的")
 st.markdown("---")
 
-tab_scan, tab_sector, tab_chart = st.tabs(["📊 掃描結果", "🏭 產業族群", "📈 個股圖表"])
+tab_scan, tab_sector, tab_chart, tab_history = st.tabs(
+    ["📊 掃描結果", "🏭 產業族群", "📈 個股圖表", "📋 歷史紀錄"]
+)
 
 
 # ══ Tab：掃描結果 ════════════════════════════════════════════
@@ -256,6 +262,32 @@ with tab_scan:
             st.success(f"找到 **{len(result_df)}** 檔符合條件的股票")
             st.session_state["scan_results"] = result_df
             st.session_state["price_data"] = price_data
+
+            # ── 自動儲存掃描歷史 ──────────────────────────────
+            sector_filter_str = ""
+            if sector_info and top_sector_n > 0:
+                top_inds = sorted(sector_info, key=lambda x: sector_info[x]["return_pct"], reverse=True)[:top_sector_n]
+                sector_filter_str = "、".join(
+                    [f"{ind}({sector_info[ind]['return_pct']:+.1f}%)" for ind in top_inds]
+                )
+
+            vol_filter_str = (
+                f"前日量前{top_volume_n}名" if top_volume_n > 0
+                else f"日均量≥{min_avg_volume}張" if min_avg_volume > 0
+                else "不過濾"
+            )
+
+            save_scan_session(
+                result_df=result_df,
+                scan_mode=scan_mode,
+                min_price=min_price,
+                vol_filter=vol_filter_str,
+                sector_filter=sector_filter_str,
+                require_weekly=require_weekly,
+                min_rs=float(min_rs),
+                include_institutional=include_institutional,
+                top_sectors=sector_info,
+            )
 
     # ── 顯示結果 ──────────────────────────────────────────────
     if "scan_results" in st.session_state:
@@ -413,3 +445,58 @@ with tab_chart:
             render_weekly_chart(chart_id, chart_df)
     else:
         st.info("請選擇股票或輸入代碼後點擊「查詢圖表」")
+
+
+# ══ Tab：歷史紀錄 ════════════════════════════════════════════
+with tab_history:
+    st.subheader("掃描歷史紀錄")
+    st.caption("每次掃描完成後自動儲存，最新紀錄在最上方")
+
+    history = load_scan_history(limit=30)
+
+    if not history:
+        st.info("尚無掃描紀錄，執行第一次掃描後會自動出現在這裡。")
+    else:
+        for rec in history:
+            ts = rec["scanned_at"].strftime("%Y-%m-%d %H:%M")
+            label = f"🕐 {ts}　｜　{rec['scan_mode']}　｜　找到 **{rec['result_count']}** 檔"
+
+            with st.expander(label, expanded=False):
+                # 條件摘要
+                c1, c2, c3 = st.columns(3)
+                c1.markdown(f"**最低股價：** {rec['min_price']} 元")
+                c1.markdown(f"**量能過濾：** {rec['vol_filter'] or '不過濾'}")
+                c2.markdown(f"**週線多頭：** {'是' if rec['require_weekly'] else '否'}")
+                c2.markdown(f"**最低 RS：** {int(rec['min_rs']) if rec['min_rs'] else '不限'}")
+                c3.markdown(f"**法人條件：** {'三大法人齊買' if rec['include_institutional'] else '未啟用'}")
+                if rec["sector_filter"]:
+                    st.markdown(f"**鎖定產業：** {rec['sector_filter']}")
+
+                st.markdown("---")
+
+                # 載入並顯示結果
+                col_load, col_del, _ = st.columns([2, 2, 6])
+                if col_load.button("載入結果", key=f"load_{rec['id']}"):
+                    df = load_session_results(rec["id"])
+                    if not df.empty:
+                        st.session_state["scan_results"] = df
+                        st.success(f"已載入 {len(df)} 筆結果到「掃描結果」頁籤")
+                    else:
+                        st.warning("此紀錄無結果資料")
+
+                if col_del.button("刪除", key=f"del_{rec['id']}"):
+                    delete_scan_session(rec["id"])
+                    st.rerun()
+
+                # 展開後直接顯示結果預覽（前 10 筆）
+                df_prev = load_session_results(rec["id"])
+                if not df_prev.empty:
+                    show_df = df_prev.head(10).rename(columns={
+                        "stock_id": "代碼", "stock_name": "名稱",
+                        "industry": "產業", "close": "收盤",
+                        "change_pct": "漲跌%", "score": "分數",
+                        "rs_score": "RS", "signals": "觸發條件",
+                    })
+                    st.dataframe(show_df, use_container_width=True, hide_index=True)
+                    if len(df_prev) > 10:
+                        st.caption(f"僅顯示前 10 筆，共 {len(df_prev)} 筆。點「載入結果」可在掃描頁查看全部。")
