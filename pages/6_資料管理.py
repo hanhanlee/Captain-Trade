@@ -1,0 +1,190 @@
+"""
+資料管理頁面
+
+功能：
+  - 背景預抓取工作器控制與監控
+  - 本機快取狀態總覽
+  - 手動觸發更新
+"""
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from datetime import datetime, date, timedelta
+
+from db.database import init_db, vacuum_db
+from db.price_cache import get_cache_summary, delete_old_prices, get_all_cached_stocks
+
+init_db()
+
+st.set_page_config(page_title="資料管理", page_icon="🗄️", layout="wide")
+st.title("🗄️ 資料管理")
+st.markdown("管理本機快取與背景預抓取工作器")
+st.markdown("---")
+
+
+# ── 取得工作器實例 ───────────────────────────────────────────────
+@st.cache_resource
+def _get_worker():
+    try:
+        from scheduler.prefetch import get_worker
+        return get_worker()
+    except Exception:
+        return None
+
+
+worker = _get_worker()
+
+# ══ 區塊一：背景工作器控制 ═══════════════════════════════════════
+st.subheader("⚙️ 背景預抓取工作器")
+
+if worker is None:
+    st.error("工作器載入失敗，請重新啟動應用程式")
+else:
+    s = worker.status()
+
+    # 狀態指示燈
+    if not s["running"]:
+        st.error("🔴 工作器已停止")
+    elif s["paused_for_market"]:
+        st.warning("🟡 交易時間降速模式（09:00–15:05），每小時上限 100 次，保留額度給手動操作")
+    else:
+        st.success("🟢 工作器運行中（非交易時間，每小時上限 500 次）")
+
+    # 指標列
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("本小時已用", f"{s['hour_fetched']} 次", f"上限 {s['hourly_limit']} 次/小時")
+    c2.metric("本小時剩餘", f"{s['hourly_remaining']} 次")
+    c3.metric("本次啟動累計", f"{s['total_fetched']} 次")
+    c4.metric("待更新股票", f"{s['queue_size']} 檔")
+    c5.metric("正在抓取", s["current_stock"] or "—")
+
+    if s["last_fetch_at"]:
+        st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # 控制按鈕
+    col_start, col_stop, col_refresh, _ = st.columns([1, 1, 1, 5])
+    if col_start.button("▶ 啟動工作器", disabled=s["running"], use_container_width=True):
+        worker.start()
+        st.rerun()
+    if col_stop.button("⏹ 停止工作器", disabled=not s["running"], use_container_width=True):
+        worker.stop()
+        st.rerun()
+    if col_refresh.button("🔄 重新整理", use_container_width=True):
+        st.rerun()
+
+    st.markdown("""
+    **工作器說明：**
+    - App 啟動時自動開始，不需手動啟動
+    - **非交易時間**（15:05–隔日 09:00）：每小時最多 500 次，7 秒抓一檔
+    - **交易時間**（09:00–15:05）：每小時上限降為 100 次，優先保留給手動掃描
+    - 快取仍新鮮的股票（5 天內）自動跳過，不消耗額度
+    - FinMind 免費帳號：600 次/小時（註冊會員）
+    """)
+
+st.markdown("---")
+
+# ══ 區塊二：快取狀態總覽 ═════════════════════════════════════════
+st.subheader("📦 本機快取狀態")
+
+col_load, col_clean, col_vacuum, _ = st.columns([1, 1, 1, 5])
+load_clicked   = col_load.button("載入快取摘要", use_container_width=True)
+clean_clicked  = col_clean.button("清理 400 天前資料", use_container_width=True, type="secondary")
+vacuum_clicked = col_vacuum.button("最佳化資料庫", use_container_width=True, type="secondary")
+
+if clean_clicked:
+    deleted = delete_old_prices(keep_days=400)
+    st.success(f"已刪除 {deleted} 筆舊資料")
+
+if vacuum_clicked:
+    with st.spinner("最佳化中..."):
+        vacuum_db()
+    st.success("資料庫最佳化完成（碎片整理、空間回收）")
+
+if load_clicked or "cache_summary" in st.session_state:
+    with st.spinner("讀取快取摘要..."):
+        summary = get_cache_summary()
+        st.session_state["cache_summary"] = summary
+
+if "cache_summary" in st.session_state:
+    summary = st.session_state["cache_summary"]
+
+    if summary.empty:
+        st.info("快取為空，工作器啟動後將自動開始填充")
+    else:
+        today_str  = date.today().isoformat()
+        stale_cut  = (date.today() - timedelta(days=5)).isoformat()
+
+        total      = len(summary)
+        fresh      = (summary["latest"] >= stale_cut).sum()
+        stale      = total - fresh
+        total_days = summary["days"].sum()
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("已快取股票", f"{total} 檔")
+        m2.metric("快取新鮮", f"{fresh} 檔", f"最近 5 天內有更新")
+        m3.metric("需要更新", f"{stale} 檔")
+        m4.metric("資料總筆數", f"{total_days:,} 筆")
+
+        # 快取新鮮度長條圖
+        summary["status"] = summary["latest"].apply(
+            lambda x: "新鮮（5 天內）" if x >= stale_cut else "過期"
+        )
+        fig = px.histogram(
+            summary, x="latest", color="status",
+            color_discrete_map={"新鮮（5 天內）": "#27ae60", "過期": "#e74c3c"},
+            labels={"latest": "最新資料日期", "count": "股票數"},
+            title="各股最新快取日期分佈",
+            nbins=60,
+        )
+        fig.update_layout(
+            height=300, template="plotly_dark",
+            margin=dict(t=40, b=10), showlegend=True,
+            legend=dict(orientation="h", y=1.1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 詳細列表（可搜尋）
+        with st.expander("查看詳細清單", expanded=False):
+            search = st.text_input("搜尋股票代碼", placeholder="2330")
+            display = summary.copy()
+            if search:
+                display = display[display["stock_id"].str.contains(search)]
+            display = display.rename(columns={
+                "stock_id": "代碼", "earliest": "最早日期",
+                "latest": "最新日期", "days": "天數"
+            })
+            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+
+st.markdown("---")
+
+# ══ 區塊三：手動補抓 ════════════════════════════════════════════
+st.subheader("🔧 手動補抓")
+st.markdown("若特定股票快取不足，可在此手動更新（消耗 FinMind API 額度）")
+
+col_input, col_btn = st.columns([3, 1])
+with col_input:
+    manual_ids = st.text_input(
+        "輸入股票代碼（多檔用逗號分隔）",
+        placeholder="2330, 2317, 0050",
+    )
+with col_btn:
+    st.markdown("<br>", unsafe_allow_html=True)
+    manual_fetch = st.button("立即補抓", use_container_width=True, type="primary")
+
+if manual_fetch and manual_ids.strip():
+    ids = [x.strip() for x in manual_ids.split(",") if x.strip()]
+    prog = st.progress(0)
+    results = []
+    for i, sid in enumerate(ids):
+        prog.progress((i + 1) / len(ids))
+        try:
+            from data.finmind_client import smart_get_price
+            df = smart_get_price(sid, required_days=150)
+            rows = len(df) if not df.empty else 0
+            results.append({"代碼": sid, "狀態": "✅ 成功", "筆數": rows})
+        except Exception as e:
+            results.append({"代碼": sid, "狀態": f"❌ {e}", "筆數": 0})
+    prog.empty()
+    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+    # 清除快取摘要快照，讓下次載入時重新計算
+    st.session_state.pop("cache_summary", None)

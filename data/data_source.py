@@ -1,8 +1,10 @@
 """
 資料來源管理器
 
-優先使用 FinMind（本機快取 + API），遇到 402 限額錯誤時自動切換
+優先使用 FinMind（本機快取 + API），遇到 429 限額錯誤時自動切換
 至 yfinance 備援模式，並停用需要法人資料的條件。
+
+FinMind 免費帳號限制：每小時 600 次（註冊會員）
 
 使用方式：
     from data.data_source import DataSourceManager
@@ -16,15 +18,15 @@ from datetime import datetime, timedelta
 
 
 FALLBACK_WARNING = (
-    "⚠️ FinMind API 已達每日限額（600 次），已切換至 yfinance 備援模式。"
+    "⚠️ FinMind API 已達每小時限額（600 次），已切換至 yfinance 備援模式。"
     "  \n三大法人條件已自動停用；資料來源為 Yahoo Finance，報價可能有 15 分鐘延遲。"
 )
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """判斷例外是否為 FinMind 402 限額錯誤"""
+    """判斷例外是否為 FinMind 429 限額錯誤"""
     msg = str(exc).lower()
-    return "402" in msg or "payment required" in msg or "rate limit" in msg
+    return "429" in msg or "too many requests" in msg or "rate limit" in msg
 
 
 def _yf_symbol(stock_id: str, otc_ids: set = None) -> str:

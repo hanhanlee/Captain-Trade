@@ -65,40 +65,20 @@ st.markdown("""
 > 免費申請：https://finmindtrade.com/
 """)
 
-# ── 背景預抓取狀態面板 ───────────────────────────────────────────
+# ── 背景工作器狀態快覽 ───────────────────────────────────────────
 st.markdown("---")
-with st.expander("🔄 背景資料預抓取狀態", expanded=False):
-    if worker is None:
-        st.warning("背景工作器未啟動")
-    else:
-        s = worker.status()
-
-        c1, c2, c3, c4 = st.columns(4)
-        running_label = "運行中" if s["running"] else "已停止"
-        running_delta = "✅ 活躍" if s["running"] else "⛔ 停止"
-
-        if s.get("paused_for_market"):
-            running_label = "交易時間暫停"
-            running_delta = "⏸ 09:00–15:05"
-
-        c1.metric("工作器狀態", running_label, running_delta)
-        c2.metric("今日已抓取", f"{s['today_fetched']} 次", f"剩餘 {s['budget_remaining']} 次")
-        c3.metric("待更新股票", f"{s['queue_size']} 檔")
-        c4.metric("正在抓取", s["current_stock"] or "—")
-
-        if s["last_fetch_at"]:
-            st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%H:%M:%S')}")
-
-        col_start, col_stop, _ = st.columns([1, 1, 6])
-        if col_start.button("▶ 啟動", disabled=s["running"]):
-            worker.start()
-            st.rerun()
-        if col_stop.button("⏹ 停止", disabled=not s["running"]):
-            worker.stop()
-            st.rerun()
-
-    st.caption("背景工作器在非交易時間（15:05–09:00）自動將全市場股票存入本機快取，"
-               "讓掃描時幾乎不需要呼叫 API。每日預算 500 次，保留 100 次給手動操作。")
+if worker is not None:
+    s = worker.status()
+    status_icon = "🟢" if s["running"] and not s["paused_for_market"] else \
+                  "🟡" if s["paused_for_market"] else "🔴"
+    status_text = "運行中" if s["running"] and not s["paused_for_market"] else \
+                  "交易時間降速" if s["paused_for_market"] else "已停止"
+    st.caption(
+        f"{status_icon} 背景預抓取工作器：{status_text}　｜　"
+        f"本小時已用 {s['hour_fetched']}/{s['hourly_limit']} 次　｜　"
+        f"待更新 {s['queue_size']} 檔　｜　"
+        f"詳細管理請至 **6 - 資料管理**"
+    )
 
 st.sidebar.title("導航")
 st.sidebar.info("請從左側選單選擇功能頁面")

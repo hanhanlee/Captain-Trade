@@ -1,9 +1,10 @@
 """
 FinMind API 客戶端
 文件：https://finmindtrade.com/analysis/#/Guidance/api
-免費帳號每日限制 600 次請求
+免費帳號（註冊會員）每小時限制 600 次請求；遇 429 自動退避重試。
 """
 import os
+import time
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -26,8 +27,19 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
         params["start_date"] = start_date
     params.update(kwargs)
 
-    resp = requests.get(FINMIND_API, params=params, timeout=30)
-    resp.raise_for_status()
+    # 遇到 429 限額時，指數退避最多重試 3 次
+    wait = 10
+    for attempt in range(4):
+        resp = requests.get(FINMIND_API, params=params, timeout=30)
+        if resp.status_code == 429:
+            if attempt == 3:
+                resp.raise_for_status()
+            time.sleep(wait)
+            wait *= 2
+            continue
+        resp.raise_for_status()
+        break
+
     data = resp.json()
 
     if data.get("status") != 200:
