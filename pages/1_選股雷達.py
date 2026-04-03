@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import time
 
-from data.finmind_client import get_stock_list, get_daily_price, get_institutional_investors, check_all_three_buying
+from data.finmind_client import get_stock_list, get_daily_price, smart_get_price, get_institutional_investors, check_all_three_buying
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
 from db.scan_history import save_scan_session, load_scan_history, load_session_results, delete_scan_session
@@ -211,21 +211,39 @@ with tab_scan:
         prog = st.progress(0)
         status_txt = st.empty()
         price_data, inst_data = {}, {}
+        api_calls, cache_hits = 0, 0
 
         for i, sid in enumerate(sample_ids):
-            status_txt.text(f"下載：{sid}（{i+1}/{total}）")
             prog.progress((i + 1) / total)
             try:
-                df = get_daily_price(sid, days=150)   # 多取一點供週線計算
+                from db.price_cache import get_cached_dates
+                from datetime import date as _date, timedelta as _td
+                _min, _max = get_cached_dates(sid)
+                _fresh = _max is not None and (
+                    (_date.today() - (_max if isinstance(_max, _date)
+                     else __import__('datetime').datetime.strptime(str(_max), "%Y-%m-%d").date()))
+                    .days <= 5
+                )
+                if _fresh:
+                    cache_hits += 1
+                    status_txt.text(f"快取：{sid}（{i+1}/{total}）")
+                else:
+                    api_calls += 1
+                    status_txt.text(f"下載：{sid}（{i+1}/{total}）｜快取 {cache_hits} / API {api_calls}")
+
+                df = smart_get_price(sid, required_days=150)
                 if not df.empty:
                     price_data[sid] = df
                 if include_institutional:
                     idf = get_institutional_investors(sid, days=10)
                     if not idf.empty:
                         inst_data[sid] = check_all_three_buying(idf, days=2)
-                time.sleep(0.05)
+                if not _fresh:
+                    time.sleep(0.05)   # 只有真正呼叫 API 時才需要 rate limit
             except Exception:
                 pass
+
+        st.info(f"資料取得完成：快取命中 **{cache_hits}** 檔 / API 呼叫 **{api_calls}** 次")
 
         prog.empty()
         status_txt.empty()

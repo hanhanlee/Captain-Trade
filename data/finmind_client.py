@@ -46,9 +46,9 @@ def get_stock_list() -> pd.DataFrame:
     return df[["stock_id", "stock_name", "industry_category"]].reset_index(drop=True)
 
 
-def get_daily_price(stock_id: str, days: int = 120) -> pd.DataFrame:
-    """取得個股日K資料（預設近 120 天）"""
-    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+def get_daily_price(stock_id: str, days: int = 120, start_date: str = None) -> pd.DataFrame:
+    """取得個股日K資料（預設近 120 天，可指定 start_date 覆蓋 days）"""
+    start = start_date or (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     df = _get("TaiwanStockPrice", stock_id=stock_id, start_date=start)
     if df.empty:
         return df
@@ -74,6 +74,47 @@ def get_institutional_investors(stock_id: str, days: int = 30) -> pd.DataFrame:
     df["buy"] = pd.to_numeric(df.get("buy", 0), errors="coerce").fillna(0)
     df["sell"] = pd.to_numeric(df.get("sell", 0), errors="coerce").fillna(0)
     df["net"] = df["buy"] - df["sell"]
+    return df
+
+
+def smart_get_price(stock_id: str, required_days: int = 150) -> pd.DataFrame:
+    """
+    智慧取價：先查本機快取，只補缺少的資料
+
+    - 快取有 5 日內資料 → 直接讀快取（0 次 API）
+    - 快取有舊資料 → 只抓缺失的新資料後合併（省 90%+ API）
+    - 完全無快取 → 全部抓並存入快取
+    """
+    from db.price_cache import get_cached_dates, save_prices, load_prices
+
+    today = datetime.now().date()
+    fresh_threshold = today - timedelta(days=5)  # 涵蓋週末與假日
+    start_str = (today - timedelta(days=required_days)).strftime("%Y-%m-%d")
+
+    min_date, max_date = get_cached_dates(stock_id)
+
+    if max_date is not None:
+        max_cache = max_date if isinstance(max_date, type(today)) else \
+            datetime.strptime(str(max_date), "%Y-%m-%d").date()
+
+        # 快取夠新，直接讀
+        if max_cache >= fresh_threshold:
+            return load_prices(stock_id, start_date=start_str)
+
+        # 快取有舊資料，只抓缺失的部分
+        fetch_from = (max_cache + timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            new_df = get_daily_price(stock_id, start_date=fetch_from)
+            if not new_df.empty:
+                save_prices(stock_id, new_df)
+        except Exception:
+            pass  # 補資料失敗時，仍使用舊快取
+        return load_prices(stock_id, start_date=start_str)
+
+    # 完全無快取，全部抓
+    df = get_daily_price(stock_id, days=required_days)
+    if not df.empty:
+        save_prices(stock_id, df)
     return df
 
 
