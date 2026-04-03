@@ -36,11 +36,14 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
     return pd.DataFrame(data.get("data", []))
 
 
+STOCK_INFO_TTL_DAYS = 30  # 股票清單快取有效期（天）
+
+
 def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
     """
     取得所有上市股票清單
 
-    優先讀本機快取（每日更新一次），避免每次掃描都呼叫 API。
+    快取策略：本機快取有效期 30 天，過期自動重抓。
     force_refresh=True 強制重新抓取並更新快取。
     """
     from db.database import get_session, init_db
@@ -50,13 +53,26 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
     init_db()
 
     if not force_refresh:
-        # 先查快取，若今天已更新過就直接用
+        # 查快取，同時檢查最新更新時間是否在 TTL 內
         with get_session() as sess:
-            rows = sess.execute(text(
-                "SELECT stock_id, stock_name, industry_category FROM stock_info_cache"
+            result = sess.execute(text(
+                "SELECT stock_id, stock_name, industry_category, MAX(updated_at) as latest "
+                "FROM stock_info_cache GROUP BY stock_id"
             )).fetchall()
-        if rows:
-            return pd.DataFrame(rows, columns=["stock_id", "stock_name", "industry_category"])
+
+        if result:
+            # 取最舊的 updated_at 判斷是否過期
+            latest_str = max(r[3] for r in result if r[3])
+            try:
+                latest_dt = datetime.fromisoformat(latest_str)
+                age_days = (datetime.now() - latest_dt).days
+                if age_days <= STOCK_INFO_TTL_DAYS:
+                    return pd.DataFrame(
+                        [(r[0], r[1], r[2]) for r in result],
+                        columns=["stock_id", "stock_name", "industry_category"]
+                    )
+            except Exception:
+                pass  # 解析失敗則繼續重抓
 
     # 快取不存在或強制刷新，呼叫 API
     df = _get("TaiwanStockInfo")
