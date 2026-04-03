@@ -241,13 +241,18 @@ def run_scan(
     inst_data: dict = None,
     margin_data: dict = None,
     min_price: float = 10.0,
-    market_df: pd.DataFrame = None,  # 加權指數日K（選填，供 RS 計算）
+    min_avg_volume: int = 0,          # 最低日均量（張），0 = 不過濾
+    top_volume_n: int = 0,            # 只取前日成交量前 N 名，0 = 不限
+    market_df: pd.DataFrame = None,   # 加權指數日K（選填，供 RS 計算）
 ) -> pd.DataFrame:
     """
     執行全市場掃描，回傳通過篩選的股票排行榜
 
     欄位：stock_id, stock_name, industry, close, change_pct,
           volume_ratio, score, rs_score, signals
+
+    min_avg_volume: 近 20 日均量門檻（張），建議 1000，過濾低流動性股票
+    top_volume_n:   只掃描前日成交量排行前 N 名（與 min_avg_volume 擇一使用）
     """
     results = []
     stock_info_map = {}
@@ -266,6 +271,20 @@ def run_scan(
     if market_df is not None and not market_df.empty and "close" in market_df.columns:
         market_close = market_df["close"].reset_index(drop=True)
 
+    # ── 前日量排行前 N 名（動態過濾）──────────────────────────
+    if top_volume_n > 0:
+        vol_col_check = "Trading_Volume"
+        vol_ranks = {}
+        for sid, df in price_data.items():
+            if not df.empty and vol_col_check in df.columns:
+                prev_vol = df[vol_col_check].iloc[-1]
+                if pd.notna(prev_vol):
+                    vol_ranks[sid] = prev_vol
+        top_ids = set(
+            sorted(vol_ranks, key=vol_ranks.get, reverse=True)[:top_volume_n]
+        )
+        price_data = {sid: df for sid, df in price_data.items() if sid in top_ids}
+
     for stock_id, df in price_data.items():
         if df.empty or len(df) < 30:
             continue
@@ -273,6 +292,14 @@ def run_scan(
         close = df.iloc[-1].get("close", 0)
         if close < min_price:
             continue
+
+        # 日均量固定門檻（與 top_volume_n 擇一使用）
+        if min_avg_volume > 0 and top_volume_n == 0:
+            vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else None
+            if vol_col:
+                avg_vol_20 = df[vol_col].tail(20).mean()
+                if pd.isna(avg_vol_20) or avg_vol_20 < min_avg_volume * 1000:
+                    continue
 
         sig = analyze_stock(
             df,

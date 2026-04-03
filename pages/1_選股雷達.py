@@ -131,6 +131,27 @@ with st.sidebar:
     include_institutional = st.checkbox("納入法人買賣超（較慢）", value=False)
 
     st.markdown("---")
+    st.markdown("**流動性前置過濾**")
+    vol_filter_mode = st.radio(
+        "篩選方式",
+        ["不過濾", "前日量前 N 名（推薦）", "日均量 ≥ N 張"],
+        index=1,
+        help="先過濾低流動性股票，加快掃描速度並聚焦主流股",
+    )
+    if vol_filter_mode == "前日量前 N 名（推薦）":
+        top_volume_n = st.number_input("取前 N 名", min_value=50, max_value=500,
+                                        value=100, step=50)
+        min_avg_volume = 0
+        st.caption("💡 鎖定當天最活躍的股票，動態追蹤市場熱點")
+    elif vol_filter_mode == "日均量 ≥ N 張":
+        min_avg_volume = st.number_input("最低日均量（張）", min_value=0,
+                                          max_value=10000, value=1000, step=100)
+        top_volume_n = 0
+        st.caption("💡 日均量 > 1000 張通常對應資本額 20 億以上")
+    else:
+        min_avg_volume, top_volume_n = 0, 0
+
+    st.markdown("---")
     st.markdown("**v2 進階選項**")
     require_weekly = st.checkbox("必須週線多頭（更嚴格，結果更少）", value=False)
     min_rs = st.slider("最低相對強度 RS 分數", 0, 80, 0, 5,
@@ -199,6 +220,8 @@ with tab_scan:
                 stock_info=stock_list,
                 inst_data=inst_data if include_institutional else {},
                 min_price=min_price,
+                min_avg_volume=min_avg_volume,
+                top_volume_n=top_volume_n,
             )
 
         # 套用 v2 進階過濾
