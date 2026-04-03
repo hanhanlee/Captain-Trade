@@ -36,14 +36,52 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
     return pd.DataFrame(data.get("data", []))
 
 
-def get_stock_list() -> pd.DataFrame:
-    """取得所有上市股票清單"""
+def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
+    """
+    取得所有上市股票清單
+
+    優先讀本機快取（每日更新一次），避免每次掃描都呼叫 API。
+    force_refresh=True 強制重新抓取並更新快取。
+    """
+    from db.database import get_session, init_db
+    from db.models import StockInfoCache
+    from sqlalchemy import text
+
+    init_db()
+
+    if not force_refresh:
+        # 先查快取，若今天已更新過就直接用
+        with get_session() as sess:
+            rows = sess.execute(text(
+                "SELECT stock_id, stock_name, industry_category FROM stock_info_cache"
+            )).fetchall()
+        if rows:
+            return pd.DataFrame(rows, columns=["stock_id", "stock_name", "industry_category"])
+
+    # 快取不存在或強制刷新，呼叫 API
     df = _get("TaiwanStockInfo")
     if df.empty:
         return df
-    # 過濾普通股（排除 ETF、特別股等）
     df = df[df["type"] == "twse"].copy()
-    return df[["stock_id", "stock_name", "industry_category"]].reset_index(drop=True)
+    df = df[["stock_id", "stock_name", "industry_category"]].reset_index(drop=True)
+
+    # 更新快取（REPLACE INTO = upsert）
+    try:
+        from db.database import get_session
+        from sqlalchemy import text
+        rows = df.to_dict("records")
+        sql = text("""
+            INSERT OR REPLACE INTO stock_info_cache (stock_id, stock_name, industry_category, updated_at)
+            VALUES (:stock_id, :stock_name, :industry_category, :ts)
+        """)
+        now = datetime.now().isoformat()
+        with get_session() as sess:
+            sess.execute(sql, [{**r, "ts": now} for r in rows])
+            sess.commit()
+    except Exception:
+        pass  # 快取寫入失敗不影響功能
+
+    return df
 
 
 def get_daily_price(stock_id: str, days: int = 120, start_date: str = None) -> pd.DataFrame:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, UniqueConstraint, Boolean
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, UniqueConstraint, Boolean, Index
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
@@ -73,16 +73,30 @@ class ScanSession(Base):
 
 
 class PriceCache(Base):
-    """本機歷史價格快取（供回測使用，避免重複呼叫 API）"""
+    """本機歷史價格快取（供回測與掃描使用）"""
     __tablename__ = "price_cache"
-    __table_args__ = (UniqueConstraint("stock_id", "date", name="uq_stock_date"),)
+    __table_args__ = (
+        UniqueConstraint("stock_id", "date", name="uq_stock_date"),
+        # 複合索引：幾乎所有查詢都同時用 stock_id + date 過濾
+        Index("idx_price_stock_date", "stock_id", "date"),
+    )
 
     id = Column(Integer, primary_key=True)
-    stock_id = Column(String(10), nullable=False, index=True)
-    date = Column(Date, nullable=False, index=True)
+    stock_id = Column(String(10), nullable=False)
+    date = Column(Date, nullable=False)
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)
+    updated_at = Column(DateTime, default=datetime.now)
+
+
+class StockInfoCache(Base):
+    """股票基本資料快取（股票清單，避免每次掃描都呼叫 API）"""
+    __tablename__ = "stock_info_cache"
+
+    stock_id = Column(String(10), primary_key=True)
+    stock_name = Column(String(50))
+    industry_category = Column(String(50))
     updated_at = Column(DateTime, default=datetime.now)
