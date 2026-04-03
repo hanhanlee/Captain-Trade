@@ -167,14 +167,19 @@ class PrefetchWorker:
         if not self._stop_event.is_set():
             logger.info("429 暫停結束，繼續抓取")
 
-    def _get_stale_stocks(self) -> list[str]:
+    def _get_stale_stocks(self) -> tuple[list[str], list[str]]:
+        """
+        回傳兩個清單：
+          needs_update — 真正需要更新的（無快取 + 快取過期），用於 queue_size 顯示
+          full_queue   — needs_update + 新鮮的（定期巡迴），用於實際抓取迴圈
+        """
         try:
             from data.finmind_client import get_stock_list
             from db.price_cache import get_cache_summary
 
             all_stocks_df = get_stock_list()
             if all_stocks_df.empty:
-                return []
+                return [], []
             all_ids = set(all_stocks_df["stock_id"].tolist())
 
             summary = get_cache_summary()
@@ -192,10 +197,13 @@ class PrefetchWorker:
             missing = sorted(all_ids - cached_ids)
             stale   = sorted(stale_ids - set(missing))
             fresh   = sorted(all_ids - set(missing) - stale_ids)
-            return missing + stale + fresh
+
+            needs_update = missing + stale
+            full_queue   = missing + stale + fresh
+            return needs_update, full_queue
         except Exception as e:
             logger.warning(f"取得待抓清單失敗：{e}")
-            return []
+            return [], []
 
     # 回傳值：'ok'=成功抓取, 'cached'=快取新鮮跳過, 'rate_limit'=429, 'error'=其他錯誤
     def _fetch_one(self, stock_id: str) -> str:
@@ -230,18 +238,18 @@ class PrefetchWorker:
                     self._stop_event.wait(60)
                     continue
 
-            # 取得待抓清單
-            queue = self._get_stale_stocks()
-            self.queue_size = len(queue)
+            # 取得待抓清單（needs_update 用於顯示，full_queue 用於實際抓取）
+            needs_update, full_queue = self._get_stale_stocks()
+            self.queue_size = len(needs_update)
 
-            if not queue:
+            if not full_queue:
                 logger.info("所有股票快取皆為最新，等待 30 分鐘")
                 self._stop_event.wait(1800)
                 continue
 
             # 逐檔抓取
             hit_rate_limit = False
-            for stock_id in queue:
+            for stock_id in full_queue:
                 if self._stop_event.is_set():
                     break
                 if not self.rebuild_mode and self._hour_count() >= self._current_hourly_limit():
@@ -253,11 +261,13 @@ class PrefetchWorker:
                 if result == "ok":
                     self._record_request()
                     self.last_fetch_at = datetime.now()
-                    logger.debug(f"已抓 {stock_id}，本小時 {self.hour_fetched}/{limit}")
+                    # 若該股原本在待更新清單，完成後遞減計數
+                    if stock_id in needs_update:
+                        self.queue_size = max(0, self.queue_size - 1)
+                    logger.debug(f"已抓 {stock_id}，本小時 {self.hour_fetched}，待更新 {self.queue_size}")
                     self._stop_event.wait(FETCH_INTERVAL_SEC)
 
                 elif result == "rate_limit":
-                    # 遇到 429，整體暫停，不繼續嘗試其他股票
                     hit_rate_limit = True
                     break
 
