@@ -22,11 +22,13 @@ from collections import deque
 logger = logging.getLogger(__name__)
 
 # ── 可調整參數 ─────────────────────────────────────────────────
-HOURLY_LIMIT_OFFPEAK  = 500   # 非交易時間每小時上限
-HOURLY_LIMIT_TRADING  = 100   # 交易時間每小時上限
-FETCH_INTERVAL_SEC    = 7     # 每次請求最短間隔（秒）≈ 514 次/小時
-STALE_DAYS            = 5     # 快取幾天未更新視為過期
-RATE_LIMIT_PAUSE_MIN  = 20    # 遇到 429 後暫停幾分鐘
+HOURLY_LIMIT_OFFPEAK      = 500   # 非交易時間每小時上限
+HOURLY_LIMIT_TRADING      = 100   # 交易時間每小時上限
+FETCH_INTERVAL_SEC        = 6.1   # 正常模式每次請求間隔（秒）≈ 590 次/小時
+FETCH_INTERVAL_REBUILD    = 2.0   # 重建模式間隔（秒）；讓 429 來當剎車
+STALE_DAYS                = 5     # 快取幾天未更新視為過期
+RATE_LIMIT_PAUSE_MIN      = 20    # 遇到 429 後暫停幾分鐘（一般模式）
+PREFETCH_DAYS             = 400   # 預抓天數（涵蓋回測需求：365天 + 60天指標暖身）
 
 
 def _is_429(exc: Exception) -> bool:
@@ -218,7 +220,7 @@ class PrefetchWorker:
                 if (date.today() - max_date).days <= STALE_DAYS:
                     return "cached"
 
-            smart_get_price(stock_id, required_days=150)
+            smart_get_price(stock_id, required_days=PREFETCH_DAYS)
             return "ok"
         except Exception as e:
             if _is_429(e):
@@ -240,6 +242,7 @@ class PrefetchWorker:
 
             # 取得待抓清單（needs_update 用於顯示，full_queue 用於實際抓取）
             needs_update, full_queue = self._get_stale_stocks()
+            needs_update_set = set(needs_update)
             self.queue_size = len(needs_update)
 
             if not full_queue:
@@ -262,10 +265,11 @@ class PrefetchWorker:
                     self._record_request()
                     self.last_fetch_at = datetime.now()
                     # 若該股原本在待更新清單，完成後遞減計數
-                    if stock_id in needs_update:
+                    if stock_id in needs_update_set:
                         self.queue_size = max(0, self.queue_size - 1)
                     logger.debug(f"已抓 {stock_id}，本小時 {self.hour_fetched}，待更新 {self.queue_size}")
-                    self._stop_event.wait(FETCH_INTERVAL_SEC)
+                    interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
+                    self._stop_event.wait(interval)
 
                 elif result == "rate_limit":
                     hit_rate_limit = True
