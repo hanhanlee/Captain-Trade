@@ -235,6 +235,48 @@ def analyze_stock(
     return sig
 
 
+def get_top_sector_ids(
+    price_data: dict,
+    stock_info_map: dict,
+    top_n: int = 3,
+    lookback: int = 5,
+) -> tuple[set, dict]:
+    """
+    計算近 lookback 個交易日各產業平均漲幅，回傳前 top_n 產業的股票 ID 集合
+
+    回傳：(qualifying_stock_ids, sector_return_dict)
+    sector_return_dict 格式：{industry: {"return_pct": float, "stock_count": int}}
+    """
+    sector_returns: dict = {}
+    for stock_id, df in price_data.items():
+        if len(df) < lookback + 1:
+            continue
+        industry = stock_info_map.get(stock_id, {}).get("industry_category", "")
+        if not industry:
+            continue
+        past_close = df["close"].iloc[-(lookback + 1)]
+        curr_close = df["close"].iloc[-1]
+        if pd.isna(past_close) or past_close <= 0:
+            continue
+        ret = (curr_close - past_close) / past_close * 100
+        if industry not in sector_returns:
+            sector_returns[industry] = []
+        sector_returns[industry].append(ret)
+
+    sector_avg = {
+        ind: {"return_pct": round(sum(rets) / len(rets), 2), "stock_count": len(rets)}
+        for ind, rets in sector_returns.items() if rets
+    }
+    top_industries = set(
+        sorted(sector_avg, key=lambda x: sector_avg[x]["return_pct"], reverse=True)[:top_n]
+    )
+    qualifying_ids = {
+        sid for sid in price_data
+        if stock_info_map.get(sid, {}).get("industry_category", "") in top_industries
+    }
+    return qualifying_ids, sector_avg
+
+
 def run_scan(
     price_data: dict,
     stock_info: pd.DataFrame,
@@ -243,18 +285,19 @@ def run_scan(
     min_price: float = 10.0,
     min_avg_volume: int = 0,          # 最低日均量（張），0 = 不過濾
     top_volume_n: int = 0,            # 只取前日成交量前 N 名，0 = 不限
+    top_sector_n: int = 0,            # 只掃描近 5 日漲幅前 N 個產業，0 = 不限
     market_df: pd.DataFrame = None,   # 加權指數日K（選填，供 RS 計算）
-) -> pd.DataFrame:
+) -> tuple:
     """
-    執行全市場掃描，回傳通過篩選的股票排行榜
+    執行全市場掃描，回傳 (result_df, sector_info)
 
-    欄位：stock_id, stock_name, industry, close, change_pct,
-          volume_ratio, score, rs_score, signals
-
-    min_avg_volume: 近 20 日均量門檻（張），建議 1000，過濾低流動性股票
-    top_volume_n:   只掃描前日成交量排行前 N 名（與 min_avg_volume 擇一使用）
+    result_df 欄位：stock_id, stock_name, industry, close, change_pct,
+                    volume_ratio, score, rs_score, signals
+    sector_info：當 top_sector_n > 0 時，回傳各產業漲幅排行 dict；否則為 {}
     """
     results = []
+    sector_info = {}
+
     stock_info_map = {}
     if not stock_info.empty:
         stock_info_map = (
@@ -273,17 +316,24 @@ def run_scan(
 
     # ── 前日量排行前 N 名（動態過濾）──────────────────────────
     if top_volume_n > 0:
-        vol_col_check = "Trading_Volume"
         vol_ranks = {}
         for sid, df in price_data.items():
-            if not df.empty and vol_col_check in df.columns:
-                prev_vol = df[vol_col_check].iloc[-1]
+            if not df.empty and "Trading_Volume" in df.columns:
+                prev_vol = df["Trading_Volume"].iloc[-1]
                 if pd.notna(prev_vol):
                     vol_ranks[sid] = prev_vol
         top_ids = set(
             sorted(vol_ranks, key=vol_ranks.get, reverse=True)[:top_volume_n]
         )
         price_data = {sid: df for sid, df in price_data.items() if sid in top_ids}
+
+    # ── 近 5 日漲幅前 N 個產業過濾 ────────────────────────────
+    if top_sector_n > 0:
+        qualifying_ids, sector_avg = get_top_sector_ids(
+            price_data, stock_info_map, top_n=top_sector_n, lookback=5
+        )
+        price_data = {sid: df for sid, df in price_data.items() if sid in qualifying_ids}
+        sector_info = sector_avg
 
     for stock_id, df in price_data.items():
         if df.empty or len(df) < 30:
@@ -332,9 +382,12 @@ def run_scan(
         })
 
     if not results:
-        return pd.DataFrame()
+        return pd.DataFrame(), sector_info
 
-    return pd.DataFrame(results).sort_values("score", ascending=False).reset_index(drop=True)
+    return (
+        pd.DataFrame(results).sort_values("score", ascending=False).reset_index(drop=True),
+        sector_info,
+    )
 
 
 def sector_analysis(result_df: pd.DataFrame) -> pd.DataFrame:

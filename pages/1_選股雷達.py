@@ -152,6 +152,16 @@ with st.sidebar:
         min_avg_volume, top_volume_n = 0, 0
 
     st.markdown("---")
+    st.markdown("**產業輪動過濾**")
+    use_sector_filter = st.checkbox("只掃描近一週漲幅前 N 類股", value=False,
+                                     help="自動算出哪些產業最強，只在那幾個產業裡選股")
+    top_sector_n = 0
+    if use_sector_filter:
+        top_sector_n = st.number_input("取前 N 個產業", min_value=1, max_value=10,
+                                        value=3, step=1)
+        st.caption("💡 資金正在流入的產業，勝率更高")
+
+    st.markdown("---")
     st.markdown("**v2 進階選項**")
     require_weekly = st.checkbox("必須週線多頭（更嚴格，結果更少）", value=False)
     min_rs = st.slider("最低相對強度 RS 分數", 0, 80, 0, 5,
@@ -215,14 +225,23 @@ with tab_scan:
         status_txt.empty()
 
         with st.spinner("計算指標，篩選中..."):
-            result_df = run_scan(
+            result_df, sector_info = run_scan(
                 price_data=price_data,
                 stock_info=stock_list,
                 inst_data=inst_data if include_institutional else {},
                 min_price=min_price,
                 min_avg_volume=min_avg_volume,
                 top_volume_n=top_volume_n,
+                top_sector_n=top_sector_n,
             )
+
+        # 顯示產業輪動過濾結果
+        if sector_info and top_sector_n > 0:
+            top_inds = sorted(sector_info, key=lambda x: sector_info[x]["return_pct"], reverse=True)[:top_sector_n]
+            ind_tags = "　".join(
+                [f"**{ind}** ({sector_info[ind]['return_pct']:+.1f}%)" for ind in top_inds]
+            )
+            st.info(f"📊 本次鎖定產業（近 5 日漲幅前 {top_sector_n} 名）：{ind_tags}")
 
         # 套用 v2 進階過濾
         if not result_df.empty:
