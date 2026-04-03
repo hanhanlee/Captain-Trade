@@ -128,19 +128,40 @@ class PrefetchWorker:
         self.hour_fetched = len(self._hour_window)
         self.total_fetched += 1
 
+    def _next_hour_seconds(self) -> int:
+        """計算距離下一個整點還有幾秒（加 61 秒緩衝）"""
+        now = datetime.now()
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return int((next_hour - now).total_seconds()) + 61
+
     def _pause_for_rate_limit(self):
-        """遇到 429：記錄次數、設定暫停時間、等待（可被手動恢復打斷）"""
+        """
+        遇到 429：
+        - 一般模式：暫停固定 RATE_LIMIT_PAUSE_MIN 分鐘
+        - 重建模式：等到下一個整點（FinMind 重置時間）+ 61 秒緩衝
+          確保跨整點後立即恢復，不浪費任何配額
+        """
         self.rate_limit_count += 1
-        self.paused_until = datetime.now() + timedelta(minutes=RATE_LIMIT_PAUSE_MIN)
-        resume_at_str = self.paused_until.strftime("%H:%M:%S")
-        logger.warning(
-            f"收到 429，第 {self.rate_limit_count} 次限額，"
-            f"暫停 {RATE_LIMIT_PAUSE_MIN} 分鐘至 {resume_at_str}"
-        )
+
+        if self.rebuild_mode:
+            wait_sec = self._next_hour_seconds()
+            self.paused_until = datetime.now() + timedelta(seconds=wait_sec)
+            resume_at_str = self.paused_until.strftime("%H:%M:%S")
+            logger.warning(
+                f"[重建模式] 收到 429（第 {self.rate_limit_count} 次），"
+                f"等待至下一整點 {resume_at_str}（{wait_sec//60} 分 {wait_sec%60} 秒後）"
+            )
+        else:
+            wait_sec = RATE_LIMIT_PAUSE_MIN * 60
+            self.paused_until = datetime.now() + timedelta(seconds=wait_sec)
+            resume_at_str = self.paused_until.strftime("%H:%M:%S")
+            logger.warning(
+                f"收到 429，第 {self.rate_limit_count} 次限額，"
+                f"暫停 {RATE_LIMIT_PAUSE_MIN} 分鐘至 {resume_at_str}"
+            )
 
         self._resume_event.clear()
-        # 等待 20 分鐘，或等到手動 resume() / stop() 被呼叫
-        self._resume_event.wait(timeout=RATE_LIMIT_PAUSE_MIN * 60)
+        self._resume_event.wait(timeout=wait_sec)
 
         self.paused_until = None
         if not self._stop_event.is_set():
@@ -201,12 +222,13 @@ class PrefetchWorker:
         logger.info("PrefetchWorker 迴圈開始")
         while not self._stop_event.is_set():
 
-            # 檢查小時配額（滑動視窗）
-            used = self._hour_count()
-            limit = self._current_hourly_limit()
-            if used >= limit:
-                self._stop_event.wait(60)
-                continue
+            # 重建模式：跳過內部計數器，讓 API 的 429 來當限制
+            if not self.rebuild_mode:
+                used = self._hour_count()
+                limit = self._current_hourly_limit()
+                if used >= limit:
+                    self._stop_event.wait(60)
+                    continue
 
             # 取得待抓清單
             queue = self._get_stale_stocks()
@@ -222,7 +244,7 @@ class PrefetchWorker:
             for stock_id in queue:
                 if self._stop_event.is_set():
                     break
-                if self._hour_count() >= self._current_hourly_limit():
+                if not self.rebuild_mode and self._hour_count() >= self._current_hourly_limit():
                     break
 
                 self.current_stock = stock_id
