@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests md2notion notion-client
+          pip install requests
 
       - name: Run sync script
         env:
