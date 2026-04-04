@@ -455,7 +455,8 @@ with tab_chart:
         else:
             with st.spinner(f"下載 {target}..."):
                 try:
-                    df = get_daily_price(target, days=150)
+                    from data.finmind_client import smart_get_price
+                    df = smart_get_price(target, required_days=150)
                     if df.empty:
                         st.warning("找不到此股票")
                         df = None
