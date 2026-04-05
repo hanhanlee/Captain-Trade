@@ -30,6 +30,22 @@ SessionLocal = sessionmaker(bind=ENGINE)
 
 def init_db():
     Base.metadata.create_all(ENGINE)
+    _migrate_schema()
+
+
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    return any(r[1] == column_name for r in rows)
+
+
+def _migrate_schema():
+    """輕量 schema migration，確保舊 DB 可相容新版欄位。"""
+    with ENGINE.begin() as conn:
+        if _column_exists(conn, "portfolio", "note") and not _column_exists(conn, "portfolio", "notes"):
+            conn.execute(text("ALTER TABLE portfolio ADD COLUMN notes TEXT"))
+            conn.execute(text("UPDATE portfolio SET notes = note WHERE notes IS NULL AND note IS NOT NULL"))
+        elif _column_exists(conn, "portfolio", "note") and _column_exists(conn, "portfolio", "notes"):
+            conn.execute(text("UPDATE portfolio SET notes = note WHERE (notes IS NULL OR notes = '') AND note IS NOT NULL"))
 
 
 def vacuum_db():

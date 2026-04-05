@@ -92,7 +92,15 @@ else:
     s = worker.status()
 
     # ── 狀態指示燈 ────────────────────────────────────────────
-    if s.get("rebuild_mode"):
+    if s.get("backtest_rebuild_mode"):
+        bt_queue = s.get("backtest_queue_size", 0)
+        bt_initial = s.get("backtest_initial_queue_size", 0)
+        done = max(bt_initial - bt_queue, 0) if bt_initial > 0 else 0
+        st.warning(
+            "🟠 **回測歷史重建模式啟動中** — 正在補抓全市場 10 年歷史資料。  \n"
+            f"目前進度：**{done} / {bt_initial or '—'} 檔**，待處理 **{bt_queue} 檔**。"
+        )
+    elif s.get("rebuild_mode"):
         st.error(
             "🔴 **全速重建模式啟動中** — API 額度全開（600次/小時），"
             "請勿進行選股掃描等手動操作，避免額度衝突。"
@@ -118,24 +126,44 @@ else:
     c2.metric("本小時剩餘", f"{s['hourly_remaining']} 次")
     c3.metric("✅ 累計已抓", f"{s['total_fetched']} 次",
               help="只要這個數字在增加，工作器就在正常運作")
-    c4.metric("待更新股票", f"{s['queue_size']} 檔",
-              help="無快取 + 快取超過 5 天（已排除無資料股票）")
+    if s.get("backtest_rebuild_mode"):
+        c4.metric("回測待補股票", f"{s.get('backtest_queue_size', 0)} 檔",
+                  help="歷史深度不足 10 年、需要補抓回測資料的股票數")
+    else:
+        c4.metric("待更新股票", f"{s['queue_size']} 檔",
+                  help="無快取 + 快取超過 5 天（已排除無資料股票）")
     c5.metric("正在抓取", s["current_stock"] or "—")
     c6.metric("⏭ 略過（無資料）", s.get("skip_count", 0),
               help="FinMind 無價格資料的股票（權證、下市股等），已從清單移除不再重試")
     c7.metric("遇到 429 次數", s.get("rate_limit_count", 0))
 
     # ── 進度條（用初始待更新數量當固定分母，避免分母跟著長）──────
-    initial_q = s.get("initial_queue_size", 0)
-    fetched   = s["total_fetched"]
-    if initial_q > 0:
-        progress = min(fetched / initial_q, 1.0)
-        st.progress(progress, text=f"本次啟動進度：已完成 {fetched} / {initial_q} 檔（{progress*100:.1f}%）")
+    if s.get("backtest_rebuild_mode"):
+        bt_initial = s.get("backtest_initial_queue_size", 0)
+        bt_queue = s.get("backtest_queue_size", 0)
+        if bt_initial > 0:
+            bt_done = max(bt_initial - bt_queue, 0)
+            bt_progress = min(bt_done / bt_initial, 1.0)
+            st.progress(
+                bt_progress,
+                text=f"回測歷史重建進度：已完成 {bt_done} / {bt_initial} 檔（{bt_progress*100:.1f}%）"
+            )
+        else:
+            st.info("正在建立回測重建清單，首次統計可能需要幾秒鐘。")
+    elif s.get("rebuild_mode"):
+        initial_q = s.get("initial_queue_size", 0)
+        remain_q = s.get("queue_size", 0)
+        if initial_q > 0:
+            done_q = max(initial_q - remain_q, 0)
+            progress = min(done_q / initial_q, 1.0)
+            st.progress(progress, text=f"全速重建進度：已完成 {done_q} / {initial_q} 檔（{progress*100:.1f}%）")
 
     if s["last_fetch_at"]:
         elapsed = int((datetime.now() - s["last_fetch_at"]).total_seconds())
         elapsed_str = f"{elapsed} 秒前" if elapsed < 60 else f"{elapsed//60} 分鐘前"
         st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%H:%M:%S')}（{elapsed_str}）")
+    elif s.get("backtest_rebuild_mode"):
+        st.caption("回測重建已啟動，等待第一筆資料抓取中。")
 
     # ── 控制按鈕 ──────────────────────────────────────────────
     is_paused = s.get("pause_remaining_sec", 0) > 0
@@ -157,15 +185,32 @@ else:
     if col_refresh.button("🔄 重新整理", use_container_width=True):
         st.rerun()
 
-    st.markdown("""
-    **工作器說明：**
-    - App 啟動時自動開始，不需手動啟動
-    - **非交易時間**（15:05–隔日 09:00）：每小時最多 500 次，7 秒抓一檔
-    - **交易時間**（09:00–15:05）：每小時上限降為 100 次，優先保留給手動掃描
-    - 快取仍新鮮的股票（5 天內）自動跳過，不消耗額度
-    - **遇到 429**：整體暫停 20 分鐘，暫停期間可按「⚡ 立即恢復」提前繼續
-    - FinMind 免費帳號：600 次/小時（註冊會員）
-    """)
+    if s.get("backtest_rebuild_mode"):
+        st.markdown("""
+        **回測重建觀察重點：**
+        - 看「回測待補股票」是否持續下降
+        - 看「正在抓取」是否持續變化（會顯示 `[回測] 股票代碼`）
+        - 看「最近一次抓取」時間是否持續更新
+        - 若遇到 429，頁面上方會顯示暫停倒數，可按「⚡ 立即恢復」提前繼續
+        """)
+    elif s.get("rebuild_mode"):
+        st.markdown("""
+        **全速重建觀察重點：**
+        - 看「待更新股票」是否持續下降
+        - 看「正在抓取」是否持續變化（會顯示 `[重建]` 或股票代碼）
+        - 看「最近一次抓取」時間是否持續更新
+        - 若遇到 429，頁面上方會顯示暫停倒數，可按「⚡ 立即恢復」提前繼續
+        """)
+    else:
+        st.markdown("""
+        **工作器說明：**
+        - App 啟動時自動開始，不需手動啟動
+        - **非交易時間**（15:05–隔日 09:00）：每小時最多 500 次，7 秒抓一檔
+        - **交易時間**（09:00–15:05）：每小時上限降為 100 次，優先保留給手動掃描
+        - 快取仍新鮮的股票（5 天內）自動跳過，不消耗額度
+        - **遇到 429**：整體暫停 20 分鐘，暫停期間可按「⚡ 立即恢復」提前繼續
+        - FinMind 免費帳號：600 次/小時（註冊會員）
+        """)
 
     st.markdown("---")
 
@@ -284,6 +329,8 @@ else:
                 st.session_state.bt_rebuild_confirm = False
                 if not worker.running:
                     worker.start()
+                if hasattr(worker, "resume"):
+                    worker.resume()   # 清除既有 429 暫停，立即開始回測重建
                 if hasattr(worker, "enable_backtest_rebuild_mode"):
                     worker.enable_backtest_rebuild_mode()
                 st.rerun()

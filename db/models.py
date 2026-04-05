@@ -12,12 +12,13 @@ class Portfolio(Base):
     id = Column(Integer, primary_key=True)
     stock_id = Column(String(10), nullable=False)
     stock_name = Column(String(50))
-    shares = Column(Integer, nullable=False)       # 持有張數
+    shares = Column(Integer, nullable=False)       # 持有股數（支援零股）
     cost_price = Column(Float, nullable=False)     # 成本價
     buy_date = Column(Date)
     stop_loss = Column(Float)                      # 停損價
     take_profit = Column(Float)                    # 停利價
-    note = Column(Text)
+    note = Column(Text)                            # 舊版欄位，保留相容
+    notes = Column(Text)                           # 新版標準欄位
     created_at = Column(DateTime, default=datetime.now)
 
 

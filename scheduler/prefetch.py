@@ -75,6 +75,7 @@ class PrefetchWorker:
         self.initial_queue_size: int = 0         # 本次啟動時的初始待更新數量（進度條分母）
         self._skip_stocks: set = set()           # 無資料或抓了也不更新的股票，永久跳過
         self._resume_event = threading.Event()
+        self._wake_event = threading.Event()     # 模式切換 / 手動操作時喚醒背景迴圈
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -83,8 +84,10 @@ class PrefetchWorker:
     def start(self):
         """啟動背景執行緒（已在跑則無操作）"""
         if self._thread and self._thread.is_alive():
+            self._wake_event.set()
             return
         self._stop_event.clear()
+        self._wake_event.set()
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="prefetch-worker"
         )
@@ -96,6 +99,7 @@ class PrefetchWorker:
         """要求背景執行緒停止"""
         self._stop_event.set()
         self._resume_event.set()   # 喚醒可能正在暫停的執行緒
+        self._wake_event.set()
         self.running = False
         logger.info("PrefetchWorker 已要求停止")
 
@@ -103,16 +107,24 @@ class PrefetchWorker:
         """手動提前恢復（清除 429 暫停）"""
         self.paused_until = None
         self._resume_event.set()
+        self._wake_event.set()
         logger.info("PrefetchWorker 手動恢復")
 
     def enable_rebuild_mode(self):
         """啟用全速重建模式：額度開放至 600 次/小時，不受交易時間限制"""
         self.rebuild_mode = True
+        self.rebuild_completed_at = None
+        self.initial_queue_size = 0
+        self.current_stock = "[重建] 建立清單中"
+        self._wake_event.set()
         logger.info("PrefetchWorker 進入全速重建模式（600次/小時）")
 
     def disable_rebuild_mode(self):
         """停止重建模式，恢復正常限速"""
         self.rebuild_mode = False
+        if self.current_stock.startswith("[重建]"):
+            self.current_stock = ""
+        self._wake_event.set()
         logger.info("PrefetchWorker 退出重建模式，恢復正常限速")
 
     def enable_backtest_rebuild_mode(self):
@@ -120,12 +132,32 @@ class PrefetchWorker:
         self.backtest_rebuild_mode = True
         self.backtest_completed_at = None
         self.backtest_initial_queue_size = 0
+        self.backtest_queue_size = 0
+        self.current_stock = "[回測] 建立清單中"
+        self._wake_event.set()
         logger.info(f"PrefetchWorker 進入回測重建模式（{BACKTEST_PREFETCH_YEARS} 年歷史）")
 
     def disable_backtest_rebuild_mode(self):
         """停止回測重建模式"""
         self.backtest_rebuild_mode = False
+        if self.current_stock.startswith("[回測]"):
+            self.current_stock = ""
+        self._wake_event.set()
         logger.info("PrefetchWorker 退出回測重建模式")
+
+    def _wait_with_wake(self, seconds: float):
+        """
+        可被模式切換提前喚醒的等待。
+        用於一般輪詢 / 間隔等待，避免工作器在 idle 時對新模式無感。
+        """
+        deadline = time.time() + max(seconds, 0)
+        while not self._stop_event.is_set():
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            if self._wake_event.wait(timeout=min(remaining, 1.0)):
+                self._wake_event.clear()
+                return
 
     # ── 私有方法 ───────────────────────────────────────────────
 
@@ -361,7 +393,7 @@ class PrefetchWorker:
                 used = self._hour_count()
                 limit = self._current_hourly_limit()
                 if used >= limit:
-                    self._stop_event.wait(60)
+                    self._wait_with_wake(60)
                     continue
 
             # ── 回測深度歷史重建模式：優先於一般價格抓取 ─────────────
@@ -393,7 +425,7 @@ class PrefetchWorker:
                             f"回測歷史已抓 {stock_id}，本小時 {self.hour_fetched}，"
                             f"剩餘 {self.backtest_queue_size}"
                         )
-                        self._stop_event.wait(FETCH_INTERVAL_REBUILD)
+                        self._wait_with_wake(FETCH_INTERVAL_REBUILD)
                     elif result == "no_update":
                         self._skip_stocks.add(stock_id)
                         self.backtest_queue_size = max(0, self.backtest_queue_size - 1)
@@ -406,7 +438,7 @@ class PrefetchWorker:
                 if hit_rate_limit and not self._stop_event.is_set():
                     self._pause_for_rate_limit()
                 else:
-                    self._stop_event.wait(5)
+                    self._wait_with_wake(5)
                 continue
 
             # ── 一般模式：抓取近期價格資料 ─────────────────────────
@@ -430,7 +462,7 @@ class PrefetchWorker:
                 self.fund_queue_size = len(fund_ids)
                 if not fund_ids:
                     logger.info("所有快取（價格+基本面）皆為最新，等待 30 分鐘")
-                    self._stop_event.wait(1800)
+                    self._wait_with_wake(1800)
                 else:
                     logger.info(f"價格快取完成，開始填充基本面快取（{len(fund_ids)} 檔）")
                     fund_hit_rate_limit = False
@@ -447,7 +479,7 @@ class PrefetchWorker:
                             self.fund_queue_size = max(0, self.fund_queue_size - 1)
                             logger.debug(f"基本面已抓 {stock_id}，本小時 {self.hour_fetched}，剩餘 {self.fund_queue_size}")
                             interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
-                            self._stop_event.wait(interval)
+                            self._wait_with_wake(interval)
                         elif result == "rate_limit":
                             fund_hit_rate_limit = True
                             break
@@ -476,7 +508,7 @@ class PrefetchWorker:
                         self.queue_size = max(0, self.queue_size - 1)
                     logger.debug(f"已抓 {stock_id}，本小時 {self.hour_fetched}，待更新 {self.queue_size}")
                     interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
-                    self._stop_event.wait(interval)
+                    self._wait_with_wake(interval)
 
                 elif result == "no_update":
                     # 無資料可存，加入永久跳過名單，不再浪費 API 額度
@@ -495,7 +527,7 @@ class PrefetchWorker:
             if hit_rate_limit and not self._stop_event.is_set():
                 self._pause_for_rate_limit()
             else:
-                self._stop_event.wait(5)
+                self._wait_with_wake(5)
 
         self.running = False
         logger.info("PrefetchWorker 迴圈結束")

@@ -48,7 +48,7 @@ def calc_holding_stats(holding: dict, df: pd.DataFrame) -> dict:
     cost = holding["cost_price"]
     shares = holding["shares"]
 
-    pnl = (close - cost) * shares * 1000        # 每張 1000 股
+    pnl = (close - cost) * shares               # shares 已統一為股數
     pnl_pct = (close - cost) / cost * 100
 
     # 近 60 日最高點（從持有以來高點估算）
