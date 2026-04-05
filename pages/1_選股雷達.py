@@ -257,6 +257,24 @@ with st.sidebar:
                        help="0 = 不限制；60 以上 = 強勢股")
 
     st.markdown("---")
+    st.markdown("**🌡️ 過熱股防護機制**")
+    max_bias_ratio = st.slider(
+        "最大容許乖離率 (%)",
+        min_value=5.0,
+        max_value=30.0,
+        value=15.0,
+        step=0.5,
+        help="月線乖離率 = (收盤價 - MA20) / MA20 × 100%。超過門檻代表短線漲幅過大。",
+    )
+    overheat_action_label = st.radio(
+        "超過門檻時的處置方式",
+        options=["直接剔除（不入選候選清單）", "扣分懲罰（總強度分數扣減 10 分）"],
+        index=0,
+        help="直接剔除較保守；扣分可保留強勢但過熱的標的供人工觀察。",
+    )
+    overheat_action = "drop" if overheat_action_label.startswith("直接剔除") else "penalty"
+
+    st.markdown("---")
     st.markdown("**📊 基本面過濾（財報品質篩選）**")
     use_fundamental = st.checkbox(
         "啟用基本面過濾",
@@ -443,6 +461,8 @@ with tab_scan:
                 hp_density_threshold=hp_density_threshold,
                 use_turnover_ratio=use_turnover_ratio,
                 turnover_top_n=turnover_top_n,
+                max_bias_ratio=float(max_bias_ratio),
+                overheat_action=overheat_action,
                 debug=True,
             )
             st.session_state["debug_info"] = debug_info
@@ -528,7 +548,7 @@ with tab_scan:
         display_df = result_df.rename(columns={
             "stock_id": "代碼", "stock_name": "名稱", "industry": "產業",
             "close": "收盤", "change_pct": "漲跌%", "volume_ratio": "量比",
-            "score": "強度分數", "rs_score": "RS分數", "signals": "觸發條件",
+            "score": "強度分數", "rs_score": "RS分數", "bias_ratio": "乖離率(%)", "signals": "觸發條件",
         })
         display_df.index = range(1, len(display_df) + 1)
 

@@ -36,6 +36,7 @@ class ScanSignal:
     macd_cross: bool = False
     rsi_healthy: bool = False
     above_bb_lower: bool = False
+    ma20_bias_ratio: float = 0.0      # 月線乖離率（%）
     # ── 籌碼面條件 ────────────────────────────────
     institutional_buy: bool = False    # 嚴格模式：所選法人各自連續買超
     inst_total_buy: bool = False       # 合計模式：三大法人合計淨買超
@@ -117,6 +118,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ma10"] = sma(close, 10)
     df["ma20"] = sma(close, 20)
     df["ma60"] = sma(close, 60)
+    # 月線乖離率：衡量收盤價偏離 MA20 的幅度，避免追價買進過熱股
+    df["ma20_bias_ratio"] = ((close - df["ma20"]) / df["ma20"] * 100).round(2)
 
     df["rsi14"] = rsi(close, 14)
 
@@ -162,6 +165,8 @@ def analyze_stock(
     # 1. 站上 MA20
     if pd.notna(latest["ma20"]) and latest["close"] > latest["ma20"]:
         sig.above_ma20 = True
+    if pd.notna(latest.get("ma20_bias_ratio")):
+        sig.ma20_bias_ratio = float(latest["ma20_bias_ratio"])
 
     # 2. MA20 向上（今日 > 5 日前）
     if len(df) >= 6:
@@ -455,6 +460,8 @@ def run_scan(
     hp_density_threshold: float = 0.30,  # 族群創高比例門檻
     use_turnover_ratio: bool = False,  # 資金流向比重偵測
     turnover_top_n: int = 5,          # 資金前幾大族群
+    max_bias_ratio: float = 15.0,     # 最大容許月線乖離率（%）
+    overheat_action: str = "drop",    # "drop" | "penalty"
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:
     """
@@ -620,6 +627,11 @@ def run_scan(
         if sig is None or not sig.passes_basic():
             continue
 
+        # 過熱股防護：月線乖離率超過門檻時，依設定直接剔除或扣分
+        is_overheated = pd.notna(sig.ma20_bias_ratio) and sig.ma20_bias_ratio > max_bias_ratio
+        if is_overheated and overheat_action == "drop":
+            continue
+
         prev_close = df.iloc[-2]["close"] if len(df) >= 2 else close
         change_pct = round((close - prev_close) / prev_close * 100, 2) if prev_close else 0
 
@@ -628,6 +640,10 @@ def run_scan(
         vol_ma5 = df[vol_col].rolling(5).mean().iloc[-1] if vol_col else 0
         volume_ratio = round(vol_now / vol_ma5, 2) if vol_ma5 and vol_ma5 > 0 else 0
 
+        final_score = sig.score()
+        if is_overheated and overheat_action == "penalty":
+            final_score = max(final_score - 10, 0)
+
         results.append({
             "stock_id": stock_id,
             "stock_name": info.get("stock_name", ""),
@@ -635,8 +651,10 @@ def run_scan(
             "close": close,
             "change_pct": change_pct,
             "volume_ratio": volume_ratio,
-            "score": sig.score(),
+            "score": round(final_score, 1),
             "rs_score": sig.rs_score,
+            "bias_ratio": round(sig.ma20_bias_ratio, 2),
+            "overheated": is_overheated,
             "inst_pass": bool(
                 sig.institutional_buy or sig.inst_total_buy or sig.foreign_trust_buy
             ),
