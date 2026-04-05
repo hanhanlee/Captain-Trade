@@ -122,11 +122,12 @@ class DataSourceManager:
     def get_institutional(self, stock_id: str, days: int = 10):
         """
         取得三大法人資料。備援模式下直接回傳空 DataFrame（資料不可用）。
+        優先讀本機快取（24 小時 TTL），避免重複消耗 API 額度。
         """
         if self.fallback_mode:
             return pd.DataFrame()
-        from data.finmind_client import get_institutional_investors
-        return get_institutional_investors(stock_id, days=days)
+        from data.finmind_client import smart_get_institutional
+        return smart_get_institutional(stock_id, days=days)
 
     def reset_fallback(self):
         """手動重置備援狀態（例如隔天重新嘗試 FinMind）"""

@@ -170,20 +170,33 @@ with tab_backtest:
         )
 
     with col_p2:
-        st.markdown("#### 出場規則")
-        stop_loss = st.slider("停損 %（跌幾%出場）", 3.0, 20.0, 8.0, 0.5)
-        take_profit = st.slider("停利 %（漲幾%出場）", 5.0, 50.0, 15.0, 1.0)
-        max_hold = st.slider("最大持有天數", 5, 60, 20, 5)
+        st.markdown("#### 出場規則（移動式）")
+        trailing_stop = st.slider(
+            "移動停損 %（從最高價回落幾%）", 3.0, 20.0, 8.0, 0.5,
+            help="持倉後最高價一旦形成，從該高點回落此幅度即出場。比固定停損更能讓獲利奔跑。",
+        )
+        trailing_tp_act = st.slider(
+            "移動停利啟動門檻 %（獲利達此% 後緊縮）", 5.0, 50.0, 15.0, 1.0,
+            help="獲利達此水位後，追蹤幅度自動收緊，保護已累積的利潤。",
+        )
+        trailing_tp = st.slider(
+            "啟動後緊縮追蹤 %", 1.0, 15.0, 5.0, 0.5,
+            help="啟動移動停利後，從最高價只允許回落此幅度。設得越小，鎖利越積極。",
+        )
+        max_hold = st.slider("最大持有天數（保底出場）", 5, 60, 20, 5)
         use_ma20_exit = st.checkbox("跌破 MA20 強制出場", value=True)
 
     with col_p3:
         st.markdown("#### 選股條件")
         min_score = st.slider("最低強度分數門檻", 50.0, 90.0, 65.0, 5.0)
         st.markdown("---")
-        st.markdown("**報酬風險比預覽**")
-        rr = take_profit / stop_loss
-        color = "green" if rr >= 2 else "orange" if rr >= 1.5 else "red"
-        st.markdown(f"RR = {rr:.1f} : 1　{'✅ 理想' if rr >= 2 else '⚠️ 偏低' if rr >= 1.5 else '❌ 不建議'}")
+        st.markdown("**參數預覽**")
+        rr = trailing_tp_act / trailing_stop
+        st.markdown(f"啟動前 RR = {rr:.1f} : 1　{'✅ 理想' if rr >= 2 else '⚠️ 偏低' if rr >= 1.5 else '❌ 不建議'}")
+        st.caption(
+            f"啟動前：最高價回落 **{trailing_stop}%** 停損  \n"
+            f"獲利 **{trailing_tp_act}%** 後：改追蹤回落 **{trailing_tp}%** 鎖利"
+        )
 
     st.markdown("---")
 
@@ -191,8 +204,9 @@ with tab_backtest:
         config = BacktestConfig(
             start_date=str(bt_start),
             end_date=str(bt_end),
-            stop_loss_pct=stop_loss,
-            take_profit_pct=take_profit,
+            trailing_stop_pct=trailing_stop,
+            trailing_tp_activation_pct=trailing_tp_act,
+            trailing_tp_pct=trailing_tp,
             max_hold_days=max_hold,
             use_ma20_exit=use_ma20_exit,
             min_score=min_score,
@@ -253,8 +267,9 @@ with tab_result:
         | 參數 | 值 |
         |------|-----|
         | 回測期間 | {config.start_date} ～ {config.end_date} |
-        | 停損 | {config.stop_loss_pct}% |
-        | 停利 | {config.take_profit_pct}% |
+        | 移動停損 | {config.trailing_stop_pct}%（從最高價回落） |
+        | 移動停利啟動 | 獲利達 {config.trailing_tp_activation_pct}% 後緊縮 |
+        | 啟動後追蹤幅度 | {config.trailing_tp_pct}%（從最高價回落） |
         | 最大持有天數 | {config.max_hold_days} 天 |
         | MA20 出場 | {'是' if config.use_ma20_exit else '否'} |
         | 最低分數門檻 | {config.min_score} 分 |
@@ -404,14 +419,14 @@ with tab_result:
         diagnoses.append("ℹ️ **平均持有天數極短**：策略頻繁出場，交易成本影響較大")
 
     exit_reasons = summary.get("exit_reasons", {})
-    stop_loss_count = exit_reasons.get("停損", 0)
+    trailing_stop_count = exit_reasons.get("移動停損", 0)
     total_closed = summary["total_trades"]
-    if total_closed > 0 and stop_loss_count / total_closed > 0.5:
-        diagnoses.append("⚠️ **超過 50% 交易以停損出場**：訊號品質可能偏低，考慮提高門檻分數")
+    if total_closed > 0 and trailing_stop_count / total_closed > 0.5:
+        diagnoses.append("⚠️ **超過 50% 交易以移動停損出場**：訊號品質可能偏低，考慮提高門檻分數或放寬移動停損幅度")
 
-    take_profit_count = exit_reasons.get("停利", 0)
-    if total_closed > 0 and take_profit_count / total_closed > 0.4:
-        diagnoses.append("✅ **停利比例高（> 40%）**：策略在目標內獲利了結的能力良好")
+    trailing_tp_count = exit_reasons.get("移動停利", 0)
+    if total_closed > 0 and trailing_tp_count / total_closed > 0.4:
+        diagnoses.append("✅ **移動停利比例高（> 40%）**：股票達到目標後緊縮鎖利的能力良好")
 
     if summary["profit_factor"] >= 1.5 and summary["win_rate"] >= 45:
         diagnoses.append("✅ **策略整體表現良好**：盈虧比與勝率都在合理範圍")

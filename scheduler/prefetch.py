@@ -28,7 +28,9 @@ FETCH_INTERVAL_SEC        = 6.1   # 正常模式每次請求間隔（秒）≈ 5
 FETCH_INTERVAL_REBUILD    = 2.0   # 重建模式間隔（秒）；讓 429 來當剎車
 STALE_DAYS                = 5     # 快取幾天未更新視為過期
 RATE_LIMIT_PAUSE_MIN      = 20    # 遇到 429 後暫停幾分鐘（一般模式）
-PREFETCH_DAYS             = 400   # 預抓天數（涵蓋回測需求：365天 + 60天指標暖身）
+PREFETCH_DAYS             = 400   # 一般預抓天數（涵蓋回測需求：365天 + 60天指標暖身）
+BACKTEST_PREFETCH_YEARS   = 10    # 回測資料重建：往前幾年
+BACKTEST_PREFETCH_DAYS    = BACKTEST_PREFETCH_YEARS * 365  # ≈ 3650 天
 
 
 def _is_429(exc: Exception) -> bool:
@@ -61,10 +63,15 @@ class PrefetchWorker:
         self.last_fetch_at: datetime | None = None
         self.current_stock: str = ""
         self.queue_size: int = 0
+        self.fund_queue_size: int = 0            # 待抓取基本面資料股票數
         self.paused_until: datetime | None = None
         self.rate_limit_count: int = 0
         self.rebuild_mode: bool = False
         self.rebuild_completed_at: datetime | None = None  # 重建完成時間
+        self.backtest_rebuild_mode: bool = False            # 回測深度歷史資料重建
+        self.backtest_completed_at: datetime | None = None # 回測重建完成時間
+        self.backtest_queue_size: int = 0                  # 待補深度歷史的股票數
+        self.backtest_initial_queue_size: int = 0          # 進度條分母
         self.initial_queue_size: int = 0         # 本次啟動時的初始待更新數量（進度條分母）
         self._skip_stocks: set = set()           # 無資料或抓了也不更新的股票，永久跳過
         self._resume_event = threading.Event()
@@ -108,17 +115,29 @@ class PrefetchWorker:
         self.rebuild_mode = False
         logger.info("PrefetchWorker 退出重建模式，恢復正常限速")
 
+    def enable_backtest_rebuild_mode(self):
+        """啟用回測歷史資料重建模式：補充全市場最多 10 年的深度歷史資料"""
+        self.backtest_rebuild_mode = True
+        self.backtest_completed_at = None
+        self.backtest_initial_queue_size = 0
+        logger.info(f"PrefetchWorker 進入回測重建模式（{BACKTEST_PREFETCH_YEARS} 年歷史）")
+
+    def disable_backtest_rebuild_mode(self):
+        """停止回測重建模式"""
+        self.backtest_rebuild_mode = False
+        logger.info("PrefetchWorker 退出回測重建模式")
+
     # ── 私有方法 ───────────────────────────────────────────────
 
     def _within_trading_hours(self) -> bool:
-        if self.rebuild_mode:
+        if self.rebuild_mode or self.backtest_rebuild_mode:
             return False   # 重建模式：不受交易時間限制
         now = datetime.now().time()
         from datetime import time as _time
         return _time(9, 0) <= now <= _time(15, 5)
 
     def _current_hourly_limit(self) -> int:
-        if self.rebuild_mode:
+        if self.rebuild_mode or self.backtest_rebuild_mode:
             return 600     # 重建模式：全速
         return HOURLY_LIMIT_TRADING if self._within_trading_hours() else HOURLY_LIMIT_OFFPEAK
 
@@ -148,12 +167,13 @@ class PrefetchWorker:
         """
         self.rate_limit_count += 1
 
-        if self.rebuild_mode:
+        if self.rebuild_mode or self.backtest_rebuild_mode:
             wait_sec = self._next_hour_seconds()
             self.paused_until = datetime.now() + timedelta(seconds=wait_sec)
             resume_at_str = self.paused_until.strftime("%H:%M:%S")
+            mode_label = "重建模式" if self.rebuild_mode else "回測重建模式"
             logger.warning(
-                f"[重建模式] 收到 429（第 {self.rate_limit_count} 次），"
+                f"[{mode_label}] 收到 429（第 {self.rate_limit_count} 次），"
                 f"等待至下一整點 {resume_at_str}（{wait_sec//60} 分 {wait_sec%60} 秒後）"
             )
         else:
@@ -171,6 +191,92 @@ class PrefetchWorker:
         self.paused_until = None
         if not self._stop_event.is_set():
             logger.info("429 暫停結束，繼續抓取")
+
+    def _get_funds_needing_fetch(self) -> list[str]:
+        """回傳尚無新鮮基本面快取的股票清單"""
+        try:
+            from data.finmind_client import get_stock_list
+            from db.fundamental_cache import get_stocks_needing_fundamental
+            all_ids = get_stock_list()["stock_id"].tolist()
+            return get_stocks_needing_fundamental(all_ids)
+        except Exception as e:
+            logger.warning(f"取得基本面待抓清單失敗：{e}")
+            return []
+
+    def _fetch_one_fundamental(self, stock_id: str) -> str:
+        """
+        抓取並快取單檔基本面資料。
+        回傳值同 _fetch_one：'ok' / 'rate_limit' / 'error'
+        """
+        try:
+            from data.finmind_client import smart_get_fundamentals
+            smart_get_fundamentals(stock_id)
+            return "ok"
+        except Exception as e:
+            if _is_429(e):
+                return "rate_limit"
+            logger.debug(f"抓取基本面 {stock_id} 失敗：{e}")
+            return "error"
+
+    def _get_backtest_stale_stocks(self) -> list[str]:
+        """
+        回傳歷史資料深度不足 BACKTEST_PREFETCH_YEARS 年的股票清單。
+        以 price_cache.earliest 判斷；完全無快取的股票也納入。
+        """
+        try:
+            from data.finmind_client import get_stock_list
+            from db.price_cache import get_cache_summary
+
+            all_ids = set(get_stock_list()["stock_id"].tolist())
+            target_start = (date.today() - timedelta(days=BACKTEST_PREFETCH_DAYS)).isoformat()
+
+            summary = get_cache_summary()
+            if summary.empty:
+                return sorted(all_ids - self._skip_stocks)
+
+            cached_ids = set(summary["stock_id"].tolist())
+            # 有快取但最早日期不夠早（未達目標年數）
+            insufficient = set(
+                summary.loc[summary["earliest"] > target_start, "stock_id"].tolist()
+            )
+            missing = all_ids - cached_ids
+            return sorted((missing | insufficient) - self._skip_stocks)
+        except Exception as e:
+            logger.warning(f"取得回測待抓清單失敗：{e}")
+            return []
+
+    def _fetch_one_backtest(self, stock_id: str) -> str:
+        """
+        補充單檔股票的深度歷史資料（往前 BACKTEST_PREFETCH_YEARS 年）。
+        與 _fetch_one 不同：以最早快取日期判斷，而非最新日期；
+        直接呼叫 get_daily_price 搭配 start_date，不走 smart_get_price。
+        """
+        try:
+            from db.price_cache import get_cached_dates, save_prices
+            from data.finmind_client import get_daily_price
+
+            target_date = date.today() - timedelta(days=BACKTEST_PREFETCH_DAYS)
+            target_start_str = target_date.strftime("%Y-%m-%d")
+
+            min_date, _ = get_cached_dates(stock_id)
+            if min_date is not None:
+                min_d = min_date if isinstance(min_date, date) else \
+                    datetime.strptime(str(min_date), "%Y-%m-%d").date()
+                if min_d <= target_date:
+                    return "cached"  # 已有足夠的歷史深度
+
+            # 從目標起始日補抓（含已有的資料段，save_prices 有 INSERT OR IGNORE 保護）
+            new_df = get_daily_price(stock_id, start_date=target_start_str)
+            if new_df.empty:
+                return "no_update"
+
+            save_prices(stock_id, new_df)
+            return "ok"
+        except Exception as e:
+            if _is_429(e):
+                return "rate_limit"
+            logger.debug(f"抓取回測歷史 {stock_id} 失敗：{e}")
+            return "error"
 
     def _get_stale_stocks(self) -> tuple[list[str], list[str]]:
         """
@@ -250,14 +356,60 @@ class PrefetchWorker:
         logger.info("PrefetchWorker 迴圈開始")
         while not self._stop_event.is_set():
 
-            # 重建模式：跳過內部計數器，讓 API 的 429 來當限制
-            if not self.rebuild_mode:
+            # 重建模式（含回測）：跳過內部計數器，讓 API 的 429 來當限制
+            if not self.rebuild_mode and not self.backtest_rebuild_mode:
                 used = self._hour_count()
                 limit = self._current_hourly_limit()
                 if used >= limit:
                     self._stop_event.wait(60)
                     continue
 
+            # ── 回測深度歷史重建模式：優先於一般價格抓取 ─────────────
+            if self.backtest_rebuild_mode:
+                bt_queue = self._get_backtest_stale_stocks()
+                self.backtest_queue_size = len(bt_queue)
+                if self.backtest_initial_queue_size == 0 and self.backtest_queue_size > 0:
+                    self.backtest_initial_queue_size = self.backtest_queue_size
+
+                if self.backtest_queue_size == 0:
+                    self.backtest_rebuild_mode = False
+                    self.backtest_completed_at = datetime.now()
+                    logger.info("回測歷史資料重建完成，自動退出回測重建模式")
+                    continue
+
+                hit_rate_limit = False
+                for stock_id in bt_queue:
+                    if self._stop_event.is_set():
+                        break
+                    if self._hour_count() >= self._current_hourly_limit():
+                        break
+                    self.current_stock = f"[回測] {stock_id}"
+                    result = self._fetch_one_backtest(stock_id)
+                    if result == "ok":
+                        self._record_request()
+                        self.last_fetch_at = datetime.now()
+                        self.backtest_queue_size = max(0, self.backtest_queue_size - 1)
+                        logger.debug(
+                            f"回測歷史已抓 {stock_id}，本小時 {self.hour_fetched}，"
+                            f"剩餘 {self.backtest_queue_size}"
+                        )
+                        self._stop_event.wait(FETCH_INTERVAL_REBUILD)
+                    elif result == "no_update":
+                        self._skip_stocks.add(stock_id)
+                        self.backtest_queue_size = max(0, self.backtest_queue_size - 1)
+                    elif result == "rate_limit":
+                        hit_rate_limit = True
+                        break
+                    # 'cached' / 'error': 繼續下一檔
+
+                self.current_stock = ""
+                if hit_rate_limit and not self._stop_event.is_set():
+                    self._pause_for_rate_limit()
+                else:
+                    self._stop_event.wait(5)
+                continue
+
+            # ── 一般模式：抓取近期價格資料 ─────────────────────────
             # 取得待抓清單（needs_update 用於顯示，full_queue 用於實際抓取）
             needs_update, full_queue = self._get_stale_stocks()
             needs_update_set = set(needs_update)
@@ -273,8 +425,36 @@ class PrefetchWorker:
                 logger.info("全速重建完成，自動退出重建模式，恢復正常限速")
 
             if not full_queue:
-                logger.info("所有股票快取皆為最新，等待 30 分鐘")
-                self._stop_event.wait(1800)
+                # 價格快取皆為最新，改為嘗試填充基本面快取
+                fund_ids = self._get_funds_needing_fetch()
+                self.fund_queue_size = len(fund_ids)
+                if not fund_ids:
+                    logger.info("所有快取（價格+基本面）皆為最新，等待 30 分鐘")
+                    self._stop_event.wait(1800)
+                else:
+                    logger.info(f"價格快取完成，開始填充基本面快取（{len(fund_ids)} 檔）")
+                    fund_hit_rate_limit = False
+                    for stock_id in fund_ids:
+                        if self._stop_event.is_set():
+                            break
+                        if not self.rebuild_mode and self._hour_count() >= self._current_hourly_limit():
+                            break
+                        self.current_stock = f"[基本面] {stock_id}"
+                        result = self._fetch_one_fundamental(stock_id)
+                        if result == "ok":
+                            self._record_request()
+                            self.last_fetch_at = datetime.now()
+                            self.fund_queue_size = max(0, self.fund_queue_size - 1)
+                            logger.debug(f"基本面已抓 {stock_id}，本小時 {self.hour_fetched}，剩餘 {self.fund_queue_size}")
+                            interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
+                            self._stop_event.wait(interval)
+                        elif result == "rate_limit":
+                            fund_hit_rate_limit = True
+                            break
+                        # 'error': 繼續下一檔
+                    self.current_stock = ""
+                    if fund_hit_rate_limit and not self._stop_event.is_set():
+                        self._pause_for_rate_limit()
                 continue
 
             # 逐檔抓取
@@ -336,16 +516,21 @@ class PrefetchWorker:
             "hourly_remaining":     max(limit - used, 0),
             "total_fetched":        self.total_fetched,
             "queue_size":           self.queue_size,
+            "fund_queue_size":      self.fund_queue_size,
             "current_stock":        self.current_stock,
             "last_fetch_at":        self.last_fetch_at,
             "paused_for_market":    self._within_trading_hours(),
             "paused_until":         self.paused_until,
             "pause_remaining_sec":  pause_remaining_sec,
             "rate_limit_count":     self.rate_limit_count,
-            "rebuild_mode":         self.rebuild_mode,
-            "rebuild_completed_at": self.rebuild_completed_at,
-            "initial_queue_size":   self.initial_queue_size,
-            "skip_count":           len(self._skip_stocks),
+            "rebuild_mode":                self.rebuild_mode,
+            "rebuild_completed_at":        self.rebuild_completed_at,
+            "initial_queue_size":          self.initial_queue_size,
+            "backtest_rebuild_mode":       self.backtest_rebuild_mode,
+            "backtest_completed_at":       self.backtest_completed_at,
+            "backtest_queue_size":         self.backtest_queue_size,
+            "backtest_initial_queue_size": self.backtest_initial_queue_size,
+            "skip_count":                  len(self._skip_stocks),
         }
 
 

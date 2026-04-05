@@ -10,12 +10,14 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import time
 
-from data.finmind_client import get_daily_price, check_all_three_buying
+from data.finmind_client import get_daily_price, check_institutions_buying
 from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
 from db.scan_history import save_scan_session, load_scan_history, load_session_results, delete_scan_session
 from db.database import init_db
+
+from db.settings import is_market_closed
 
 init_db()
 
@@ -134,6 +136,20 @@ with st.sidebar:
                           ["快速測試（20 檔）", "小型掃描（100 檔）", "全市場掃描（需時較長）"],
                           index=0)
     include_institutional = st.checkbox("納入法人買賣超（較慢）", value=False)
+    inst_selection: list = []
+    require_institutional = False
+    if include_institutional:
+        inst_selection = st.multiselect(
+            "選擇法人",
+            options=["外資", "投信", "自營商"],
+            default=["外資", "投信", "自營商"],
+            help="只有勾選的法人都同時買超，才算符合條件",
+        )
+        require_institutional = st.checkbox(
+            "法人齊買為必要條件（不符合直接排除）",
+            value=False,
+            help="勾選後，未符合法人條件的股票直接剔除，而非只是少加分",
+        )
 
     st.markdown("---")
     st.markdown("**流動性前置過濾**")
@@ -150,7 +166,7 @@ with st.sidebar:
         st.caption("💡 鎖定當天最活躍的股票，動態追蹤市場熱點")
     elif vol_filter_mode == "日均量 ≥ N 張":
         min_avg_volume = st.number_input("最低日均量（張）", min_value=0,
-                                          max_value=10000, value=1000, step=100)
+                                          max_value=50000, value=1000, step=100)
         top_volume_n = 0
         st.caption("💡 日均量 > 1000 張通常對應資本額 20 億以上")
     else:
@@ -167,10 +183,69 @@ with st.sidebar:
         st.caption("💡 資金正在流入的產業，勝率更高")
 
     st.markdown("---")
+    st.markdown("**🔥 族群集體突破偵測**")
+    use_hp_density = st.checkbox(
+        "族群創高密度（HP Density）",
+        value=False,
+        help="統計族群內有多少比例的股票今日收盤等於近 N 日高點。"
+             "比例越高代表該族群成員集體向上突破，是強勢輪動的早期訊號。",
+    )
+    hp_density_lookback = 20
+    hp_density_threshold = 0.30
+    if use_hp_density:
+        hp_density_lookback = st.slider("創高天數 N", 10, 60, 20, 5,
+                                        help="計算「近幾天新高」的回溯天數")
+        hp_density_threshold_pct = st.slider("創高比例門檻 %", 10, 80, 30, 5,
+                                              help="族群內達到此比例的股票在創高，才視為有效突破")
+        hp_density_threshold = hp_density_threshold_pct / 100.0
+
+    use_turnover_ratio = st.checkbox(
+        "資金流向比重（Turnover Ratio）",
+        value=False,
+        help="以「收盤價 × 成交量」估算各族群成交額佔全市場比重，"
+             "鎖定資金集中流入的強勢族群。",
+    )
+    turnover_top_n = 5
+    if use_turnover_ratio:
+        turnover_top_n = st.number_input("資金前幾大族群", min_value=1,
+                                          max_value=15, value=5, step=1,
+                                          help="成交額排名在此範圍內的族群視為資金集中")
+
+    st.markdown("---")
     st.markdown("**v2 進階選項**")
     require_weekly = st.checkbox("必須週線多頭（更嚴格，結果更少）", value=False)
     min_rs = st.slider("最低相對強度 RS 分數", 0, 80, 0, 5,
                        help="0 = 不限制；60 以上 = 強勢股")
+
+    st.markdown("---")
+    st.markdown("**📊 基本面過濾（財報品質篩選）**")
+    use_fundamental = st.checkbox(
+        "啟用基本面過濾",
+        value=False,
+        help="從財報剔除虧損股與地雷股，快取 90 天不重複耗 API",
+    )
+    fundamental_filter: dict = {}
+    if use_fundamental:
+        req_eps = st.checkbox("EPS TTM > 0（排除虧損股）", value=True)
+        req_cf  = st.checkbox("營業現金流 > 0（排除假獲利）", value=True)
+        min_roe = st.number_input(
+            "最低 ROE (%)　（0 = 不限）",
+            min_value=0, max_value=50, value=0, step=5,
+            help="巴菲特標準 ≥ 15%，一般優質公司 ≥ 10%",
+        )
+        max_debt = st.number_input(
+            "負債比上限 (%)　（0 = 不限）",
+            min_value=0, max_value=100, value=0, step=10,
+            help="一般產業 < 60%，金融業本身高負債屬正常可設 0",
+        )
+        fundamental_filter = {
+            "require_eps_positive": req_eps,
+            "require_positive_cf":  req_cf,
+            "min_roe":              float(min_roe),
+            "max_debt_ratio":       float(max_debt),
+        }
+        st.caption("💡 首次啟用時需從 API 抓財報資料，建議先讓背景工作器預先填充")
+
     st.markdown("---")
     st.caption("全市場掃描約需 30-50 分鐘")
 
@@ -178,10 +253,18 @@ with st.sidebar:
 # ── 主頁面 ───────────────────────────────────────────────────
 st.title("🔍 選股雷達")
 st.markdown("掃描全市場，依技術強度找出值得關注的標的")
+
+if is_market_closed():
+    st.info(
+        "🏖️ **休市模式啟用中** — 法人資料使用本機快取，不消耗 API 額度。  \n"
+        "恢復交易後請至「資料管理」頁面關閉此模式。",
+        icon=None,
+    )
+
 st.markdown("---")
 
-tab_scan, tab_sector, tab_chart, tab_history = st.tabs(
-    ["📊 掃描結果", "🏭 產業族群", "📈 個股圖表", "📋 歷史紀錄"]
+tab_scan, tab_funnel, tab_sector, tab_chart, tab_history = st.tabs(
+    ["📊 掃描結果", "🔬 篩選漏斗", "🏭 產業族群", "📈 個股圖表", "📋 歷史紀錄"]
 )
 
 
@@ -247,10 +330,12 @@ with tab_scan:
                     price_data[sid] = df
 
                 # 法人資料：備援模式下 dsm.institutional_available 為 False，自動跳過
-                if include_institutional and dsm.institutional_available:
+                if include_institutional and dsm.institutional_available and inst_selection:
                     idf = dsm.get_institutional(sid, days=10)
                     if not idf.empty:
-                        inst_data[sid] = check_all_three_buying(idf, days=2)
+                        inst_data[sid] = check_institutions_buying(
+                            idf, days=2, institutions=inst_selection
+                        )
 
                 if not _fresh and not dsm.fallback_mode:
                     time.sleep(0.05)   # 只有真正呼叫 FinMind API 時才需要 rate limit
@@ -263,17 +348,63 @@ with tab_scan:
         prog.empty()
         status_txt.empty()
 
+        # ── 基本面資料預載（快取優先，首次可能需要 API）──────────
+        fund_data: dict = {}
+        if use_fundamental and fundamental_filter:
+            from data.finmind_client import smart_get_fundamentals
+            fund_prog = st.progress(0, text="載入基本面資料（讀取快取）...")
+            fund_api, fund_cache = 0, 0
+            for i, sid in enumerate(sample_ids):
+                fund_prog.progress((i + 1) / total,
+                                   text=f"基本面資料：{sid}（{i+1}/{total}）")
+                from db.fundamental_cache import is_fundamental_fresh
+                is_fresh = is_fundamental_fresh(sid)
+                if not is_fresh:
+                    fund_api += 1
+                else:
+                    fund_cache += 1
+                metrics = smart_get_fundamentals(sid)
+                if metrics:
+                    fund_data[sid] = metrics
+            fund_prog.empty()
+
+            if fund_api > 0 and not fund_data:
+                # 所有 API 呼叫均無資料，很可能是 402 付費牆
+                st.warning(
+                    "⚠️ **基本面資料無法取得（402 Payment Required）**  \n"
+                    "FinMind 財報端點（`TaiwanStockFinancialStatements`）需要付費方案，"
+                    "免費帳號無法使用。基本面篩選條件本次**自動停用**，選股結果不受影響。  \n"
+                    "若需基本面過濾，請升級 FinMind 方案後重試。"
+                )
+                # 強制清空，讓 run_scan 跳過基本面過濾
+                fund_data = {}
+            else:
+                st.caption(
+                    f"基本面資料：快取 **{fund_cache}** 檔 / API **{fund_api}** 次"
+                )
+
         with st.spinner("計算指標，篩選中..."):
             use_inst = include_institutional and dsm.institutional_available
-            result_df, sector_info = run_scan(
+            result_df, sector_info, debug_info = run_scan(
                 price_data=price_data,
                 stock_info=stock_list,
                 inst_data=inst_data if use_inst else {},
+                fundamental_data=fund_data if use_fundamental else {},
+                fundamental_filter=fundamental_filter if use_fundamental else {},
                 min_price=min_price,
                 min_avg_volume=min_avg_volume,
                 top_volume_n=top_volume_n,
                 top_sector_n=top_sector_n,
+                use_hp_density=use_hp_density,
+                hp_density_lookback=hp_density_lookback,
+                hp_density_threshold=hp_density_threshold,
+                use_turnover_ratio=use_turnover_ratio,
+                turnover_top_n=turnover_top_n,
+                debug=True,
             )
+            st.session_state["debug_info"] = debug_info
+            st.session_state["sector_info"] = sector_info
+            st.session_state["sector_breakout_enabled"] = (use_hp_density or use_turnover_ratio)
 
         # 顯示產業輪動過濾結果
         if sector_info and top_sector_n > 0:
@@ -289,6 +420,13 @@ with tab_scan:
                 result_df = result_df[result_df["signals"].str.contains("週線多頭", na=False)]
             if min_rs > 0:
                 result_df = result_df[result_df["rs_score"] >= min_rs]
+            if require_institutional and use_inst and inst_selection:
+                before = len(result_df)
+                result_df = result_df[result_df["signals"].str.contains("三大法人齊買", na=False)]
+                filtered = before - len(result_df)
+                inst_label = "、".join(inst_selection)
+                if filtered > 0:
+                    st.info(f"法人必要條件（{inst_label}）：已過濾 **{filtered}** 檔未符合")
 
         if result_df.empty:
             st.warning("沒有符合條件的股票，可嘗試調整篩選條件")
@@ -345,7 +483,10 @@ with tab_scan:
 
         st.dataframe(display_df, use_container_width=True, height=500)
     else:
-        st.markdown("""
+        _inst_label = "、".join(inst_selection) if inst_selection else "三大法人"
+        _inst_desc = f"{_inst_label}連續 2 日同步買超"
+        _inst_type = "**必要**（強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
+        st.markdown(f"""
         #### 篩選條件（v3）
 
         | 條件 | 類型 | 分數 | 說明 |
@@ -354,7 +495,7 @@ with tab_scan:
         | 量能 > 均量 1.3 倍 | 必要 | +20 | 有效突破 |
         | MACD 或 RSI 50-70 | 必要 | +15 | 動能確認 |
         | 不低於布林下軌 | 必要 | +10 | 排除弱勢 |
-        | 三大法人連續 2 日齊買 | 加分 | +7 | 外資＋投信＋自營商同步買超 |
+        | {_inst_desc} | {_inst_type} | +7 | 外資＋投信＋自營商可自由組合 |
         | 融資減少 | 加分 | +3 | 籌碼乾淨 |
         | 週線 MA10 多頭 | 加分 | +10 | 多週期共振 |
         | 相對強度 RS ≥ 60 | 加分 | +8 | 抗跌／領漲特性 |
@@ -362,6 +503,170 @@ with tab_scan:
         | 近10日量集中在上漲日 | 加分 | +7 | 量能品質優良 |
         | 突破近60日最高收盤 | 加分 | +8 | 突破盤整 |
         """)
+
+
+# ══ Tab：篩選漏斗 ════════════════════════════════════════════
+with tab_funnel:
+    st.subheader("🔬 篩選漏斗分析")
+    st.caption("顯示每個條件篩掉了多少股票，幫助你了解條件的嚴格程度與調整方向")
+
+    if "debug_info" not in st.session_state or not st.session_state["debug_info"]:
+        st.info("請先執行掃描，結果會自動顯示在這裡")
+    else:
+        dbg = st.session_state["debug_info"]
+        analysis: dict = dbg.get("stock_analysis", {})
+
+        # ── 建立漏斗資料 ────────────────────────────────────────
+        # 前置過濾階段
+        funnel_rows = list(dbg.get("pre_filter_stages", []))
+
+        # 進入條件計算的股票（通過前置過濾的）
+        cond_stocks = [
+            v for v in analysis.values()
+            if v["exclude_pre"] is None and v["sig"] is not None
+        ]
+        n_cond = len(cond_stocks)
+        funnel_rows.append({"stage": "進入條件計算", "count": n_cond})
+
+        # 逐條件累積計數（每個條件都是在前一條件基礎上累積）
+        MANDATORY = [
+            ("站上 MA20",    lambda s: s.above_ma20),
+            ("MA20 向上",    lambda s: s.above_ma20 and s.ma20_rising),
+            ("量增 1.3 倍",  lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge),
+            ("MACD/RSI 動能",lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge
+                                        and (s.macd_cross or s.rsi_healthy)),
+            ("布林不低於下軌", lambda s: s.passes_basic()),
+        ]
+        for label, fn in MANDATORY:
+            cnt = sum(1 for v in cond_stocks if fn(v["sig"]))
+            funnel_rows.append({"stage": label, "count": cnt})
+
+        funnel_df = pd.DataFrame(funnel_rows)
+
+        # ── 漏斗長條圖 ──────────────────────────────────────────
+        fig_funnel = go.Figure(go.Bar(
+            x=funnel_df["count"],
+            y=funnel_df["stage"],
+            orientation="h",
+            text=funnel_df["count"],
+            textposition="outside",
+            marker_color=[
+                "#3498db" if i < len(dbg.get("pre_filter_stages", [])) + 1
+                else "#e74c3c" if i == len(funnel_df) - 1
+                else "#f39c12"
+                for i in range(len(funnel_df))
+            ],
+        ))
+        fig_funnel.update_layout(
+            height=max(300, len(funnel_df) * 45),
+            template="plotly_dark",
+            title="各階段存活股票數量",
+            xaxis_title="股票數",
+            margin=dict(t=40, b=10, l=160),
+            yaxis=dict(autorange="reversed"),
+        )
+        st.plotly_chart(fig_funnel, use_container_width=True)
+
+        # ── 每個條件的排除數 ────────────────────────────────────
+        st.markdown("#### 各必要條件排除數")
+        excl_rows = []
+        prev_count = n_cond
+        for label, fn in MANDATORY:
+            cnt = sum(1 for v in cond_stocks if fn(v["sig"]))
+            excl = prev_count - cnt
+            excl_rows.append({
+                "條件": label,
+                "通過": cnt,
+                "排除": excl,
+                "排除率": f"{excl/prev_count*100:.1f}%" if prev_count > 0 else "—",
+            })
+            prev_count = cnt
+        st.dataframe(pd.DataFrame(excl_rows), use_container_width=True, hide_index=True)
+
+        # ── 加分條件命中率（在最終入選股中）────────────────────
+        final_sigs = [v["sig"] for v in cond_stocks if v["sig"] and v["sig"].passes_basic()]
+        if final_sigs:
+            st.markdown("#### 加分條件命中率（最終入選股）")
+            ADDITIVE = [
+                ("三大法人齊買", lambda s: s.institutional_buy),
+                ("籌碼乾淨",    lambda s: s.margin_clean),
+                ("週線多頭",    lambda s: s.weekly_trend_up),
+                ("相對強勢",    lambda s: s.rs_positive),
+                ("多頭排列",    lambda s: s.ma_aligned),
+                ("量能優質",    lambda s: s.vol_quality),
+                ("突破盤整",    lambda s: s.breakout),
+            ]
+            add_rows = []
+            n_final = len(final_sigs)
+            for label, fn in ADDITIVE:
+                cnt = sum(1 for s in final_sigs if fn(s))
+                add_rows.append({
+                    "條件": label,
+                    "命中": cnt,
+                    "命中率": f"{cnt/n_final*100:.1f}%",
+                })
+            st.dataframe(pd.DataFrame(add_rows), use_container_width=True, hide_index=True)
+
+        # ── 差一條件入選（Near-miss）────────────────────────────
+        st.markdown("#### 差一條件入選的股票")
+        st.caption("只差一個必要條件就會入選，可作為條件調整的參考")
+
+        MANDATORY_CHECKS = [
+            ("站上 MA20",     lambda s: s.above_ma20),
+            ("MA20 向上",     lambda s: s.ma20_rising),
+            ("量增 1.3 倍",   lambda s: s.volume_surge),
+            ("MACD/RSI 動能", lambda s: s.macd_cross or s.rsi_healthy),
+            ("布林不低於下軌", lambda s: s.above_bb_lower),
+        ]
+        near_miss = []
+        for sid, v in analysis.items():
+            if v["exclude_pre"] is not None or v["sig"] is None:
+                continue
+            sig = v["sig"]
+            if sig.passes_basic():
+                continue  # 已入選
+            failed = [lbl for lbl, fn in MANDATORY_CHECKS if not fn(sig)]
+            if len(failed) == 1:
+                near_miss.append({
+                    "代碼": sid,
+                    "名稱": v["stock_name"],
+                    "產業": v["industry"],
+                    "收盤": v["close"],
+                    "差的條件": failed[0],
+                    "已通過": "、".join(lbl for lbl, fn in MANDATORY_CHECKS if fn(sig)),
+                })
+
+        if near_miss:
+            near_df = pd.DataFrame(near_miss).sort_values("差的條件")
+            # 按差的條件分組顯示
+            for cond_name, grp in near_df.groupby("差的條件"):
+                with st.expander(f"差「{cond_name}」— {len(grp)} 檔", expanded=True):
+                    st.dataframe(
+                        grp[["代碼", "名稱", "產業", "收盤", "已通過"]].reset_index(drop=True),
+                        use_container_width=True, hide_index=True,
+                    )
+        else:
+            st.info("沒有差一條件入選的股票")
+
+        # ── 前置過濾排除原因分佈 ────────────────────────────────
+        pre_excl = [v["exclude_pre"] for v in analysis.values() if v["exclude_pre"]]
+        if pre_excl:
+            with st.expander("前置過濾排除原因分佈", expanded=False):
+                from collections import Counter
+                # 只取原因大類（去掉具體數字）
+                def _reason_category(reason: str) -> str:
+                    if "股價" in reason:
+                        return "股價低於門檻"
+                    if "日均量" in reason:
+                        return "日均量不足"
+                    if "資料不足" in reason:
+                        return "資料不足"
+                    return reason
+                cats = Counter(_reason_category(r) for r in pre_excl)
+                excl_pre_df = pd.DataFrame(
+                    [{"原因": k, "排除檔數": v} for k, v in cats.most_common()]
+                )
+                st.dataframe(excl_pre_df, use_container_width=True, hide_index=True)
 
 
 # ══ Tab：產業族群 ════════════════════════════════════════════
@@ -421,6 +726,56 @@ with tab_sector:
                     f"平均強度 {top1['avg_score']} 分，是本次掃描中資金最活躍的族群。\n\n"
                     f"操作建議：考慮從最強族群中挑選分數最高的個股優先研究。"
                 )
+
+        # ── 集體突破族群偵測結果 ───────────────────────────────
+        _si = st.session_state.get("sector_info", {})
+        _breakout_on = st.session_state.get("sector_breakout_enabled", False)
+
+        if _breakout_on and _si:
+            st.markdown("---")
+            st.subheader("🔥 集體突破族群")
+            st.caption(
+                "同時滿足啟用指標的族群：創高密度達門檻（HP Density）＆ 成交額前 N 名（Turnover）"
+            )
+
+            breakout_sectors = {k: v for k, v in _si.items() if v.get("collective_breakout")}
+            all_sectors_list = sorted(
+                _si.items(),
+                key=lambda x: (
+                    -int(x[1].get("collective_breakout", False)),
+                    -x[1].get("hp_density", 0),
+                    x[1].get("turnover_rank", 999),
+                ),
+            )
+
+            if not breakout_sectors:
+                st.warning("本次掃描範圍內無族群同時符合所有啟用的突破條件，可嘗試降低門檻。")
+            else:
+                n_breakout = len(breakout_sectors)
+                names = "、".join(f"**{s}**" for s in list(breakout_sectors)[:5])
+                st.success(f"偵測到 **{n_breakout}** 個族群符合集體突破特徵：{names}")
+
+            # 建立完整族群偵測表格
+            rows = []
+            for sector, info in all_sectors_list:
+                row = {
+                    "族群": sector,
+                    "近5日漲幅": f"{info.get('return_pct', 0):+.2f}%",
+                    "集體突破": "🔥 是" if info.get("collective_breakout") else "—",
+                }
+                if "hp_density" in info:
+                    pct = info["hp_density"] * 100
+                    mark = "✅" if info.get("hp_density_pass") else "  "
+                    row["創高密度"] = f"{mark} {pct:.0f}%"
+                if "turnover_ratio" in info:
+                    rank = info.get("turnover_rank", 999)
+                    mark = "✅" if info.get("turnover_top") else "  "
+                    row["成交額比重"] = f"{mark} {info['turnover_ratio']*100:.1f}%（第{rank}名）"
+                rows.append(row)
+
+            if rows:
+                bt_df = pd.DataFrame(rows)
+                st.dataframe(bt_df, use_container_width=True, hide_index=True)
 
 
 # ══ Tab：個股圖表 ════════════════════════════════════════════

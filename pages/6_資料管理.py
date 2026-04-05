@@ -14,12 +14,56 @@ from datetime import datetime, date, timedelta
 
 from db.database import init_db, vacuum_db
 from db.price_cache import get_cache_summary, delete_old_prices, get_all_cached_stocks
+from db.settings import is_market_closed, set_market_closed
+from db.inst_cache import get_inst_cache_stats
+from db.fundamental_cache import get_fundamental_stats
 
 init_db()
 
 st.set_page_config(page_title="資料管理", page_icon="🗄️", layout="wide")
 st.title("🗄️ 資料管理")
 st.markdown("管理本機快取與背景預抓取工作器")
+
+# ── 休市模式 ──────────────────────────────────────────────────
+_market_closed = is_market_closed()
+col_mc, col_mc_info = st.columns([2, 5])
+new_mc = col_mc.toggle(
+    "🏖️ 休市模式",
+    value=_market_closed,
+    help="開啟後法人資料快取永不過期，完全不消耗 API 額度。適用於連假、停市期間。",
+)
+if new_mc != _market_closed:
+    set_market_closed(new_mc)
+    st.rerun()
+
+if new_mc:
+    col_mc_info.warning(
+        "**休市模式啟用中** — 法人資料使用快取，不會重新呼叫 API。  \n"
+        "恢復交易後請關閉此開關，系統會在下次掃描時自動抓取最新法人資料。"
+    )
+    # 顯示快取狀態
+    stats = get_inst_cache_stats()
+    if stats["stock_count"] > 0:
+        newest = stats["newest_fetch"]
+        if newest:
+            newest_str = newest if isinstance(newest, str) else newest
+            col_mc_info.caption(f"法人快取：**{stats['stock_count']}** 檔，最新抓取 {newest_str[:16]}")
+    # 清除按鈕
+    if col_mc.button("🗑️ 清除法人快取", help="清除後下次掃描會重新從 API 抓取所有法人資料"):
+        from sqlalchemy import text
+        from db.database import get_session
+        with get_session() as sess:
+            sess.execute(text("DELETE FROM inst_cache"))
+            sess.commit()
+        st.success("法人快取已清除，下次掃描將重新抓取")
+        st.rerun()
+else:
+    col_mc_info.info(
+        "**正常模式** — 法人資料快取 24 小時後自動更新。  \n"
+        "若目前為連假或停市，建議開啟「休市模式」避免浪費 API 額度。"
+    )
+
+st.markdown("---")
 
 # ── 自動刷新控制（放在最上方，讓用戶可以隨時開關）──────────────
 auto_refresh = st.toggle("🔄 自動刷新（每 5 秒）", value=False,
@@ -186,6 +230,67 @@ else:
                 st.session_state.rebuild_confirm = False
                 st.rerun()
 
+    st.markdown("---")
+
+    # ── 回測歷史資料重建 ──────────────────────────────────────────
+    st.markdown("#### 📼 回測歷史資料重建（最多往前 10 年）")
+
+    is_bt_rebuild = s.get("backtest_rebuild_mode", False)
+    bt_completed_at = s.get("backtest_completed_at")
+    bt_queue = s.get("backtest_queue_size", 0)
+    bt_initial = s.get("backtest_initial_queue_size", 0)
+
+    if bt_completed_at:
+        st.success(
+            f"✅ **回測歷史重建已完成**（{bt_completed_at.strftime('%m/%d %H:%M')}）  \n"
+            "所有股票均已具備 10 年歷史資料，系統已自動退出重建模式。"
+        )
+    elif is_bt_rebuild:
+        st.warning(
+            "**回測歷史重建進行中**  \n"
+            f"目標：全市場每檔最多補充 10 年日K資料。待處理：**{bt_queue} 檔**  \n"
+            "完成後自動退出，不需手動停止。"
+        )
+        if bt_initial > 0:
+            bt_progress = min((bt_initial - bt_queue) / bt_initial, 1.0)
+            st.progress(bt_progress,
+                        text=f"進度：已完成 {bt_initial - bt_queue} / {bt_initial} 檔（{bt_progress*100:.1f}%）")
+        if st.button("⏹ 停止回測重建", type="secondary"):
+            if hasattr(worker, "disable_backtest_rebuild_mode"):
+                worker.disable_backtest_rebuild_mode()
+            st.rerun()
+    else:
+        st.markdown(
+            "補充全市場股票最多 10 年的歷史日K資料，提升回測涵蓋範圍與準確度。  \n"
+            "全市場約 950 檔 × 每檔 1 次 API = 約 950 次請求，**建議睡前啟動**。"
+        )
+
+        if "bt_rebuild_confirm" not in st.session_state:
+            st.session_state.bt_rebuild_confirm = False
+
+        if not st.session_state.bt_rebuild_confirm:
+            if st.button("📼 重建回測歷史資料", type="secondary"):
+                st.session_state.bt_rebuild_confirm = True
+                st.rerun()
+        else:
+            st.warning(
+                "⚠️ **請確認後再繼續：**\n\n"
+                "1. 每檔股票抓取 10 年資料，每次請求量較大，約消耗 950 次 API 配額\n"
+                "2. 已有足夠歷史的股票自動跳過，不重複消耗配額\n"
+                "3. 建議在不使用系統期間（例如睡前）執行"
+            )
+            col_btc, col_btx, _ = st.columns([1.2, 1, 5])
+            if col_btc.button("✅ 確認，開始重建", type="primary", use_container_width=True):
+                st.session_state.bt_rebuild_confirm = False
+                if not worker.running:
+                    worker.start()
+                if hasattr(worker, "enable_backtest_rebuild_mode"):
+                    worker.enable_backtest_rebuild_mode()
+                st.rerun()
+            if col_btx.button("取消", use_container_width=True):
+                st.session_state.bt_rebuild_confirm = False
+                st.rerun()
+
 st.markdown("---")
 
 # ══ 區塊二：快取狀態總覽 ═════════════════════════════════════════
@@ -262,7 +367,47 @@ if "cache_summary" in st.session_state:
 
 st.markdown("---")
 
-# ══ 區塊三：手動補抓 ════════════════════════════════════════════
+# ══ 區塊三：基本面快取 ═══════════════════════════════════════════
+st.subheader("📊 基本面快取狀態")
+
+fund_stats = get_fundamental_stats()
+fund_stale = fund_stats["total"] - fund_stats["fresh"]
+newest_fund = fund_stats.get("newest_fetch")
+newest_fund_str = str(newest_fund)[:16] if newest_fund else "尚無資料"
+
+bf1, bf2, bf3, bf4 = st.columns(4)
+bf1.metric("已快取股票", f"{fund_stats['total']} 檔")
+bf2.metric("仍然有效（90天內）", f"{fund_stats['fresh']} 檔")
+bf3.metric("需要更新", f"{fund_stale} 檔")
+bf4.metric("最新抓取", newest_fund_str)
+
+# 顯示背景工作器基本面佇列大小
+if worker is not None:
+    fw_status = worker.status()
+    if fw_status.get("fund_queue_size", 0) > 0:
+        st.info(
+            f"背景工作器待填充基本面：**{fw_status['fund_queue_size']} 檔**  \n"
+            "價格快取全部補齊後，工作器會自動開始填充基本面資料。"
+        )
+
+col_fund_clear, _ = st.columns([1, 7])
+if col_fund_clear.button("🗑️ 清除基本面快取", type="secondary"):
+    from sqlalchemy import text
+    from db.database import get_session
+    with get_session() as sess:
+        sess.execute(text("DELETE FROM fundamental_cache"))
+        sess.commit()
+    st.success("基本面快取已清除，背景工作器會在下次閒置時自動重新填充")
+    st.rerun()
+
+st.caption(
+    "財報每季發布，90 天 TTL 已足夠。"
+    "背景工作器會在所有價格快取補齊後，自動填充尚未快取的基本面資料。"
+)
+
+st.markdown("---")
+
+# ══ 區塊四：手動補抓 ════════════════════════════════════════════
 st.subheader("🔧 手動補抓")
 st.markdown("若特定股票快取不足，可在此手動更新（消耗 FinMind API 額度）")
 

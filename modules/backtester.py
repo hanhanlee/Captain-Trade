@@ -11,9 +11,9 @@
      買進：手續費 0.1425%
      賣出：手續費 0.1425% + 交易稅 0.3%
 
-出場規則（可自訂）：
-  - 停損：從買入價跌超過 stop_loss_pct%
-  - 停利：從買入價漲超過 take_profit_pct%
+出場規則（移動式）：
+  - 移動停損：持倉最高價 × (1 - trailing_stop_pct%)；最高價只升不降
+  - 移動停利：獲利達 trailing_tp_activation_pct% 後，改用更緊的 trailing_tp_pct% 追蹤
   - 強制出場：持有超過 max_hold_days 天
   - 技術破壞：收盤跌破 MA20（選用）
 """
@@ -34,9 +34,10 @@ TOTAL_COST_RATE = BUY_FEE_RATE + SELL_FEE_RATE + SELL_TAX_RATE  # 約 0.447%
 class BacktestConfig:
     start_date: str           # 回測開始日期，格式 "YYYY-MM-DD"
     end_date: str             # 回測結束日期
-    stop_loss_pct: float = 8.0      # 停損 %（從買入價下跌幾%出場）
-    take_profit_pct: float = 15.0   # 停利 %
-    max_hold_days: int = 20         # 最大持有天數
+    trailing_stop_pct: float = 8.0            # 移動停損：從持倉最高價回落幾% 出場
+    trailing_tp_activation_pct: float = 15.0  # 移動停利啟動門檻：獲利達此% 後緊縮追蹤
+    trailing_tp_pct: float = 5.0              # 啟動後的緊縮追蹤幅度（從最高價回落幾%）
+    max_hold_days: int = 20         # 最大持有天數（保底出場）
     use_ma20_exit: bool = True      # 跌破 MA20 時出場
     min_score: float = 65.0         # 只買強度分數 >= 此值的訊號
     warmup_days: int = 60           # 計算指標需要的暖身天數（不產生訊號）
@@ -145,6 +146,8 @@ def run_backtest(
 
     # 持倉狀態 {stock_id: TradeRecord}
     open_positions: dict[str, TradeRecord] = {}
+    # 追蹤各持倉的最高價（移動停損/停利基準），不放入 TradeRecord（屬於執行期狀態）
+    peak_prices: dict[str, float] = {}
     equity = 1.0          # 以比例計算，起始 1.0
     daily_returns = []
 
@@ -176,18 +179,27 @@ def run_backtest(
             sell_price = None
             exit_reason = ""
 
-            # 停損（以當日最低價判斷是否觸及）
-            stop_price = pos.buy_price * (1 - config.stop_loss_pct / 100)
-            if low <= stop_price:
-                sell_price = stop_price
-                exit_reason = "停損"
+            # 更新持倉最高價（用當日最高價追蹤，只升不降）
+            prev_peak = peak_prices.get(sid, pos.buy_price)
+            peak = max(prev_peak, high)
+            peak_prices[sid] = peak
 
-            # 停利（以當日最高價判斷）
-            elif high >= pos.buy_price * (1 + config.take_profit_pct / 100):
-                sell_price = pos.buy_price * (1 + config.take_profit_pct / 100)
-                exit_reason = "停利"
+            # 判斷是否已啟動移動停利模式（獲利達啟動門檻）
+            tp_activated = peak >= pos.buy_price * (1 + config.trailing_tp_activation_pct / 100)
+            if tp_activated:
+                trail_pct = config.trailing_tp_pct
+                trail_label = "移動停利"
+            else:
+                trail_pct = config.trailing_stop_pct
+                trail_label = "移動停損"
 
-            # MA20 跌破出場
+            # 移動停損/停利：最高價回落 trail_pct% 時出場（以當日最低價判斷觸及）
+            trail_stop = peak * (1 - trail_pct / 100)
+            if low <= trail_stop:
+                sell_price = trail_stop
+                exit_reason = trail_label
+
+            # MA20 跌破出場（未觸及移動停損時才判斷）
             elif config.use_ma20_exit:
                 df_to_today = stock_df[stock_df["date"].dt.date <= today]
                 if len(df_to_today) >= 20:
@@ -214,6 +226,7 @@ def run_backtest(
 
         for sid in closed_today:
             result.trades.append(open_positions.pop(sid))
+            peak_prices.pop(sid, None)
 
         # ── 掃描今日訊號（使用截至今日的資料，次日進場）──
         if day_idx + 1 < len(trading_days):

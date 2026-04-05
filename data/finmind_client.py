@@ -184,27 +184,38 @@ def smart_get_price(stock_id: str, required_days: int = 150) -> pd.DataFrame:
     return df
 
 
-def check_all_three_buying(idf: pd.DataFrame, days: int = 2) -> bool:
+def check_institutions_buying(
+    idf: pd.DataFrame,
+    days: int = 2,
+    institutions: list = None,
+) -> bool:
     """
-    判斷三大法人是否連續 days 個交易日齊買
+    判斷指定法人是否連續 days 個交易日都是淨買超
 
-    FinMind 的 name 欄位包含：
+    FinMind 的 name 欄位對應關係：
       Foreign_Investor / Foreign_Dealer_Self → 外資
       Investment_Trust                        → 投信
       Dealer_self / Dealer_Hedging            → 自營商
 
-    回傳 True 代表三方在最近 days 個交易日每日都是淨買超
+    institutions: ["外資", "投信", "自營商"] 的任意子集；
+                  None 或空串列視同三者全選。
     """
     if idf.empty or "name" not in idf.columns:
         return False
 
-    groups = {
-        "外資":   idf[idf["name"].str.contains("Foreign", case=False, na=False)],
-        "投信":   idf[idf["name"].str.contains("Investment_Trust", case=False, na=False)],
-        "自營商": idf[idf["name"].str.contains("Dealer", case=False, na=False)],
+    if not institutions:
+        institutions = ["外資", "投信", "自營商"]
+
+    _filters = {
+        "外資":   lambda d: d[d["name"].str.contains("Foreign", case=False, na=False)],
+        "投信":   lambda d: d[d["name"].str.contains("Investment_Trust", case=False, na=False)],
+        "自營商": lambda d: d[d["name"].str.contains("Dealer", case=False, na=False)],
     }
 
-    for name, grp in groups.items():
+    for inst in institutions:
+        if inst not in _filters:
+            continue
+        grp = _filters[inst](idf)
         if grp.empty:
             return False
         daily = grp.groupby("date")["net"].sum().sort_index()
@@ -215,6 +226,29 @@ def check_all_three_buying(idf: pd.DataFrame, days: int = 2) -> bool:
     return True
 
 
+def check_all_three_buying(idf: pd.DataFrame, days: int = 2) -> bool:
+    """向下相容包裝：判斷三大法人是否連續 days 日齊買"""
+    return check_institutions_buying(idf, days=days, institutions=None)
+
+
+def smart_get_institutional(stock_id: str, days: int = 10) -> pd.DataFrame:
+    """
+    智慧取法人資料：先查本機快取，24 小時內不重複 API 請求
+
+    - 快取夠新（24 小時內）→ 直接讀快取（0 次 API）
+    - 快取過期或無快取    → 呼叫 FinMind API 並寫入快取
+    """
+    from db.inst_cache import is_inst_fresh, save_institutional, load_institutional
+
+    if is_inst_fresh(stock_id):
+        return load_institutional(stock_id, days=days)
+
+    df = get_institutional_investors(stock_id, days=days)
+    if not df.empty:
+        save_institutional(stock_id, df)
+    return df
+
+
 def get_margin_trading(stock_id: str, days: int = 10) -> pd.DataFrame:
     """取得融資融券餘額"""
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -223,6 +257,173 @@ def get_margin_trading(stock_id: str, days: int = 10) -> pd.DataFrame:
         return df
     df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+def get_financial_statements(stock_id: str, years: int = 3) -> pd.DataFrame:
+    """
+    取得綜合損益表、資產負債表、現金流量表（季頻）
+
+    回傳 DataFrame 欄位：date, stock_id, type, value, origin_name
+    type 可能值：綜合損益表 / 資產負債表 / 現金流量表
+    """
+    start = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
+    df = _get("TaiwanStockFinancialStatements", stock_id=stock_id, start_date=start)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df
+
+
+def _extract_series(df: pd.DataFrame, name_pattern: str,
+                    stmt_type: str = None) -> pd.Series:
+    """從財報 DataFrame 提取特定科目的季度序列（按日期排序）"""
+    mask = df["origin_name"].str.contains(name_pattern, case=False, na=False)
+    if stmt_type:
+        mask &= df["type"].str.contains(stmt_type, na=False)
+    sub = df[mask].copy()
+    if sub.empty:
+        return pd.Series(dtype=float)
+    # 同一日期可能有多個子科目，加總
+    return sub.groupby("date")["value"].sum().sort_index()
+
+
+def compute_fundamentals(df: pd.DataFrame) -> dict:
+    """
+    從 TaiwanStockFinancialStatements 原始資料計算基本面指標
+
+    回傳 dict（有任何指標算不出來則對應欄位為 None）：
+        eps_ttm              — 近 4 季 EPS 合計
+        roe                  — 近 4 季 ROE (%)
+        operating_cf         — 近 4 季營業現金流合計
+        debt_ratio           — 最新負債比 (%)
+        gross_margin_latest  — 最新季毛利率 (%)
+        gross_margin_yoy     — 毛利率 YoY 變化（百分點）
+        data_date            — 最新資料日期字串
+    """
+    if df.empty:
+        return {}
+
+    result: dict = {}
+
+    # ── EPS（近 4 季合計）────────────────────────────────────────
+    eps_s = _extract_series(df, "每股盈餘", "損益")
+    if eps_s.empty:
+        eps_s = _extract_series(df, "每股盈餘")
+    result["eps_ttm"] = float(eps_s.tail(4).sum()) if len(eps_s) >= 1 else None
+
+    # ── 淨利 & 股東權益 → ROE ───────────────────────────────────
+    ni_s  = _extract_series(df, "本期淨利", "損益")
+    eq_s  = _extract_series(df, "權益", "資產負債")
+    if ni_s.empty:
+        ni_s = _extract_series(df, "本期淨利")
+    if eq_s.empty:
+        eq_s = _extract_series(df, "權益")
+    if len(ni_s) >= 1 and len(eq_s) >= 1:
+        ni_ttm   = float(ni_s.tail(4).sum())
+        eq_avg   = float(eq_s.tail(2).mean())  # 期初期末平均
+        result["roe"] = round(ni_ttm / eq_avg * 100, 2) if eq_avg != 0 else None
+    else:
+        result["roe"] = None
+
+    # ── 營業現金流（近 4 季合計）────────────────────────────────
+    ocf_s = _extract_series(df, "營業活動", "現金流")
+    if ocf_s.empty:
+        ocf_s = _extract_series(df, "營業活動")
+    result["operating_cf"] = float(ocf_s.tail(4).sum()) if len(ocf_s) >= 1 else None
+
+    # ── 負債比（最新季）─────────────────────────────────────────
+    ast_s = _extract_series(df, "資產總", "資產負債")
+    lib_s = _extract_series(df, "負債總", "資產負債")
+    if ast_s.empty:
+        ast_s = _extract_series(df, "資產總計")
+    if lib_s.empty:
+        lib_s = _extract_series(df, "負債總計")
+    if len(ast_s) >= 1 and len(lib_s) >= 1:
+        ast_latest = float(ast_s.iloc[-1])
+        lib_latest = float(lib_s.iloc[-1])
+        result["debt_ratio"] = round(lib_latest / ast_latest * 100, 2) if ast_latest != 0 else None
+    else:
+        result["debt_ratio"] = None
+
+    # ── 毛利率（最新季 & YoY）──────────────────────────────────
+    rev_s = _extract_series(df, "營業收入", "損益")
+    gp_s  = _extract_series(df, "毛利|營業毛利", "損益")
+    if rev_s.empty:
+        rev_s = _extract_series(df, "營業收入")
+    if gp_s.empty:
+        gp_s = _extract_series(df, "毛利")
+    result["gross_margin_latest"] = None
+    result["gross_margin_yoy"]    = None
+    common = sorted(set(rev_s.index) & set(gp_s.index))
+    if len(common) >= 1:
+        latest = common[-1]
+        rev_v = float(rev_s[latest])
+        gp_v  = float(gp_s[latest])
+        if rev_v != 0:
+            gm_now = round(gp_v / rev_v * 100, 2)
+            result["gross_margin_latest"] = gm_now
+            # YoY：找同一季去年（4 季前）
+            if len(common) >= 5:
+                yoy_date = common[-5]
+                rev_y = float(rev_s[yoy_date])
+                gp_y  = float(gp_s[yoy_date])
+                if rev_y != 0:
+                    gm_yoy = round(gp_v / rev_v * 100 - gp_y / rev_y * 100, 2)
+                    result["gross_margin_yoy"] = gm_yoy
+
+    # 最新資料日期
+    all_dates = df["date"].dropna()
+    result["data_date"] = str(all_dates.max().date()) if not all_dates.empty else ""
+
+    return result
+
+
+def smart_get_fundamentals(stock_id: str) -> dict:
+    """
+    智慧取基本面指標：先查本機快取（90 天 TTL），過期才呼叫 API
+
+    回傳 dict（空 dict 表示無資料，跳過基本面過濾）
+    遇到 402（付費端點）或其他 HTTP 錯誤時，存空快取後回傳空 dict，不中斷掃描。
+    """
+    import requests as _req
+    from db.fundamental_cache import is_fundamental_fresh, load_fundamental, save_fundamental
+
+    if is_fundamental_fresh(stock_id):
+        return load_fundamental(stock_id)
+
+    try:
+        df = get_financial_statements(stock_id, years=3)
+    except _req.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        if status == 402:
+            # TaiwanStockFinancialStatements 需要付費方案
+            # 存空快取避免 90 天內重複打 API；基本面過濾自動放行此股
+            save_fundamental(stock_id, {})
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                f"FinMind 財報端點需要付費方案（402），基本面過濾已停用。"
+                f"（首次觸發於 {stock_id}）"
+            )
+        else:
+            import logging as _log
+            _log.getLogger(__name__).debug(f"get_financial_statements {stock_id} HTTP {status}: {e}")
+            save_fundamental(stock_id, {})
+        return {}
+    except Exception as e:
+        import logging as _log
+        _log.getLogger(__name__).debug(f"get_financial_statements {stock_id} failed: {e}")
+        return {}
+
+    if df.empty:
+        # 儲存空指標作為「已嘗試」記錄，避免每次都打 API
+        save_fundamental(stock_id, {})
+        return {}
+
+    metrics = compute_fundamentals(df)
+    if metrics:
+        save_fundamental(stock_id, metrics)
+    return metrics
 
 
 def get_batch_prices(stock_ids: list, days: int = 120) -> dict[str, pd.DataFrame]:

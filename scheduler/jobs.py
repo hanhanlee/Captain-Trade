@@ -47,7 +47,7 @@ def job_daily_scan(top_n: int = 5, scan_count: int = 200):
             except Exception:
                 pass
 
-        result_df = run_scan(price_data=price_data, stock_info=stock_list)
+        result_df, _, _ = run_scan(price_data=price_data, stock_info=stock_list)
 
         if result_df.empty:
             send_message("📊 今日選股雷達：無符合條件的股票")

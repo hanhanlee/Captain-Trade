@@ -100,3 +100,44 @@ class StockInfoCache(Base):
     stock_name = Column(String(50))
     industry_category = Column(String(50))
     updated_at = Column(DateTime, default=datetime.now)
+
+
+class FundamentalCache(Base):
+    """基本面財務指標快取（季頻資料，90 天 TTL）"""
+    __tablename__ = "fundamental_cache"
+
+    stock_id             = Column(String(10), primary_key=True)
+    eps_ttm              = Column(Float)   # 近 4 季 EPS 合計
+    roe                  = Column(Float)   # 近 4 季 ROE (%)
+    operating_cf         = Column(Float)   # 近 4 季營業現金流合計（千元）
+    debt_ratio           = Column(Float)   # 最新負債比 (%)
+    gross_margin_latest  = Column(Float)   # 最新季毛利率 (%)
+    gross_margin_yoy     = Column(Float)   # 毛利率 YoY 變化（百分點）
+    data_date            = Column(String(10))  # 最新財報基準日
+    fetched_at           = Column(DateTime, default=datetime.now)
+
+
+class AppSettings(Base):
+    """應用程式設定（key-value 持久化儲存）"""
+    __tablename__ = "app_settings"
+
+    key = Column(String(50), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now)
+
+
+class InstCache(Base):
+    """三大法人買賣超本機快取（每日一次，避免重複 API 請求）"""
+    __tablename__ = "inst_cache"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "date", "name", name="uq_inst_stock_date_name"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    stock_id = Column(String(10), nullable=False)
+    date = Column(String(10), nullable=False)   # ISO date string YYYY-MM-DD
+    name = Column(String(50), nullable=False)   # Foreign_Investor, Investment_Trust, ...
+    buy = Column(Float, default=0.0)
+    sell = Column(Float, default=0.0)
+    net = Column(Float, default=0.0)
+    fetched_at = Column(DateTime, default=datetime.now)
