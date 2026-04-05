@@ -37,7 +37,9 @@ class ScanSignal:
     rsi_healthy: bool = False
     above_bb_lower: bool = False
     # ── 籌碼面條件 ────────────────────────────────
-    institutional_buy: bool = False    # 三大法人連續 2 日齊買
+    institutional_buy: bool = False    # 嚴格模式：所選法人各自連續買超
+    inst_total_buy: bool = False       # 合計模式：三大法人合計淨買超
+    foreign_trust_buy: bool = False    # 外資＋投信皆買超（土洋合買）
     margin_clean: bool = False
     # ── v2 進階條件 ───────────────────────────────
     weekly_trend_up: bool = False      # 週線 MA10 向上且站上
@@ -71,6 +73,8 @@ class ScanSignal:
             "rsi_healthy": 10,
             "above_bb_lower": 10,
             "institutional_buy": 7,
+            "inst_total_buy": 4,
+            "foreign_trust_buy": 3,
             "margin_clean": 3,
             # v2 進階加分
             "weekly_trend_up": 10,
@@ -90,7 +94,9 @@ class ScanSignal:
             "macd_cross": "MACD黃金交叉",
             "rsi_healthy": "RSI健康",
             "above_bb_lower": "布林正常",
-            "institutional_buy": "三大法人齊買",
+            "institutional_buy": "個別法人皆買超",
+            "inst_total_buy": "三大法人合計買超",
+            "foreign_trust_buy": "外資投信同步買超",
             "margin_clean": "籌碼乾淨",
             "weekly_trend_up": "週線多頭",
             "rs_positive": "相對強勢",
@@ -132,7 +138,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def analyze_stock(
     df: pd.DataFrame,
-    inst_buying: bool = False,
+    inst_buying=False,
     margin_trend: str = "flat",
     market_close: pd.Series = None,   # 大盤收盤序列，供 RS 計算（選填）
 ):
@@ -186,8 +192,14 @@ def analyze_stock(
     if pd.notna(latest["bb_lower"]) and latest["close"] >= latest["bb_lower"]:
         sig.above_bb_lower = True
 
-    # 7. 三大法人連續 2 日齊買
-    if inst_buying:
+    # 7. 法人條件
+    if isinstance(inst_buying, dict):
+        sig.institutional_buy = bool(inst_buying.get("strict_pass", False))
+        sig.inst_total_buy = bool(inst_buying.get("aggregate_pass", False))
+        sig.foreign_trust_buy = sig.inst_total_buy and bool(
+            inst_buying.get("foreign_trust_pass", False)
+        )
+    elif inst_buying:
         sig.institutional_buy = True
 
     # 8. 融資減少
@@ -625,6 +637,9 @@ def run_scan(
             "volume_ratio": volume_ratio,
             "score": sig.score(),
             "rs_score": sig.rs_score,
+            "inst_pass": bool(
+                sig.institutional_buy or sig.inst_total_buy or sig.foreign_trust_buy
+            ),
             "signals": "、".join(sig.triggered_labels()),
         })
 

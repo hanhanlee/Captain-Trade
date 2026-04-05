@@ -7,6 +7,7 @@ import os
 import time
 import requests
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -188,6 +189,7 @@ def check_institutions_buying(
     idf: pd.DataFrame,
     days: int = 2,
     institutions: list = None,
+    logic: str = "and",
 ) -> bool:
     """
     判斷指定法人是否連續 days 個交易日都是淨買超
@@ -199,12 +201,14 @@ def check_institutions_buying(
 
     institutions: ["外資", "投信", "自營商"] 的任意子集；
                   None 或空串列視同三者全選。
+    logic: "and" = 所選法人都要符合；"or" = 所選法人任一符合即可。
     """
     if idf.empty or "name" not in idf.columns:
         return False
 
     if not institutions:
         institutions = ["外資", "投信", "自營商"]
+    logic = (logic or "and").strip().lower()
 
     _filters = {
         "外資":   lambda d: d[d["name"].str.contains("Foreign", case=False, na=False)],
@@ -212,18 +216,146 @@ def check_institutions_buying(
         "自營商": lambda d: d[d["name"].str.contains("Dealer", case=False, na=False)],
     }
 
+    results = []
     for inst in institutions:
         if inst not in _filters:
             continue
         grp = _filters[inst](idf)
         if grp.empty:
-            return False
+            results.append(False)
+            continue
         daily = grp.groupby("date")["net"].sum().sort_index()
         recent = daily.tail(days)
-        if len(recent) < days or (recent <= 0).any():
-            return False
+        passed = len(recent) >= days and (recent > 0).all()
+        results.append(passed)
 
-    return True
+    if not results:
+        return False
+
+    if logic == "or":
+        return any(results)
+
+    return all(results)
+
+
+def summarize_institutional_signal(
+    idf: pd.DataFrame,
+    *,
+    selected_institutions: list | None = None,
+    strict_days: int = 2,
+    agg_mode: str = "rolling_sum",
+    agg_days: int = 5,
+) -> dict:
+    """
+    彙總三大法人訊號，供選股 UI 與計分邏輯共用。
+
+    參數：
+        selected_institutions:
+            嚴格模式下要檢查的法人集合，None/空值視同三者全選。
+        strict_days:
+            嚴格模式要求「各自連續買超」的交易日數。
+        agg_mode:
+            "rolling_sum"  -> 近 agg_days 日合計淨買超總和 > 0
+            "consecutive"  -> 最近 agg_days 個交易日每天合計淨買超都 > 0
+        agg_days:
+            合計模式判斷視窗大小。
+
+    回傳：
+        {
+            "strict_pass": bool,
+            "aggregate_pass": bool,
+            "foreign_trust_pass": bool,
+            "aggregate_sum": float,
+            "daily_total_net": pd.Series,
+            "recent_inst_net": pd.DataFrame,
+        }
+    """
+    if idf.empty or "name" not in idf.columns:
+        return {
+            "strict_pass": False,
+            "aggregate_pass": False,
+            "foreign_trust_pass": False,
+            "aggregate_sum": 0.0,
+            "daily_total_net": pd.Series(dtype=float),
+            "recent_inst_net": pd.DataFrame(),
+        }
+
+    if not selected_institutions:
+        selected_institutions = ["外資", "投信", "自營商"]
+
+    df = idf.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["net"] = pd.to_numeric(df.get("net", 0), errors="coerce").fillna(0.0)
+
+    inst_label = np.select(
+        [
+            df["name"].str.contains("Foreign", case=False, na=False),
+            df["name"].str.contains("Investment_Trust", case=False, na=False),
+            df["name"].str.contains("Dealer", case=False, na=False),
+        ],
+        ["外資", "投信", "自營商"],
+        default="其他",
+    )
+    df = df.assign(inst_label=inst_label)
+    df = df[df["inst_label"].isin(["外資", "投信", "自營商"])].copy()
+    if df.empty:
+        return {
+            "strict_pass": False,
+            "aggregate_pass": False,
+            "foreign_trust_pass": False,
+            "aggregate_sum": 0.0,
+            "daily_total_net": pd.Series(dtype=float),
+            "recent_inst_net": pd.DataFrame(),
+        }
+
+    # 先以向量化方式彙總成「日期 x 法人」矩陣，後續所有條件都從這個矩陣判斷。
+    daily_inst_net = (
+        df.groupby(["date", "inst_label"], as_index=False)["net"]
+        .sum()
+        .pivot(index="date", columns="inst_label", values="net")
+        .fillna(0.0)
+        .sort_index()
+    )
+
+    # 嚴格模式：所選法人各自都要連續 strict_days 為正。
+    strict_pass = True
+    for inst in selected_institutions:
+        if inst not in daily_inst_net.columns:
+            strict_pass = False
+            break
+        recent = daily_inst_net[inst].tail(strict_days)
+        if len(recent) < strict_days or (recent <= 0).any():
+            strict_pass = False
+            break
+
+    daily_total_net = daily_inst_net.sum(axis=1)
+    recent_total = daily_total_net.tail(agg_days)
+    aggregate_sum = float(recent_total.sum()) if not recent_total.empty else 0.0
+
+    if agg_mode == "consecutive":
+        aggregate_pass = len(recent_total) >= agg_days and (recent_total > 0).all()
+    else:
+        aggregate_pass = len(recent_total) >= agg_days and aggregate_sum > 0
+
+    # 土洋合買：外資與投信最近 strict_days 皆為淨買超。
+    foreign_trust_pass = True
+    for inst in ["外資", "投信"]:
+        if inst not in daily_inst_net.columns:
+            foreign_trust_pass = False
+            break
+        recent = daily_inst_net[inst].tail(strict_days)
+        if len(recent) < strict_days or (recent <= 0).any():
+            foreign_trust_pass = False
+            break
+
+    return {
+        "strict_pass": strict_pass,
+        "aggregate_pass": aggregate_pass,
+        "foreign_trust_pass": foreign_trust_pass,
+        "aggregate_sum": round(aggregate_sum, 2),
+        "daily_total_net": daily_total_net,
+        "recent_inst_net": daily_inst_net.tail(max(strict_days, agg_days)),
+    }
 
 
 def check_all_three_buying(idf: pd.DataFrame, days: int = 2) -> bool:

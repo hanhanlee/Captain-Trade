@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import time
 
-from data.finmind_client import get_daily_price, check_institutions_buying
+from data.finmind_client import get_daily_price, summarize_institutional_signal
 from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
@@ -139,17 +139,56 @@ with st.sidebar:
     inst_selection: list = []
     require_institutional = False
     if include_institutional:
-        inst_selection = st.multiselect(
-            "選擇法人",
-            options=["外資", "投信", "自營商"],
-            default=["外資", "投信", "自營商"],
-            help="只有勾選的法人都同時買超，才算符合條件",
+        inst_mode = st.radio(
+            "法人判斷模式",
+            options=["個別法人皆須買超", "三大法人合計買超"],
+            index=0,
+            help="前者保留原本嚴格邏輯；後者只看整體資金是否淨流入",
         )
+        if inst_mode == "個別法人皆須買超":
+            inst_selection = st.multiselect(
+                "選擇法人",
+                options=["外資", "投信", "自營商"],
+                default=["外資", "投信", "自營商"],
+                help="勾選的法人都必須各自連續買超才算符合",
+            )
+            strict_days = st.slider(
+                "個別法人連續買超天數",
+                min_value=1,
+                max_value=5,
+                value=2,
+                step=1,
+            )
+            agg_mode = "rolling_sum"
+            agg_days = 5
+        else:
+            inst_selection = ["外資", "投信", "自營商"]
+            strict_days = 2
+            agg_mode_label = st.radio(
+                "合計買超判斷方式",
+                options=["近 N 日累計 > 0", "連續 N 日每日 > 0"],
+                index=0,
+                horizontal=True,
+                help="可用近 N 日合計淨買超，或要求最近每一天合計都為正",
+            )
+            agg_mode = "rolling_sum" if agg_mode_label == "近 N 日累計 > 0" else "consecutive"
+            agg_days = st.slider(
+                "合計買超觀察天數",
+                min_value=2,
+                max_value=10,
+                value=5,
+                step=1,
+            )
         require_institutional = st.checkbox(
-            "法人齊買為必要條件（不符合直接排除）",
+            "法人條件為必要條件（不符合直接排除）",
             value=False,
             help="勾選後，未符合法人條件的股票直接剔除，而非只是少加分",
         )
+    else:
+        inst_mode = "個別法人皆須買超"
+        strict_days = 2
+        agg_mode = "rolling_sum"
+        agg_days = 5
 
     st.markdown("---")
     st.markdown("**流動性前置過濾**")
@@ -333,8 +372,12 @@ with tab_scan:
                 if include_institutional and dsm.institutional_available and inst_selection:
                     idf = dsm.get_institutional(sid, days=10)
                     if not idf.empty:
-                        inst_data[sid] = check_institutions_buying(
-                            idf, days=2, institutions=inst_selection
+                        inst_data[sid] = summarize_institutional_signal(
+                            idf,
+                            selected_institutions=inst_selection,
+                            strict_days=strict_days,
+                            agg_mode=agg_mode,
+                            agg_days=agg_days,
                         )
 
                 if not _fresh and not dsm.fallback_mode:
@@ -420,11 +463,19 @@ with tab_scan:
                 result_df = result_df[result_df["signals"].str.contains("週線多頭", na=False)]
             if min_rs > 0:
                 result_df = result_df[result_df["rs_score"] >= min_rs]
-            if require_institutional and use_inst and inst_selection:
+            if require_institutional and use_inst:
                 before = len(result_df)
-                result_df = result_df[result_df["signals"].str.contains("三大法人齊買", na=False)]
+                result_df = result_df[result_df["inst_pass"]]
                 filtered = before - len(result_df)
-                inst_label = "、".join(inst_selection)
+                inst_label = (
+                    f"{'、'.join(inst_selection)} 各自連續 {strict_days} 日買超"
+                    if inst_mode == "個別法人皆須買超"
+                    else (
+                        f"三大法人近 {agg_days} 日累計合計買超"
+                        if agg_mode == 'rolling_sum'
+                        else f"三大法人連續 {agg_days} 日每日合計買超"
+                    )
+                )
                 if filtered > 0:
                     st.info(f"法人必要條件（{inst_label}）：已過濾 **{filtered}** 檔未符合")
 
@@ -483,8 +534,19 @@ with tab_scan:
 
         st.dataframe(display_df, use_container_width=True, height=500)
     else:
-        _inst_label = "、".join(inst_selection) if inst_selection else "三大法人"
-        _inst_desc = f"{_inst_label}連續 2 日同步買超"
+        if inst_mode == "個別法人皆須買超":
+            _inst_label = "、".join(inst_selection) if inst_selection else "三大法人"
+            _inst_desc = f"{_inst_label}各自連續 {strict_days} 日買超"
+            _inst_score = "+7"
+            _inst_note = "保留原本嚴格邏輯"
+        else:
+            _inst_desc = (
+                f"三大法人近 {agg_days} 日累計合計買超"
+                if agg_mode == "rolling_sum"
+                else f"三大法人連續 {agg_days} 日每日合計買超"
+            )
+            _inst_score = "+4 / +7"
+            _inst_note = "合計買超 +4；若外資與投信同步買超再 +3"
         _inst_type = "**必要**（強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
         st.markdown(f"""
         #### 篩選條件（v3）
@@ -495,7 +557,7 @@ with tab_scan:
         | 量能 > 均量 1.3 倍 | 必要 | +20 | 有效突破 |
         | MACD 或 RSI 50-70 | 必要 | +15 | 動能確認 |
         | 不低於布林下軌 | 必要 | +10 | 排除弱勢 |
-        | {_inst_desc} | {_inst_type} | +7 | 外資＋投信＋自營商可自由組合 |
+        | {_inst_desc} | {_inst_type} | {_inst_score} | {_inst_note} |
         | 融資減少 | 加分 | +3 | 籌碼乾淨 |
         | 週線 MA10 多頭 | 加分 | +10 | 多週期共振 |
         | 相對強度 RS ≥ 60 | 加分 | +8 | 抗跌／領漲特性 |
@@ -588,7 +650,7 @@ with tab_funnel:
         if final_sigs:
             st.markdown("#### 加分條件命中率（最終入選股）")
             ADDITIVE = [
-                ("三大法人齊買", lambda s: s.institutional_buy),
+                ("法人買超", lambda s: s.institutional_buy),
                 ("籌碼乾淨",    lambda s: s.margin_clean),
                 ("週線多頭",    lambda s: s.weekly_trend_up),
                 ("相對強勢",    lambda s: s.rs_positive),
@@ -858,7 +920,7 @@ with tab_history:
                 c1.markdown(f"**量能過濾：** {rec['vol_filter'] or '不過濾'}")
                 c2.markdown(f"**週線多頭：** {'是' if rec['require_weekly'] else '否'}")
                 c2.markdown(f"**最低 RS：** {int(rec['min_rs']) if rec['min_rs'] else '不限'}")
-                c3.markdown(f"**法人條件：** {'三大法人齊買' if rec['include_institutional'] else '未啟用'}")
+                c3.markdown(f"**法人條件：** {'已啟用' if rec['include_institutional'] else '未啟用'}")
                 if rec["sector_filter"]:
                     st.markdown(f"**鎖定產業：** {rec['sector_filter']}")
 
