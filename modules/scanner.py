@@ -144,6 +144,7 @@ def analyze_stock(
     inst_buying=False,
     margin_trend: str = "flat",
     market_close: pd.Series = None,   # 大盤收盤序列，供 RS 計算（選填）
+    precomputed: bool = False,        # True 時跳過 compute_indicators（已預先計算）
 ):
     """
     分析單一股票，回傳 ScanSignal 或 None（資料不足）
@@ -151,8 +152,10 @@ def analyze_stock(
     inst_net:     近 5 日法人淨買超張數（正為買超）
     margin_trend: 'up' | 'down' | 'flat'
     market_close: 大盤（加權指數）收盤序列，用於相對強度計算
+    precomputed:  True 時假設 df 已包含所有技術指標欄位，跳過重算
     """
-    df = compute_indicators(df)
+    if not precomputed:
+        df = compute_indicators(df)
 
     if len(df) < 30 or df["ma20"].isna().all():
         return None

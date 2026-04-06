@@ -24,8 +24,7 @@ with tab_market:
     if st.button("🔄 載入大盤資料", type="primary"):
         with st.spinner("下載加權指數資料..."):
             try:
-                # 加權指數代碼：Y9999
-                df_taiex = get_daily_price("Y9999", days=200)
+                df_taiex = get_daily_price("TAIEX", days=200)
                 if df_taiex.empty:
                     st.warning("無法取得加權指數資料，FinMind 可能需要付費方案")
                 else:

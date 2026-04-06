@@ -18,14 +18,14 @@ from db.price_cache import (
     load_prices,
     save_prices,
 )
-from modules.backtester import BacktestConfig, compare_to_benchmark, run_backtest
+from modules.backtester import BacktestConfig, generate_text_report, run_backtest
 
 st.set_page_config(page_title="回測模組", page_icon="📉", layout="wide")
 init_db()
 init_cache_table()
 
 st.title("📉 回測模組")
-st.markdown("使用本機快取資料做策略回測，避免每次都重新打 API。")
+st.markdown("使用本機快取資料驗證策略，並加入大盤濾網與動態停損。")
 st.markdown("---")
 
 tab_download, tab_backtest, tab_result = st.tabs(
@@ -33,45 +33,73 @@ tab_download, tab_backtest, tab_result = st.tabs(
 )
 
 
+def _load_market_index(start_date: str = "2019-01-01") -> pd.DataFrame:
+    """讀取加權指數歷史資料，優先使用本機快取，缺少時再補抓。"""
+    market_df = load_prices("TAIEX", start_date=start_date)
+    if not market_df.empty:
+        return market_df
+
+    market_df = get_daily_price("TAIEX", start_date=start_date)
+    if not market_df.empty:
+        save_prices("TAIEX", market_df)
+    return market_df
+
+
 with tab_download:
     st.subheader("下載與檢查歷史資料")
-    st.info("回測前可先確認本機快取覆蓋範圍，必要時再補抓歷史日 K。")
+    st.info("回測前可先檢查本機快取是否足夠，必要時再補抓。")
+
+    # ── 加權指數狀態 ──────────────────────────────────────────────
+    st.markdown("#### 加權指數（大盤濾網必要條件）")
+    from db.price_cache import get_cached_dates
+    market_earliest, market_latest = get_cached_dates("TAIEX")
+    if market_earliest:
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("加權指數快取", "已下載")
+        mc2.metric("最早日期", str(market_earliest))
+        mc3.metric("最新日期", str(market_latest))
+        from datetime import date
+        stale = (date.today() - date.fromisoformat(str(market_latest))).days > 7
+        mc4.metric("狀態", "需要更新" if stale else "正常", delta_color="inverse" if stale else "off")
+        if stale:
+            st.warning("加權指數資料超過 7 天未更新，建議重新下載。")
+    else:
+        st.error("⚠️ 加權指數尚未下載，大盤濾網功能無法使用！請點擊下方按鈕下載。")
+
+    if st.button("下載加權指數歷史資料", use_container_width=True):
+        with st.spinner("正在下載加權指數..."):
+            mdf = get_daily_price("TAIEX", start_date="2019-01-01")
+        if mdf.empty:
+            st.error("下載失敗，請確認 API Token 是否有效。")
+        else:
+            save_prices("TAIEX", mdf)
+            st.success(f"加權指數下載完成，共 {len(mdf)} 筆資料。")
+            st.rerun()
+
+    st.markdown("---")
 
     summary = get_cache_summary()
     if not summary.empty:
-        col_s1, col_s2, col_s3 = st.columns(3)
-        col_s1.metric("已快取股票數", f"{len(summary)} 檔")
-        col_s2.metric("最早資料日", str(summary["earliest"].min()))
-        col_s3.metric("最新資料日", str(summary["latest"].max()))
+        col1, col2, col3 = st.columns(3)
+        col1.metric("已快取股票數", f"{len(summary)} 檔")
+        col2.metric("最早資料日", str(summary["earliest"].min()))
+        col3.metric("最新資料日", str(summary["latest"].max()))
         with st.expander("檢視快取明細"):
             st.dataframe(summary, use_container_width=True, hide_index=True)
     else:
-        st.warning("目前尚無任何回測快取資料。")
+        st.warning("目前沒有任何回測快取資料。")
 
     st.markdown("---")
 
     col_d1, col_d2 = st.columns(2)
     with col_d1:
-        download_count = st.number_input(
-            "下載股票檔數",
-            min_value=20,
-            max_value=600,
-            value=100,
-            step=20,
-        )
-        start_year = st.selectbox(
-            "起始年度",
-            options=[2019, 2020, 2021, 2022, 2023],
-            index=0,
-        )
-
+        download_count = st.number_input("下載股票檔數", min_value=20, max_value=600, value=100, step=20)
+        start_year = st.selectbox("起始年度", options=[2019, 2020, 2021, 2022, 2023], index=0)
     with col_d2:
         st.markdown("**API 使用估算**")
         st.markdown(f"- 本次預計抓取 **{download_count}** 檔")
         st.markdown("- 免費額度約每小時 600 次")
         st.markdown(f"- 執行後剩餘預估額度 **{600 - download_count}** 次")
-        if download_count > 500:
-            st.warning("這次請求量接近免費額度上限，建議分批下載。")
 
     if st.button("開始下載歷史資料", type="primary", use_container_width=True):
         with st.spinner("正在取得股票清單..."):
@@ -89,7 +117,6 @@ with tab_download:
         fail = 0
 
         cache_summary = get_cache_summary()
-
         for idx, stock_id in enumerate(target_ids):
             progress.progress((idx + 1) / len(target_ids))
             status.text(f"下載中 {stock_id} ({idx + 1}/{len(target_ids)})")
@@ -122,24 +149,16 @@ with tab_backtest:
 
     cached_stocks = get_all_cached_stocks()
     if not cached_stocks:
-        st.warning("目前沒有任何可用快取資料，請先到上一頁籤下載。")
+        st.warning("目前沒有可用快取資料，請先到上一頁籤下載。")
         st.stop()
 
     st.info(f"目前可回測股票數：**{len(cached_stocks)}** 檔")
 
     col_p1, col_p2, col_p3 = st.columns(3)
-
     with col_p1:
         st.markdown("#### 回測範圍")
-        bt_start = st.date_input(
-            "開始日期",
-            value=date.today() - timedelta(days=365),
-            min_value=date(2019, 1, 1),
-        )
-        bt_end = st.date_input(
-            "結束日期",
-            value=date.today() - timedelta(days=1),
-        )
+        bt_start = st.date_input("開始日期", value=date.today() - timedelta(days=365), min_value=date(2019, 1, 1))
+        bt_end = st.date_input("結束日期", value=date.today() - timedelta(days=1))
         stock_count = st.number_input(
             "回測股票數",
             min_value=10,
@@ -150,58 +169,32 @@ with tab_backtest:
 
     with col_p2:
         st.markdown("#### 出場策略設定")
-        enable_trailing_exit = st.checkbox("啟用移動停損/停利", value=True)
-        if enable_trailing_exit:
-            trailing_stop = st.slider("停損 (%)", 3.0, 20.0, 8.0, 0.5)
-            trailing_tp_act = st.slider("停利啟動門檻 (%)", 5.0, 50.0, 15.0, 1.0)
-            trailing_tp = st.slider("停利回撤 (%)", 1.0, 15.0, 5.0, 0.5)
-        else:
-            trailing_stop = 8.0
-            trailing_tp_act = 15.0
-            trailing_tp = 5.0
-
+        enable_trailing_exit = st.checkbox("啟用 ATR 動態移動停損", value=True)
+        atr_multiplier = st.slider("ATR 停損倍數", 1.0, 5.0, 2.5, 0.1) if enable_trailing_exit else 2.5
         enable_ma20_exit = st.checkbox("啟用跌破月線 (MA20) 出場", value=True)
         enable_max_hold_exit = st.checkbox("啟用最大持倉天數出場", value=True)
-        if enable_max_hold_exit:
-            max_hold = st.slider("最大持倉天數", 5, 120, 20, 5)
-        else:
-            max_hold = 20
-
+        max_hold = st.slider("最大持倉天數", 5, 120, 20, 5) if enable_max_hold_exit else 20
         enable_indicator_exit = st.checkbox("啟用技術指標停利法", value=False)
         indicator_exit_mode = "rsi_50"
         if enable_indicator_exit:
-            indicator_exit_label = st.selectbox(
-                "技術反轉訊號",
-                ["RSI 跌破 50", "MACD 死亡交叉"],
-            )
-            indicator_exit_mode = (
-                "rsi_50" if indicator_exit_label == "RSI 跌破 50" else "macd_dead_cross"
-            )
+            indicator_label = st.selectbox("技術反轉訊號", ["RSI 跌破 50", "MACD 死亡交叉"])
+            indicator_exit_mode = "rsi_50" if indicator_label == "RSI 跌破 50" else "macd_dead_cross"
 
     with col_p3:
-        st.markdown("#### 進場門檻")
+        st.markdown("#### 進場過濾器")
         min_score = st.slider("最低強度分數", 50.0, 100.0, 65.0, 1.0)
+        enable_market_filter = st.checkbox("啟用大盤 MA20 濾網", value=True)
+        max_bias_ratio = st.slider("個股最大容許 BIAS (%)", 0.0, 20.0, 10.0, 0.5)
+        exclude_leveraged_etf = st.checkbox(
+            "排除槓桿/反向/期貨型 ETF",
+            value=True,
+            help="排除代碼末位為 L（槓桿）、R（反向）、U（期貨）的 ETF，如 00631L、00632R、00635U。"
+                 "這類商品有波動耗損與轉倉成本，不適合用趨勢策略回測。",
+        )
         st.markdown("---")
-        st.markdown("**參數摘要**")
-        if enable_trailing_exit:
-            rr = trailing_tp_act / trailing_stop
-            st.markdown(f"停利啟動/停損比 = {rr:.1f} : 1")
-            st.caption(
-                f"停損 {trailing_stop}% ；最大漲幅達 {trailing_tp_act}% 後，改用 {trailing_tp}% 移動停利。"
-            )
-        else:
-            st.caption("目前未啟用移動停損/停利，將僅使用其他勾選的出場條件。")
-
-        enabled_exits = []
-        if enable_trailing_exit:
-            enabled_exits.append("移動停損/停利")
-        if enable_ma20_exit:
-            enabled_exits.append("跌破 MA20")
-        if enable_max_hold_exit:
-            enabled_exits.append("最大持倉天數")
-        if enable_indicator_exit:
-            enabled_exits.append("技術指標停利")
-        st.caption("已啟用出場條件：" + ("、".join(enabled_exits) if enabled_exits else "無"))
+        st.markdown("**過濾條件摘要**")
+        st.caption("進場需同時滿足：大盤站上 MA20 且 MA20 向上、個股 BIAS 不超過上限。")
+        st.caption(f"目前設定：最低分數 {min_score:.0f}，BIAS ≤ {max_bias_ratio:.1f}%")
 
     st.markdown("---")
 
@@ -210,26 +203,30 @@ with tab_backtest:
             start_date=str(bt_start),
             end_date=str(bt_end),
             enable_trailing_exit=enable_trailing_exit,
-            trailing_stop_pct=trailing_stop,
-            trailing_tp_activation_pct=trailing_tp_act,
-            trailing_tp_pct=trailing_tp,
+            atr_multiplier=atr_multiplier,
             enable_ma20_exit=enable_ma20_exit,
             enable_max_hold_exit=enable_max_hold_exit,
             max_hold_days=max_hold,
             enable_indicator_exit=enable_indicator_exit,
             indicator_exit_mode=indicator_exit_mode,
+            enable_market_filter=enable_market_filter,
+            max_bias_ratio=max_bias_ratio,
             min_score=min_score,
+            exclude_leveraged_etf=exclude_leveraged_etf,
         )
 
-        target_ids = cached_stocks[:stock_count]
         with st.spinner("正在讀取本機快取資料..."):
             price_data = {}
-            for stock_id in target_ids:
+            for stock_id in cached_stocks[:stock_count]:
                 df = load_prices(stock_id, start_date="2019-01-01")
                 if not df.empty:
                     price_data[stock_id] = df
 
-        st.info(f"共載入 {len(price_data)} 檔股票，開始執行回測。")
+            market_df = _load_market_index(start_date="2019-01-01")
+
+        if enable_market_filter and market_df.empty:
+            st.error("無法取得加權指數資料，暫時無法執行大盤濾網回測。")
+            st.stop()
 
         progress = st.progress(0)
         status = st.empty()
@@ -238,18 +235,28 @@ with tab_backtest:
             progress.progress(current / total)
             status.text(f"回測進度 {current}/{total}")
 
-        bt_result = run_backtest(price_data, config, progress_callback=on_progress)
+        bt_result = run_backtest(
+            price_data=price_data,
+            config=config,
+            progress_callback=on_progress,
+            market_df=market_df,
+        )
+
         progress.empty()
         status.empty()
 
         st.session_state["bt_result"] = bt_result
         st.session_state["bt_config"] = config
+        st.session_state["bt_market_df"] = market_df
 
         summary = bt_result.summary()
         if summary:
-            st.success(f"回測完成，共產生 {summary['total_trades']} 筆已平倉交易。")
+            st.success(
+                f"回測完成，共產生 {summary['total_trades']} 筆已平倉交易，"
+                f"略過 {summary.get('skip_count', 0)} 筆不符合進場過濾器的候選。"
+            )
         else:
-            st.warning("回測完成，但沒有產生已平倉交易，請調整進場或出場參數。")
+            st.warning("回測完成，但沒有產生已平倉交易。")
 
 
 with tab_result:
@@ -268,24 +275,24 @@ with tab_result:
         st.stop()
 
     with st.expander("回測參數"):
-        exit_mode_label = (
-            "RSI 跌破 50" if config.indicator_exit_mode == "rsi_50" else "MACD 死亡交叉"
-        )
+        indicator_label = "RSI 跌破 50" if config.indicator_exit_mode == "rsi_50" else "MACD 死亡交叉"
         st.markdown(
             f"""
 | 參數 | 值 |
 |------|----|
 | 回測期間 | {config.start_date} ~ {config.end_date} |
 | 最低強度分數 | {config.min_score} |
-| 移動停損/停利 | {'開啟' if config.enable_trailing_exit else '關閉'} |
-| 停損比例 | {config.trailing_stop_pct}% |
-| 停利啟動門檻 | {config.trailing_tp_activation_pct}% |
-| 停利回撤比例 | {config.trailing_tp_pct}% |
+| ATR 動態停損 | {'開啟' if config.enable_trailing_exit else '關閉'} |
+| ATR 期間 | {config.atr_period} |
+| ATR 停損倍數 | {config.atr_multiplier} |
 | 跌破 MA20 出場 | {'開啟' if config.enable_ma20_exit else '關閉'} |
 | 最大持倉天數出場 | {'開啟' if config.enable_max_hold_exit else '關閉'} |
 | 最大持倉天數 | {config.max_hold_days} 天 |
 | 技術指標停利法 | {'開啟' if config.enable_indicator_exit else '關閉'} |
-| 技術停利訊號 | {exit_mode_label} |
+| 技術停利訊號 | {indicator_label} |
+| 大盤濾網 | {'開啟' if config.enable_market_filter else '關閉'} |
+| 個股最大 BIAS | {config.max_bias_ratio}% |
+| 排除槓桿/期貨 ETF | {'是' if getattr(config, 'exclude_leveraged_etf', False) else '否'} |
 """
         )
 
@@ -307,8 +314,6 @@ with tab_result:
     if bt_result.equity_curve:
         n_days = len(bt_result.equity_curve)
         dates = pd.date_range(start=config.start_date, periods=n_days, freq="B")
-        benchmark_curve = [(1 + 0.08) ** (i / 252) for i in range(n_days)]
-
         fig_eq = go.Figure()
         fig_eq.add_trace(
             go.Scatter(
@@ -320,19 +325,10 @@ with tab_result:
                 fillcolor="rgba(52,152,219,0.08)",
             )
         )
-        fig_eq.add_trace(
-            go.Scatter(
-                x=dates,
-                y=[v * 100 for v in benchmark_curve],
-                name="年化 8% 基準",
-                line=dict(color="#95a5a6", width=1.5, dash="dot"),
-            )
-        )
-        fig_eq.update_layout(height=380, margin=dict(t=30, b=10))
+        fig_eq.update_layout(height=360, margin=dict(t=30, b=10))
         st.plotly_chart(fig_eq, use_container_width=True)
 
-    col_exit, col_stock = st.columns(2)
-
+    col_exit, col_skip = st.columns(2)
     with col_exit:
         st.markdown("### 出場原因分布")
         exit_data = summary.get("exit_reasons", {})
@@ -348,28 +344,20 @@ with tab_result:
             fig_exit.update_layout(height=320, margin=dict(t=20, b=10))
             st.plotly_chart(fig_exit, use_container_width=True)
 
-    with col_stock:
-        st.markdown("### 個股累計報酬")
-        closed_trades = [t for t in bt_result.trades if t.sell_date is not None]
-        if closed_trades:
-            stock_pnl = {}
-            for trade in closed_trades:
-                stock_pnl[trade.stock_id] = stock_pnl.get(trade.stock_id, 0) + trade.pnl_pct
-            sp_df = pd.DataFrame(
-                sorted(stock_pnl.items(), key=lambda x: x[1]),
-                columns=["stock_id", "total_pnl_pct"],
-            )
-            colors = ["#27ae60" if v >= 0 else "#e74c3c" for v in sp_df["total_pnl_pct"]]
-            fig_sp = go.Figure(
-                go.Bar(
-                    x=sp_df["total_pnl_pct"],
-                    y=sp_df["stock_id"],
-                    orientation="h",
-                    marker_color=colors,
+    with col_skip:
+        st.markdown("### 略過原因分布")
+        skip_data = summary.get("skip_reasons", {})
+        if skip_data:
+            fig_skip = go.Figure(
+                go.Pie(
+                    labels=list(skip_data.keys()),
+                    values=list(skip_data.values()),
+                    hole=0.4,
+                    textinfo="label+percent+value",
                 )
             )
-            fig_sp.update_layout(height=320, margin=dict(t=10, b=10), xaxis_title="累計報酬 (%)")
-            st.plotly_chart(fig_sp, use_container_width=True)
+            fig_skip.update_layout(height=320, margin=dict(t=20, b=10))
+            st.plotly_chart(fig_skip, use_container_width=True)
 
     st.markdown("---")
     st.markdown("### 交易明細")
@@ -390,4 +378,37 @@ with tab_result:
                 for t in sorted(closed_trades, key=lambda x: x.buy_date)
             ]
         )
-        st.dataframe(trades_df, use_container_width=True, hide_index=True, height=400)
+        st.dataframe(trades_df, use_container_width=True, hide_index=True, height=320)
+
+    if bt_result.skip_logs:
+        st.markdown("---")
+        st.markdown("### 略過交易紀錄")
+        skip_df = pd.DataFrame(
+            [
+                {
+                    "日期": s.trade_date,
+                    "股票代號": s.stock_id,
+                    "原因": s.reason,
+                    "分數": s.score,
+                    "BIAS(%)": s.bias_ratio,
+                }
+                for s in bt_result.skip_logs
+            ]
+        )
+        st.dataframe(skip_df, use_container_width=True, hide_index=True, height=320)
+
+    st.markdown("---")
+    st.markdown("### 匯出 Gemini 分析報告")
+    st.caption("產生包含策略配置、績效統計、月度分析、完整交易明細的 Markdown 報告，可直接貼給 Gemini 分析。")
+    report_text = generate_text_report(bt_result, config)
+    report_filename = f"backtest_report_{config.start_date}_{config.end_date}.md"
+    st.download_button(
+        label="下載分析報告 (.md)",
+        data=report_text.encode("utf-8"),
+        file_name=report_filename,
+        mime="text/markdown",
+        use_container_width=True,
+        type="primary",
+    )
+    with st.expander("預覽報告內容"):
+        st.text(report_text[:3000] + ("\n...(截斷預覽，完整內容請下載)" if len(report_text) > 3000 else ""))

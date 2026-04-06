@@ -13,7 +13,7 @@ import plotly.express as px
 from datetime import datetime, date, timedelta
 
 from db.database import init_db, vacuum_db
-from db.price_cache import get_cache_summary, delete_old_prices, get_all_cached_stocks
+from db.price_cache import get_cache_summary, delete_old_prices, get_all_cached_stocks, diagnose_cache
 from db.settings import is_market_closed, set_market_closed
 from db.inst_cache import get_inst_cache_stats
 from db.fundamental_cache import get_fundamental_stats
@@ -411,6 +411,151 @@ if "cache_summary" in st.session_state:
                 "latest": "最新日期", "days": "天數"
             })
             st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+
+st.markdown("---")
+
+# ══ 區塊二．五：快取品質診斷 ════════════════════════════════════════
+st.subheader("🔍 快取品質診斷")
+st.markdown("找出完全缺失、資料不足或過舊的股票，並可一鍵批次補抓。")
+
+diag_col1, diag_col2, diag_col3, _ = st.columns([1, 1, 1, 5])
+min_days_thresh = diag_col1.number_input("最低天數門檻", min_value=30, max_value=1000, value=200, step=50,
+                                          help="快取筆數低於此值視為資料不足")
+stale_days_thresh = diag_col2.number_input("過舊天數門檻", min_value=3, max_value=60, value=7, step=1,
+                                            help="最新日期超過幾天前視為過舊")
+run_diag = diag_col3.button("執行診斷", type="primary", use_container_width=True)
+
+if run_diag:
+    with st.spinner("診斷中，讀取快取資料庫..."):
+        diag = diagnose_cache(min_days=min_days_thresh, stale_days=stale_days_thresh)
+    st.session_state["cache_diag"] = diag
+
+if "cache_diag" in st.session_state:
+    diag = st.session_state["cache_diag"]
+    summary_df = diag["summary"]
+    missing_ids = diag["missing"]
+    thin_df = diag["thin"]
+    stale_df = diag["stale"]
+    problem_ids = diag["problem_ids"]
+
+    # ── 診斷指標列 ──────────────────────────────────────────────
+    delisted_df = diag.get("delisted", pd.DataFrame())
+    suspend_ids = diag.get("suspend_ids", set())
+
+    d1, d2, d3, d4, d5, d6 = st.columns(6)
+    d1.metric("已知市場股票", f"{len(diag['missing']) + len(summary_df)} 檔",
+              help="stock_info_cache 中的股票總數")
+    d2.metric("已下市（排除）", f"{len(delisted_df)} 檔",
+              help=f"ref/suspendList.csv 共 {len(suspend_ids)} 筆，快取中命中 {len(delisted_df)} 檔，已排除在問題清單之外")
+    d3.metric("完全缺失", f"{len(missing_ids)} 檔",
+              delta=f"-{len(missing_ids)}" if missing_ids else None,
+              delta_color="inverse" if missing_ids else "off",
+              help="stock_info_cache 有記錄、非下市，但 price_cache 完全沒有資料")
+    d4.metric(f"資料不足（< {min_days_thresh} 天）", f"{len(thin_df)} 檔",
+              delta_color="inverse")
+    d5.metric(f"資料過舊（> {stale_days_thresh} 天）", f"{len(stale_df)} 檔",
+              delta_color="inverse")
+    d6.metric("需要補抓（合計）", f"{len(problem_ids)} 檔",
+              delta_color="inverse")
+
+    # ── 分頁顯示問題股票 ─────────────────────────────────────────
+    if not summary_df.empty:
+        # 資料筆數分佈
+        fig_days = px.histogram(
+            summary_df, x="days",
+            nbins=50,
+            labels={"days": "快取天數", "count": "股票數"},
+            title="快取天數分佈",
+            color_discrete_sequence=["#3498db"],
+        )
+        fig_days.add_vline(x=min_days_thresh, line_dash="dash", line_color="#e74c3c",
+                           annotation_text=f"門檻 {min_days_thresh} 天")
+        fig_days.update_layout(height=280, margin=dict(t=40, b=10))
+        st.plotly_chart(fig_days, use_container_width=True)
+
+    tab_missing, tab_thin, tab_stale, tab_delisted, tab_all = st.tabs(
+        [f"完全缺失 ({len(missing_ids)})", f"資料不足 ({len(thin_df)})",
+         f"資料過舊 ({len(stale_df)})", f"已下市 ({len(delisted_df)})",
+         f"全部有快取 ({len(summary_df)})"]
+    )
+
+    with tab_missing:
+        if missing_ids:
+            st.warning(f"以下 **{len(missing_ids)}** 檔股票在股票清單中，但快取完全沒有資料：")
+            # 每行顯示 10 個代碼
+            chunks = [missing_ids[i:i+10] for i in range(0, len(missing_ids), 10)]
+            for chunk in chunks:
+                st.code("  ".join(chunk))
+        else:
+            st.success("所有已知股票皆有快取資料。")
+
+    with tab_thin:
+        if not thin_df.empty:
+            st.warning(f"以下 **{len(thin_df)}** 檔股票快取天數不足 {min_days_thresh} 天：")
+            show_thin = thin_df.rename(columns={
+                "stock_id": "代碼", "earliest": "最早日期", "latest": "最新日期", "days": "天數", "status": "狀態"
+            })
+            st.dataframe(show_thin.sort_values("天數"), use_container_width=True, hide_index=True, height=320)
+        else:
+            st.success(f"所有快取股票均達 {min_days_thresh} 天門檻。")
+
+    with tab_stale:
+        if not stale_df.empty:
+            st.warning(f"以下 **{len(stale_df)}** 檔股票最新資料超過 {stale_days_thresh} 天前：")
+            show_stale = stale_df.rename(columns={
+                "stock_id": "代碼", "earliest": "最早日期", "latest": "最新日期", "days": "天數", "status": "狀態"
+            })
+            st.dataframe(show_stale.sort_values("最新日期"), use_container_width=True, hide_index=True, height=320)
+        else:
+            st.success("所有快取資料均在時效內。")
+
+    with tab_delisted:
+        if not delisted_df.empty:
+            st.info(
+                f"以下 **{len(delisted_df)}** 檔股票已記錄於 `ref/suspendList.csv`，"
+                "為已下市股票，快取資料僅供歷史參考，不需補抓，不計入問題清單。"
+            )
+            show_delisted = delisted_df[["stock_id", "earliest", "latest", "days"]].rename(columns={
+                "stock_id": "代碼", "earliest": "最早日期", "latest": "最新日期", "days": "天數"
+            })
+            st.dataframe(show_delisted.sort_values("代碼"), use_container_width=True, hide_index=True, height=360)
+        else:
+            st.info("快取中目前沒有已下市股票的資料。")
+
+    with tab_all:
+        if not summary_df.empty:
+            search_diag = st.text_input("搜尋代碼", placeholder="2330", key="diag_search")
+            show_all = summary_df.copy()
+            if search_diag:
+                show_all = show_all[show_all["stock_id"].str.contains(search_diag)]
+            show_all = show_all.rename(columns={
+                "stock_id": "代碼", "earliest": "最早日期", "latest": "最新日期", "days": "天數", "status": "狀態"
+            })
+            # 問題股票標紅：用 status 欄位判斷
+            st.dataframe(
+                show_all.sort_values("天數"),
+                use_container_width=True, hide_index=True, height=400,
+            )
+
+    # ── 批次補抓問題股票 ─────────────────────────────────────────
+    if problem_ids:
+        st.markdown("---")
+        st.markdown("#### 批次補抓問題股票")
+        st.info(
+            f"診斷出 **{len(problem_ids)}** 檔有問題（缺失 + 不足 + 過舊）。  \n"
+            "點擊下方按鈕將這些股票加入工作器優先佇列，或直接在下方手動補抓。"
+        )
+        # 提供預填到手動補抓欄位
+        prob_str = ", ".join(problem_ids[:50])  # 最多顯示 50 個
+        st.code(prob_str + ("..." if len(problem_ids) > 50 else ""), language=None)
+
+        if worker is not None and st.button("🚀 排入工作器優先補抓", type="primary"):
+            if hasattr(worker, "priority_enqueue"):
+                worker.priority_enqueue(problem_ids)
+                st.success(f"已將 {len(problem_ids)} 檔排入優先佇列，工作器將優先補抓。")
+            else:
+                st.warning("工作器不支援優先佇列，請使用下方「手動補抓」。")
+            st.rerun()
 
 st.markdown("---")
 
