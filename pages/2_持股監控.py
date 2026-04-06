@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 import time
 from sqlalchemy import text
 
-from data.finmind_client import get_daily_price
+from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.portfolio import run_portfolio_check, AlertLevel
 from modules.portfolio_io import (
     STANDARD_COLUMNS,
@@ -17,8 +17,10 @@ from modules.portfolio_io import (
     parse_holdings_csv,
     validate_holdings_df,
 )
+from db.price_cache import load_prices
 from db.database import get_session, init_db
 from db.models import Portfolio
+from db.settings import is_market_closed
 from notifications.line_notify import send_message
 
 st.set_page_config(page_title="持股監控", page_icon="💼", layout="wide")
@@ -187,38 +189,75 @@ tab_monitor, tab_manage = st.tabs(["📊 即時監控", "✏️ 管理持股"])
 # ══ Tab：即時監控 ═══════════════════════════════════════════
 with tab_monitor:
     holdings = load_holdings()
+    market_closed_mode = is_market_closed()
 
     if not holdings:
         st.info("尚未新增任何持股。請前往「管理持股」頁籤新增。")
     else:
+        if market_closed_mode:
+            st.info(
+                "🏖️ 休市模式啟用中：持股監控只讀取本機快取，不會連線更新報價。",
+                icon=None,
+            )
         col_refresh, col_notify = st.columns([2, 1])
         with col_refresh:
-            refresh = st.button("🔄 更新報價", type="primary", use_container_width=True)
+            refresh = st.button(
+                "🔄 更新報價" if not market_closed_mode else "🔄 重新讀取快取",
+                type="primary",
+                use_container_width=True,
+            )
         with col_notify:
             notify_btn = st.button("📲 推播警示到 LINE", use_container_width=True)
 
         if refresh or "portfolio_stats" not in st.session_state:
             price_data = {}
+            failed_ids = []
+            dsm = None if market_closed_mode else DataSourceManager()
             prog = st.progress(0)
             for i, h in enumerate(holdings):
                 prog.progress((i + 1) / len(holdings))
                 try:
-                    df = get_daily_price(h["stock_id"], days=90)
+                    if market_closed_mode:
+                        df = load_prices(h["stock_id"], start_date="2025-01-01")
+                    else:
+                        df = dsm.get_price(h["stock_id"], required_days=90)
                     if not df.empty:
                         price_data[h["stock_id"]] = df
-                    time.sleep(0.05)
+                    else:
+                        failed_ids.append(h["stock_id"])
+                    if not market_closed_mode:
+                        time.sleep(0.05)
                 except Exception:
-                    pass
+                    failed_ids.append(h["stock_id"])
             prog.empty()
 
-            stats_list, all_alerts = run_portfolio_check(holdings, price_data)
-            st.session_state["portfolio_stats"] = stats_list
-            st.session_state["portfolio_alerts"] = all_alerts
-            st.session_state["portfolio_prices"] = price_data
+            # 若本輪一筆都抓不到，不覆蓋既有結果，避免誤顯示成「無警示」
+            if price_data:
+                stats_list, all_alerts = run_portfolio_check(holdings, price_data)
+                st.session_state["portfolio_stats"] = stats_list
+                st.session_state["portfolio_alerts"] = all_alerts
+                st.session_state["portfolio_prices"] = price_data
+                st.session_state["portfolio_failed_ids"] = failed_ids
+                st.session_state["portfolio_fallback_mode"] = dsm.fallback_mode if dsm is not None else False
+            else:
+                st.session_state["portfolio_failed_ids"] = [h["stock_id"] for h in holdings]
 
         stats_list = st.session_state.get("portfolio_stats", [])
         all_alerts = st.session_state.get("portfolio_alerts", [])
         price_data = st.session_state.get("portfolio_prices", {})
+        failed_ids = st.session_state.get("portfolio_failed_ids", [])
+        fallback_mode = st.session_state.get("portfolio_fallback_mode", False)
+
+        if fallback_mode:
+            st.warning(FALLBACK_WARNING)
+        if failed_ids:
+            st.warning(
+                "以下持股本輪無法取得最新報價，已略過或沿用先前結果："
+                + "、".join(failed_ids[:10])
+                + (" …" if len(failed_ids) > 10 else "")
+            )
+        if not stats_list and holdings:
+            st.error("目前無法取得任何持股報價，因此無法判斷警示。請稍後再試或先檢查資料來源。")
 
         # 警示區塊
         danger_alerts = [a for a in all_alerts if a.level == AlertLevel.DANGER]

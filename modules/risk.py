@@ -2,6 +2,7 @@
 風險控制引擎
 - 固定風險法：每筆最多虧損帳戶 X%
 - Kelly Criterion：依勝率/盈虧比計算最佳下注比例
+- 正金字塔加碼法：依獲利與乖離率控制分批加碼
 - 總帳戶曝險監控
 - 最大回撤追蹤
 """
@@ -21,6 +22,27 @@ class PositionResult:
     risk_pct_of_account: float  # 此部位佔帳戶的風險比例
     reward_risk_ratio: float    # 報酬風險比
     note: str = ""
+
+
+@dataclass
+class PyramidAddOnResult:
+    stage: str
+    allocation_pct: float
+    entry_price: float
+    ma20: float
+    bias_ratio: float
+    planned_amount: float
+    suggested_shares: int
+    allowed: bool
+    reasons: list
+    note: str = ""
+
+
+def calc_bias_ratio(current_price: float, ma20: float) -> float:
+    """計算月線乖離率（BIAS）。"""
+    if ma20 <= 0:
+        raise ValueError("MA20 必須大於 0")
+    return round((current_price - ma20) / ma20 * 100, 2)
 
 
 def calc_position_fixed_risk(
@@ -122,6 +144,108 @@ def calc_position_kelly(
         risk_pct_of_account=round(actual_risk / account_size * 100, 2),
         reward_risk_ratio=round(r, 2),
         note=f"Full Kelly={kelly_pct:.1%}，使用 {kelly_fraction:.0%} = {fractional_kelly:.1%}",
+    )
+
+
+def calc_pyramid_add_on(
+    total_planned_capital: float,
+    current_price: float,
+    ma20: float,
+    current_profit_pct: float,
+    breakout_confirmed: bool,
+    trend_continues: bool,
+    stage: str,
+) -> PyramidAddOnResult:
+    """
+    正金字塔加碼法計算器。
+
+    stage:
+        "base"   -> 第一筆（基本單）50%
+        "add_1"  -> 第二次加碼 30%
+        "add_2"  -> 第三次加碼 20%
+    """
+    if total_planned_capital <= 0:
+        raise ValueError("總計畫資金必須大於 0")
+    if current_price <= 0:
+        raise ValueError("現價必須大於 0")
+
+    bias_ratio = calc_bias_ratio(current_price, ma20)
+
+    stage_rules = {
+        "base": {
+            "label": "第一筆（基本單）",
+            "allocation_pct": 50.0,
+            "bias_limit": 3.0,
+        },
+        "add_1": {
+            "label": "第二次加碼",
+            "allocation_pct": 30.0,
+            "bias_limit": 5.0,
+        },
+        "add_2": {
+            "label": "第三次加碼",
+            "allocation_pct": 20.0,
+            "bias_limit": 7.0,
+        },
+    }
+    if stage not in stage_rules:
+        raise ValueError("stage 必須為 base / add_1 / add_2")
+
+    rule = stage_rules[stage]
+    planned_amount = total_planned_capital * rule["allocation_pct"] / 100
+    suggested_shares = max(1, math.floor(planned_amount / current_price))
+
+    reasons: list[str] = []
+    allowed = True
+
+    if not breakout_confirmed:
+        allowed = False
+        reasons.append("尚未確認站上月線或突破平台")
+
+    if stage == "base":
+        if bias_ratio >= rule["bias_limit"]:
+            allowed = False
+            reasons.append(f"BIAS {bias_ratio:.2f}% ≥ {rule['bias_limit']:.1f}%")
+    elif stage == "add_1":
+        if not trend_continues:
+            allowed = False
+            reasons.append("趨勢未確認持續")
+        if current_profit_pct < 5 or current_profit_pct > 10:
+            allowed = False
+            reasons.append("目前獲利未落在 +5% 到 +10% 區間")
+        if bias_ratio >= rule["bias_limit"]:
+            allowed = False
+            reasons.append(f"BIAS {bias_ratio:.2f}% ≥ {rule['bias_limit']:.1f}%")
+    elif stage == "add_2":
+        if not trend_continues:
+            allowed = False
+            reasons.append("趨勢未確認持續")
+        if current_profit_pct < 15:
+            allowed = False
+            reasons.append("目前獲利未達 +15%")
+        if bias_ratio >= rule["bias_limit"]:
+            allowed = False
+            reasons.append(f"BIAS {bias_ratio:.2f}% ≥ {rule['bias_limit']:.1f}%")
+
+    if allowed:
+        note = (
+            f"符合 {rule['label']} 條件，可動用計畫資金的 {rule['allocation_pct']:.0f}% ，"
+            f"約可買 {suggested_shares} 股。"
+        )
+    else:
+        note = f"目前不建議執行 {rule['label']}。"
+
+    return PyramidAddOnResult(
+        stage=rule["label"],
+        allocation_pct=rule["allocation_pct"],
+        entry_price=current_price,
+        ma20=ma20,
+        bias_ratio=bias_ratio,
+        planned_amount=round(planned_amount),
+        suggested_shares=suggested_shares,
+        allowed=allowed,
+        reasons=reasons,
+        note=note,
     )
 
 

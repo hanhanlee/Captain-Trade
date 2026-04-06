@@ -13,6 +13,8 @@ from data.finmind_client import get_stock_list
 from modules.risk import (
     calc_position_fixed_risk,
     calc_position_kelly,
+    calc_pyramid_add_on,
+    calc_bias_ratio,
     calc_portfolio_exposure,
     calc_max_drawdown,
     calc_sector_exposure,
@@ -224,6 +226,129 @@ with tab_position:
                     st.success(f"✅ 停損線 {ts['trailing_stop']:.2f}，鎖定獲利 {ts['locked_profit_pct']:+.2f}%")
 
                 st.caption(f"公式：{atr_highest:.2f}（最高價）− {atr_mult} × {atr_val:.2f}（ATR）= {ts['trailing_stop']:.2f}")
+
+    # ── 正金字塔加碼法 ────────────────────────────────────
+    st.markdown("---")
+    with st.expander("🧱 正金字塔加碼計算機", expanded=False):
+        st.markdown("""
+        **核心原則：**
+
+        - 第一筆（基本單）投入 50%
+        - 第二次加碼投入 30%
+        - 第三次加碼投入 20%
+
+        只有在**獲利擴大、趨勢持續、且 BIAS 沒有過熱**時才允許往上加碼。
+        """)
+
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            total_plan_capital = st.number_input(
+                "總計畫資金（元）",
+                min_value=10_000,
+                max_value=100_000_000,
+                value=1_000_000,
+                step=10_000,
+                format="%d",
+                key="pyr_total_plan_capital",
+            )
+            stage = st.radio(
+                "加碼階段",
+                ["第一筆（基本單）", "第二次加碼", "第三次加碼"],
+                key="pyr_stage",
+            )
+        with p2:
+            current_price = st.number_input(
+                "目前股價（元）",
+                min_value=1.0,
+                value=100.0,
+                step=0.5,
+                key="pyr_current_price",
+            )
+            ma20_value = st.number_input(
+                "MA20（月線）（元）",
+                min_value=0.1,
+                value=97.0,
+                step=0.5,
+                key="pyr_ma20",
+            )
+            current_profit_pct = st.number_input(
+                "目前累積獲利（%）",
+                min_value=-50.0,
+                max_value=300.0,
+                value=0.0,
+                step=0.5,
+                key="pyr_profit_pct",
+            )
+        with p3:
+            breakout_confirmed = st.checkbox(
+                "已確認站上月線或突破平台",
+                value=True,
+                key="pyr_breakout_confirmed",
+            )
+            trend_continues = st.checkbox(
+                "趨勢仍持續（均線、多頭結構未破壞）",
+                value=True,
+                key="pyr_trend_continues",
+            )
+
+        try:
+            live_bias = calc_bias_ratio(current_price, ma20_value)
+            st.caption(f"目前 BIAS：**{live_bias:.2f}%**")
+        except ValueError:
+            live_bias = None
+
+        if st.button("計算正金字塔加碼建議", key="btn_pyramid"):
+            stage_map = {
+                "第一筆（基本單）": "base",
+                "第二次加碼": "add_1",
+                "第三次加碼": "add_2",
+            }
+            try:
+                pyramid = calc_pyramid_add_on(
+                    total_planned_capital=total_plan_capital,
+                    current_price=current_price,
+                    ma20=ma20_value,
+                    current_profit_pct=current_profit_pct,
+                    breakout_confirmed=breakout_confirmed,
+                    trend_continues=trend_continues,
+                    stage=stage_map[stage],
+                )
+                st.session_state["pyramid_result"] = pyramid
+            except ValueError as e:
+                st.error(str(e))
+
+        if "pyramid_result" in st.session_state:
+            pr = st.session_state["pyramid_result"]
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("目前階段", pr.stage)
+            c2.metric("資金比例", f"{pr.allocation_pct:.0f}%")
+            c3.metric("建議投入金額", f"{pr.planned_amount:,.0f} 元")
+            c4.metric("目前 BIAS", f"{pr.bias_ratio:.2f}%")
+
+            c5, c6 = st.columns(2)
+            c5.metric("建議加碼股數", f"{pr.suggested_shares:,} 股")
+            c6.metric(
+                "執行判斷",
+                "可執行" if pr.allowed else "暫不執行",
+                delta="符合條件" if pr.allowed else "條件不足",
+                delta_color="normal" if pr.allowed else "inverse",
+            )
+
+            if pr.allowed:
+                st.success(pr.note)
+            else:
+                st.warning(pr.note)
+                for reason in pr.reasons:
+                    st.caption(f"- {reason}")
+
+            stage_table = pd.DataFrame([
+                {"階段": "第一筆（基本單）", "資金比例": "50%", "技術條件": "剛站上月線或突破平台", "BIAS 上限": "< 3%"},
+                {"階段": "第二次加碼", "資金比例": "30%", "技術條件": "獲利 5-10% 且趨勢持續", "BIAS 上限": "< 5%"},
+                {"階段": "第三次加碼", "資金比例": "20%", "技術條件": "獲利 15% 以上且仍強勢", "BIAS 上限": "< 7%"},
+            ])
+            st.markdown("#### 正金字塔規則表")
+            st.dataframe(stage_table, use_container_width=True, hide_index=True)
 
 
 # ══ Tab：帳戶曝險 ════════════════════════════════════════════

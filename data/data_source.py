@@ -1,8 +1,8 @@
 """
 資料來源管理器
 
-優先使用 FinMind（本機快取 + API），遇到 429 限額錯誤時自動切換
-至 yfinance 備援模式，並停用需要法人資料的條件。
+優先使用 FinMind（本機快取 + API），遇到 429 限額錯誤或暫時性網路錯誤時，
+自動切換至 yfinance 備援模式，並停用需要法人資料的條件。
 
 FinMind 免費帳號限制：每小時 600 次（註冊會員）
 
@@ -14,11 +14,12 @@ FinMind 免費帳號限制：每小時 600 次（註冊會員）
         st.warning(dsm.FALLBACK_WARNING)
 """
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
 
 
 FALLBACK_WARNING = (
-    "⚠️ FinMind API 已達每小時限額（600 次），已切換至 yfinance 備援模式。"
+    "⚠️ FinMind 暫時不可用（可能為限額或網路問題），已切換至 yfinance 備援模式。"
     "  \n三大法人條件已自動停用；資料來源為 Yahoo Finance，報價可能有 15 分鐘延遲。"
 )
 
@@ -27,6 +28,28 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     """判斷例外是否為 FinMind 429 限額錯誤"""
     msg = str(exc).lower()
     return "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+
+def _is_temporary_source_error(exc: Exception) -> bool:
+    """判斷是否屬於可切換備援的暫時性資料源錯誤。"""
+    if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+
+    msg = str(exc).lower()
+    keywords = [
+        "connectionerror",
+        "newconnectionerror",
+        "max retries exceeded",
+        "failed to establish a new connection",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "name resolution",
+        "dns",
+        "winerror 10013",
+        "socket",
+    ]
+    return any(k in msg for k in keywords)
 
 
 def _yf_symbol(stock_id: str, otc_ids: set = None) -> str:
@@ -97,7 +120,7 @@ class DataSourceManager:
 
         - 正常模式：呼叫 smart_get_price()（本機快取優先）
         - 備援模式：呼叫 yfinance
-        - 若正常模式拋出 402 錯誤，自動切換備援並重試
+        - 若正常模式拋出 429 或暫時性網路錯誤，自動切換備援並重試
         """
         if self.fallback_mode:
             return _fetch_yfinance(stock_id, days=required_days)
@@ -106,7 +129,7 @@ class DataSourceManager:
             from data.finmind_client import smart_get_price
             return smart_get_price(stock_id, required_days=required_days)
         except Exception as e:
-            if _is_rate_limit_error(e):
+            if _is_rate_limit_error(e) or _is_temporary_source_error(e):
                 self.fallback_mode = True
                 self._fallback_triggered_at = datetime.now()
                 return _fetch_yfinance(stock_id, days=required_days)
