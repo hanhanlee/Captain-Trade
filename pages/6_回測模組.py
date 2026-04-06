@@ -166,6 +166,20 @@ with tab_backtest:
             value=min(100, len(cached_stocks)),
             step=10,
         )
+        st.markdown("#### 資金與部位管理")
+        initial_capital = st.number_input(
+            "初始資金（元）", min_value=100_000, max_value=100_000_000,
+            value=1_000_000, step=100_000,
+            help="模擬帳戶的起始資金。帳戶淨值 = 剩餘現金 + 持倉市值。",
+        )
+        max_positions = st.number_input(
+            "最大持倉檔數", min_value=1, max_value=20, value=5, step=1,
+            help="同時最多持有幾檔。達上限時新訊號自動略過。",
+        )
+        risk_per_trade_pct = st.slider(
+            "單筆最大風險（帳戶淨值 %）", 0.5, 5.0, 2.0, 0.5,
+            help="每筆交易願意承擔的最大虧損佔帳戶淨值比例（2% 固定風險法）。",
+        )
 
     with col_p2:
         st.markdown("#### 出場策略設定")
@@ -179,6 +193,10 @@ with tab_backtest:
         if enable_indicator_exit:
             indicator_label = st.selectbox("技術反轉訊號", ["RSI 跌破 50", "MACD 死亡交叉"])
             indicator_exit_mode = "rsi_50" if indicator_label == "RSI 跌破 50" else "macd_dead_cross"
+        st.markdown("#### 交易成本")
+        buy_fee_rate  = st.number_input("買進手續費 (%)", value=0.1425, step=0.01, format="%.4f") / 100
+        sell_fee_rate = st.number_input("賣出手續費 (%)", value=0.1425, step=0.01, format="%.4f") / 100
+        sell_tax_rate = st.number_input("賣出交易稅 (%)", value=0.3000, step=0.01, format="%.4f") / 100
 
     with col_p3:
         st.markdown("#### 進場過濾器")
@@ -188,13 +206,12 @@ with tab_backtest:
         exclude_leveraged_etf = st.checkbox(
             "排除槓桿/反向/期貨型 ETF",
             value=True,
-            help="排除代碼末位為 L（槓桿）、R（反向）、U（期貨）的 ETF，如 00631L、00632R、00635U。"
-                 "這類商品有波動耗損與轉倉成本，不適合用趨勢策略回測。",
+            help="排除代碼末位為 L（槓桿）、R（反向）、U（期貨）的 ETF，如 00631L、00632R、00635U。",
         )
         st.markdown("---")
-        st.markdown("**過濾條件摘要**")
-        st.caption("進場需同時滿足：大盤站上 MA20 且 MA20 向上、個股 BIAS 不超過上限。")
-        st.caption(f"目前設定：最低分數 {min_score:.0f}，BIAS ≤ {max_bias_ratio:.1f}%")
+        st.markdown("**部位計算說明**")
+        st.caption("每筆進場股數 = 單筆風險預算 ÷ (ATR × ATR倍數)，不足一張則不進場。")
+        st.caption(f"設定：初始 {initial_capital:,.0f} 元，最多 {max_positions} 檔，每筆風險 {risk_per_trade_pct}%")
 
     st.markdown("---")
 
@@ -202,6 +219,12 @@ with tab_backtest:
         config = BacktestConfig(
             start_date=str(bt_start),
             end_date=str(bt_end),
+            initial_capital=initial_capital,
+            max_positions=max_positions,
+            risk_per_trade_pct=risk_per_trade_pct,
+            buy_fee_rate=buy_fee_rate,
+            sell_fee_rate=sell_fee_rate,
+            sell_tax_rate=sell_tax_rate,
             enable_trailing_exit=enable_trailing_exit,
             atr_multiplier=atr_multiplier,
             enable_ma20_exit=enable_ma20_exit,
@@ -252,8 +275,10 @@ with tab_backtest:
         summary = bt_result.summary()
         if summary:
             st.success(
-                f"回測完成，共產生 {summary['total_trades']} 筆已平倉交易，"
-                f"略過 {summary.get('skip_count', 0)} 筆不符合進場過濾器的候選。"
+                f"回測完成！共 {summary['total_trades']} 筆已平倉交易，"
+                f"最終淨值 **{summary['final_equity']:,.0f} 元**"
+                f"（{summary['total_return_pct']:+.2f}%），"
+                f"略過 {summary.get('skip_count', 0)} 筆候選。"
             )
         else:
             st.warning("回測完成，但沒有產生已平倉交易。")
@@ -276,20 +301,27 @@ with tab_result:
 
     with st.expander("回測參數"):
         indicator_label = "RSI 跌破 50" if config.indicator_exit_mode == "rsi_50" else "MACD 死亡交叉"
+        ic  = getattr(config, "initial_capital",    1_000_000)
+        mp  = getattr(config, "max_positions",      5)
+        rpt = getattr(config, "risk_per_trade_pct", 2.0)
+        bfr = getattr(config, "buy_fee_rate",  0.001425) * 100
+        sfr = getattr(config, "sell_fee_rate", 0.001425) * 100
+        str_ = getattr(config, "sell_tax_rate", 0.003)   * 100
         st.markdown(
             f"""
 | 參數 | 值 |
 |------|----|
 | 回測期間 | {config.start_date} ~ {config.end_date} |
+| 初始資金 | {ic:,.0f} 元 |
+| 最大持倉檔數 | {mp} 檔 |
+| 單筆最大風險 | {rpt}% |
+| 買進手續費 | {bfr:.4f}% |
+| 賣出手續費 | {sfr:.4f}%　交易稅 {str_:.2f}% |
 | 最低強度分數 | {config.min_score} |
-| ATR 動態停損 | {'開啟' if config.enable_trailing_exit else '關閉'} |
-| ATR 期間 | {config.atr_period} |
-| ATR 停損倍數 | {config.atr_multiplier} |
+| ATR 動態停損 | {'開啟' if config.enable_trailing_exit else '關閉'} (倍數 {config.atr_multiplier}) |
 | 跌破 MA20 出場 | {'開啟' if config.enable_ma20_exit else '關閉'} |
-| 最大持倉天數出場 | {'開啟' if config.enable_max_hold_exit else '關閉'} |
-| 最大持倉天數 | {config.max_hold_days} 天 |
-| 技術指標停利法 | {'開啟' if config.enable_indicator_exit else '關閉'} |
-| 技術停利訊號 | {indicator_label} |
+| 最大持倉天數出場 | {'開啟' if config.enable_max_hold_exit else '關閉'} ({config.max_hold_days} 天) |
+| 技術指標停利法 | {'開啟' if config.enable_indicator_exit else '關閉'} ({indicator_label}) |
 | 大盤濾網 | {'開啟' if config.enable_market_filter else '關閉'} |
 | 個股最大 BIAS | {config.max_bias_ratio}% |
 | 排除槓桿/期貨 ETF | {'是' if getattr(config, 'exclude_leveraged_etf', False) else '否'} |
@@ -297,35 +329,47 @@ with tab_result:
         )
 
     st.markdown("### 核心績效")
+    _ic = getattr(config, "initial_capital", 1_000_000)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("總交易數", summary["total_trades"])
-    c2.metric("勝率", f"{summary['win_rate']}%", delta=f"{summary['win_trades']} 勝 / {summary['loss_trades']} 負")
-    c3.metric("獲利因子", summary["profit_factor"])
-    c4.metric("總報酬", f"{summary['total_return_pct']:+.2f}%")
+    c1.metric("初始資金", f"{_ic:,.0f} 元")
+    c2.metric("最終淨值", f"{summary.get('final_equity', _ic):,.0f} 元",
+              delta=f"{summary['total_return_pct']:+.2f}%")
+    c3.metric("總損益", f"{summary.get('total_pnl', 0):+,.0f} 元")
+    c4.metric("最大回撤（淨值曲線）", f"{summary['max_drawdown_pct']:.2f}%")
 
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("平均獲利", f"{summary['avg_win_pct']:+.2f}%")
-    c6.metric("平均虧損", f"{summary['avg_loss_pct']:+.2f}%")
-    c7.metric("最大回撤", f"{summary['max_drawdown_pct']:.2f}%")
+    c5.metric("總交易數", summary["total_trades"])
+    c6.metric("勝率", f"{summary['win_rate']}%", delta=f"{summary['win_trades']} 勝 / {summary['loss_trades']} 負")
+    c7.metric("獲利因子", summary["profit_factor"])
     c8.metric("平均持倉天數", f"{summary['avg_hold_days']} 天")
 
+    c9, c10, _, _ = st.columns(4)
+    c9.metric("平均獲利", f"{summary['avg_win_pct']:+.2f}%")
+    c10.metric("平均虧損", f"{summary['avg_loss_pct']:+.2f}%")
+
     st.markdown("---")
-    st.markdown("### 資金曲線")
+    st.markdown("### 帳戶淨值曲線")
     if bt_result.equity_curve:
-        n_days = len(bt_result.equity_curve)
-        dates = pd.date_range(start=config.start_date, periods=n_days, freq="B")
+        _ic = getattr(config, "initial_capital", 1_000_000)
+        _eq_dates = getattr(bt_result, "equity_dates", [])
+        eq_dates = _eq_dates if _eq_dates else \
+                   list(pd.date_range(start=config.start_date, periods=len(bt_result.equity_curve), freq="B"))
         fig_eq = go.Figure()
-        fig_eq.add_trace(
-            go.Scatter(
-                x=dates,
-                y=[v * 100 for v in bt_result.equity_curve],
-                name="策略",
-                line=dict(color="#3498db", width=2),
-                fill="tozeroy",
-                fillcolor="rgba(52,152,219,0.08)",
-            )
+        fig_eq.add_trace(go.Scatter(
+            x=eq_dates,
+            y=bt_result.equity_curve,
+            name="帳戶淨值",
+            line=dict(color="#3498db", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(52,152,219,0.08)",
+        ))
+        fig_eq.add_hline(y=_ic, line_dash="dash", line_color="#95a5a6",
+                         annotation_text=f"初始資金 {_ic:,.0f}")
+        fig_eq.update_layout(
+            height=380, margin=dict(t=30, b=10),
+            yaxis_title="帳戶淨值（元）",
+            yaxis_tickformat=",",
         )
-        fig_eq.update_layout(height=360, margin=dict(t=30, b=10))
         st.plotly_chart(fig_eq, use_container_width=True)
 
     col_exit, col_skip = st.columns(2)
@@ -369,16 +413,19 @@ with tab_result:
                     "股票代號": t.stock_id,
                     "買進日": t.buy_date,
                     "買進價": t.buy_price,
+                    "股數": getattr(t, "shares", "-"),
+                    "成本(元)": round(getattr(t, "cost_basis", 0)) or "-",
                     "賣出日": t.sell_date,
                     "賣出價": t.sell_price,
                     "持倉天數": t.hold_days,
+                    "損益(元)": t.pnl,
                     "報酬(%)": t.pnl_pct,
                     "出場原因": t.exit_reason,
                 }
                 for t in sorted(closed_trades, key=lambda x: x.buy_date)
             ]
         )
-        st.dataframe(trades_df, use_container_width=True, hide_index=True, height=320)
+        st.dataframe(trades_df, use_container_width=True, hide_index=True, height=360)
 
     if bt_result.skip_logs:
         st.markdown("---")
