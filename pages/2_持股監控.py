@@ -201,13 +201,46 @@ with tab_monitor:
             )
         col_refresh, col_notify = st.columns([2, 1])
         with col_refresh:
-            refresh = st.button(
+            clicked_refresh = st.button(
                 "🔄 更新報價" if not market_closed_mode else "🔄 重新讀取快取",
                 type="primary",
                 use_container_width=True,
             )
         with col_notify:
             notify_btn = st.button("📲 推播警示到 LINE", use_container_width=True)
+
+        # 按「更新報價」→ 進入待確認狀態
+        if clicked_refresh and not market_closed_mode:
+            st.session_state["refresh_pending"] = True
+
+        # 休市模式直接執行，不需確認
+        if clicked_refresh and market_closed_mode:
+            st.session_state["do_refresh"] = True
+
+        # 顯示確認對話框
+        if st.session_state.get("refresh_pending"):
+            from db.price_cache import get_cached_dates
+            dates = [get_cached_dates(h["stock_id"]) for h in holdings]
+            latest_dates = [d[1] for d in dates if d[1] is not None]
+            if latest_dates:
+                oldest = min(latest_dates)
+                newest = max(latest_dates)
+                cache_msg = f"資料庫目前最新報價：**{newest}**（最舊持股：{oldest}）"
+            else:
+                cache_msg = "資料庫目前**無任何快取資料**，將全部從網路下載。"
+            st.info(f"ℹ️ {cache_msg}  \n確認要從網路更新報價？")
+            c_ok, c_cancel = st.columns(2)
+            with c_ok:
+                if st.button("✅ 確認更新", type="primary", use_container_width=True):
+                    st.session_state["refresh_pending"] = False
+                    st.session_state["do_refresh"] = True
+                    st.rerun()
+            with c_cancel:
+                if st.button("❌ 取消", use_container_width=True):
+                    st.session_state["refresh_pending"] = False
+                    st.rerun()
+
+        refresh = st.session_state.pop("do_refresh", False)
 
         if refresh or "portfolio_stats" not in st.session_state:
             price_data = {}

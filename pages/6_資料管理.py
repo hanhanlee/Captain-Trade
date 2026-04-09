@@ -13,7 +13,8 @@ import plotly.express as px
 from datetime import datetime, date, timedelta
 
 from db.database import init_db, vacuum_db
-from db.price_cache import get_cache_summary, delete_old_prices, get_all_cached_stocks, diagnose_cache
+from db.price_cache import (get_cache_summary, delete_old_prices, get_all_cached_stocks,
+                            diagnose_cache, get_failed_today_detail, set_fetch_status)
 from db.settings import is_market_closed, set_market_closed
 from db.inst_cache import get_inst_cache_stats
 from db.fundamental_cache import get_fundamental_stats
@@ -130,8 +131,47 @@ else:
         c4.metric("回測待補股票", f"{s.get('backtest_queue_size', 0)} 檔",
                   help="歷史深度不足 10 年、需要補抓回測資料的股票數")
     else:
-        c4.metric("待更新股票", f"{s['queue_size']} 檔",
-                  help="無快取 + 快取超過 5 天（已排除無資料股票）")
+        # 直接查 DB 取得即時數字，排除 worker 會略過的股票：
+        # delisted / legacy no_update / 今日 suspended
+        try:
+            from db.price_cache import (
+                get_cache_summary,
+                get_known_stock_ids,
+                get_delisted_stocks,
+                get_suspended_stocks,
+            )
+            from data.finmind_client import resolve_latest_trading_day
+            from datetime import date as _date
+            _latest_td = resolve_latest_trading_day()
+            _summary = get_cache_summary()
+            _known = get_known_stock_ids()
+            _skip_ids = set(get_delisted_stocks(include_legacy_no_update=True))
+            _suspended_today = set(get_suspended_stocks(today_only=True))
+
+            if _summary.empty:
+                _real_pending = len([x for x in _known if x not in _skip_ids])
+                _skip_cnt = len(_skip_ids)
+            else:
+                _cached_ids = set(_summary["stock_id"])
+                _stale_ids = set(_summary.loc[
+                    _summary["latest"] < _latest_td.isoformat(), "stock_id"
+                ]) - _skip_ids - _suspended_today
+                _missing_ids = set(_known) - _cached_ids - _skip_ids
+                _real_pending = len(_stale_ids) + len(_missing_ids)
+                _skip_cnt = len(_skip_ids)
+        except Exception:
+            _real_pending = None
+            _skip_cnt = 0
+
+        _worker_q = s['queue_size']
+        if _real_pending is not None:
+            c4.metric("待更新股票（即時）", f"{_real_pending} 檔",
+                      delta=f"Worker快照：{_worker_q} 檔",
+                      delta_color="off",
+                      help=f"基準日：{_latest_td}，已排除 {_skip_cnt} 檔略過股票與今日失敗股票")
+        else:
+            c4.metric("待更新股票", f"{_worker_q} 檔",
+                      help="無快取 + 快取未達最新交易日")
     c5.metric("正在抓取", s["current_stock"] or "—")
     c6.metric("⏭ 略過（無資料）", s.get("skip_count", 0),
               help="FinMind 無價格資料的股票（權證、下市股等），已從清單移除不再重試")
@@ -211,6 +251,127 @@ else:
         - **遇到 429**：整體暫停 20 分鐘，暫停期間可按「⚡ 立即恢復」提前繼續
         - FinMind 免費帳號：600 次/小時（註冊會員）
         """)
+
+    st.markdown("---")
+
+    # ── 今日抓取失敗清單 ──────────────────────────────────────
+    st.markdown("#### ⚠️ 今日抓取失敗股票")
+    failed_df = get_failed_today_detail()
+
+    if failed_df.empty:
+        st.success("今日無抓取失敗股票")
+    else:
+        st.warning(
+            f"今日共 **{len(failed_df)}** 檔股票抓取失敗（suspended）。  \n"
+            "常見原因：收盤後 FinMind 尚未更新當日資料（通常 17–18 時補齊）。  \n"
+            "失敗超過 3 小時的股票會自動放回重試佇列；也可手動全部重設立刻重試。"
+        )
+
+        # 搜尋框 + 重設按鈕
+        col_search, col_reset, _ = st.columns([2, 1.5, 4])
+        search_kw = col_search.text_input(
+            "搜尋代碼或名稱", placeholder="2330 / 台積電",
+            key="failed_search", label_visibility="collapsed"
+        )
+        reset_clicked = col_reset.button(
+            f"🔄 全部重設（{len(failed_df)} 檔）",
+            type="primary", use_container_width=True,
+            help="清除 suspended 標記，Worker 下一輪會重新嘗試抓取"
+        )
+
+        if reset_clicked:
+            for sid in failed_df["stock_id"]:
+                set_fetch_status(sid, "normal")
+            st.success(f"已重設 {len(failed_df)} 檔，Worker 下一輪會自動重試")
+            st.rerun()
+
+        # 套用搜尋
+        display_df = failed_df.copy()
+        if search_kw:
+            kw = search_kw.strip()
+            display_df = display_df[
+                display_df["stock_id"].str.contains(kw, case=False, na=False) |
+                display_df["stock_name"].str.contains(kw, case=False, na=False)
+            ]
+
+        # 顯示表格
+        st.dataframe(
+            display_df.rename(columns={
+                "stock_id": "代碼",
+                "stock_name": "名稱",
+                "industry": "產業",
+                "failed_at": "失敗時間",
+            }),
+            use_container_width=True,
+            hide_index=True,
+            height=min(400, 40 + len(display_df) * 35),
+        )
+        st.caption(f"共 {len(display_df)} 檔（篩選後）／今日失敗 {len(failed_df)} 檔")
+
+        st.markdown("**立即重抓選取的股票**")
+        # 選項標籤：代碼＋名稱，方便識別
+        option_labels = {
+            sid: f"{sid}　{name}" if name else sid
+            for sid, name in zip(failed_df["stock_id"], failed_df["stock_name"])
+        }
+        col_sel, col_selall = st.columns([5, 1])
+        selected_ids = col_sel.multiselect(
+            "選取要重抓的股票",
+            options=list(option_labels.keys()),
+            format_func=lambda x: option_labels[x],
+            placeholder="選擇一或多檔...",
+            label_visibility="collapsed",
+            key="refetch_select",
+        )
+        if col_selall.button("全選", use_container_width=True, key="refetch_selall"):
+            st.session_state["refetch_select"] = list(option_labels.keys())
+            st.rerun()
+
+        refetch_btn = st.button(
+            f"⬇️ 立即重抓（{len(selected_ids)} 檔）",
+            disabled=not selected_ids,
+            type="primary",
+            key="refetch_btn",
+        )
+
+        if refetch_btn and selected_ids:
+            from data.finmind_client import smart_get_price
+            from scheduler.prefetch import PREFETCH_DAYS
+
+            ok_list, fail_list, rl_hit = [], [], False
+            prog = st.progress(0, text="準備重抓...")
+            status_box = st.empty()
+
+            for i, sid in enumerate(selected_ids):
+                label = option_labels[sid]
+                prog.progress((i + 1) / len(selected_ids),
+                               text=f"正在抓取 {label}（{i+1}/{len(selected_ids)}）")
+                status_box.info(f"⬇️ 抓取中：{label}")
+                try:
+                    smart_get_price(sid, required_days=PREFETCH_DAYS)
+                    set_fetch_status(sid, "normal")
+                    ok_list.append(label)
+                except Exception as e:
+                    err = str(e)
+                    if "429" in err or "rate limit" in err.lower() or "too many" in err.lower():
+                        rl_hit = True
+                        fail_list.append(f"{label}（429 限流）")
+                        break
+                    fail_list.append(f"{label}（{err[:60]}）")
+
+            prog.empty()
+            status_box.empty()
+
+            if ok_list:
+                st.success(f"✅ 成功重抓 {len(ok_list)} 檔：{'、'.join(ok_list[:10])}"
+                           + ("…" if len(ok_list) > 10 else ""))
+            if fail_list:
+                st.error(f"❌ 失敗 {len(fail_list)} 檔：{'、'.join(fail_list[:5])}"
+                         + ("…" if len(fail_list) > 5 else ""))
+            if rl_hit:
+                st.warning("⚠️ 遇到 429 限流，已停止。請等 20 分鐘後再試，或讓 Worker 自動重試。")
+            if ok_list or fail_list:
+                st.rerun()
 
     st.markdown("---")
 
@@ -418,16 +579,14 @@ st.markdown("---")
 st.subheader("🔍 快取品質診斷")
 st.markdown("找出完全缺失、資料不足或過舊的股票，並可一鍵批次補抓。")
 
-diag_col1, diag_col2, diag_col3, _ = st.columns([1, 1, 1, 5])
+diag_col1, diag_col2, _ = st.columns([1, 1, 6])
 min_days_thresh = diag_col1.number_input("最低天數門檻", min_value=30, max_value=1000, value=200, step=50,
                                           help="快取筆數低於此值視為資料不足")
-stale_days_thresh = diag_col2.number_input("過舊天數門檻", min_value=3, max_value=60, value=7, step=1,
-                                            help="最新日期超過幾天前視為過舊")
-run_diag = diag_col3.button("執行診斷", type="primary", use_container_width=True)
+run_diag = diag_col2.button("執行診斷", type="primary", use_container_width=True)
 
 if run_diag:
     with st.spinner("診斷中，讀取快取資料庫..."):
-        diag = diagnose_cache(min_days=min_days_thresh, stale_days=stale_days_thresh)
+        diag = diagnose_cache(min_days=min_days_thresh)
     st.session_state["cache_diag"] = diag
 
 if "cache_diag" in st.session_state:
@@ -437,10 +596,13 @@ if "cache_diag" in st.session_state:
     thin_df = diag["thin"]
     stale_df = diag["stale"]
     problem_ids = diag["problem_ids"]
+    latest_td = diag.get("latest_trading_day", "—")
 
     # ── 診斷指標列 ──────────────────────────────────────────────
     delisted_df = diag.get("delisted", pd.DataFrame())
     suspend_ids = diag.get("suspend_ids", set())
+
+    st.caption(f"過舊基準：最新交易日 **{latest_td}**（由 resolve_latest_trading_day() 確立）")
 
     d1, d2, d3, d4, d5, d6 = st.columns(6)
     d1.metric("已知市場股票", f"{len(diag['missing']) + len(summary_df)} 檔",
@@ -453,8 +615,9 @@ if "cache_diag" in st.session_state:
               help="stock_info_cache 有記錄、非下市，但 price_cache 完全沒有資料")
     d4.metric(f"資料不足（< {min_days_thresh} 天）", f"{len(thin_df)} 檔",
               delta_color="inverse")
-    d5.metric(f"資料過舊（> {stale_days_thresh} 天）", f"{len(stale_df)} 檔",
-              delta_color="inverse")
+    d5.metric(f"資料過舊（< {latest_td}）", f"{len(stale_df)} 檔",
+              delta_color="inverse",
+              help="最新快取日期早於最新交易日")
     d6.metric("需要補抓（合計）", f"{len(problem_ids)} 檔",
               delta_color="inverse")
 

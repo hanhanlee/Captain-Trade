@@ -327,7 +327,54 @@ tab_scan, tab_funnel, tab_sector, tab_chart, tab_history = st.tabs(
 
 # ══ Tab：掃描結果 ════════════════════════════════════════════
 with tab_scan:
-    if st.button("🚀 開始掃描", type="primary", use_container_width=True):
+    clicked_scan = st.button("🚀 開始掃描", type="primary", use_container_width=True)
+
+    if clicked_scan:
+        from db.price_cache import get_cache_summary as _get_cache_summary
+        from datetime import datetime as _dt, date as _date
+        _now = _dt.now()
+        _today = _date.today()
+        _after_close = _now.hour >= 15
+        _summary = _get_cache_summary()
+        if not _summary.empty:
+            _max_date_str = _summary["latest"].max()
+            _max_date = _date.fromisoformat(str(_max_date_str))
+            _already_updated = _after_close and _max_date >= _today
+        else:
+            _already_updated = False
+            _max_date = None
+
+        if _already_updated:
+            # 收盤後已更新今日資料，直接掃描
+            st.session_state["do_scan"] = True
+        else:
+            st.session_state["scan_pending"] = True
+            st.session_state["scan_cache_max"] = str(_max_date) if _max_date else "無資料"
+
+    # 確認對話框
+    if st.session_state.get("scan_pending"):
+        _max_disp = st.session_state.get("scan_cache_max", "無資料")
+        st.warning(f"⚠️ 資料庫最新報價日期：**{_max_disp}**，與今日不同。")
+        _c_ok, _c_cache, _c_cancel = st.columns(3)
+        with _c_ok:
+            if st.button("🌐 更新後掃描", type="primary", use_container_width=True):
+                st.session_state["scan_pending"] = False
+                st.session_state["scan_cache_only"] = False
+                st.session_state["do_scan"] = True
+                st.rerun()
+        with _c_cache:
+            if st.button("📦 直接用資料庫掃描", use_container_width=True):
+                st.session_state["scan_pending"] = False
+                st.session_state["scan_cache_only"] = True
+                st.session_state["do_scan"] = True
+                st.rerun()
+        with _c_cancel:
+            if st.button("❌ 取消", use_container_width=True):
+                st.session_state["scan_pending"] = False
+                st.rerun()
+
+    if st.session_state.pop("do_scan", False):
+        _cache_only_mode = st.session_state.pop("scan_cache_only", False)
         # 建立資料來源管理器（每次掃描重新初始化，確保從 FinMind 優先）
         dsm = DataSourceManager()
 
@@ -361,50 +408,65 @@ with tab_scan:
         for i, sid in enumerate(sample_ids):
             prog.progress((i + 1) / total)
             try:
-                from db.price_cache import get_cached_dates
-                from datetime import date as _date
-                _min, _max = get_cached_dates(sid)
-                _fresh = _max is not None and (
-                    (_date.today() - (_max if isinstance(_max, _date)
-                     else __import__('datetime').datetime.strptime(str(_max), "%Y-%m-%d").date()))
-                    .days <= 5
-                )
-                if _fresh:
-                    cache_hits += 1
-                    status_txt.text(f"快取：{sid}（{i+1}/{total}）")
+                if _cache_only_mode:
+                    # 純資料庫模式：直接讀快取，完全不呼叫 API
+                    from db.price_cache import load_prices as _load_prices
+                    df = _load_prices(sid)
+                    if not df.empty:
+                        cache_hits += 1
+                        status_txt.text(f"資料庫：{sid}（{i+1}/{total}）")
+                        price_data[sid] = df
+                    # 法人資料：cache_only 下不抓
                 else:
-                    api_calls += 1
-                    src = "備援" if dsm.fallback_mode else "下載"
-                    status_txt.text(f"{src}：{sid}（{i+1}/{total}）｜快取 {cache_hits} / API {api_calls}")
+                    from db.price_cache import get_cached_dates
+                    from datetime import date as _date, timedelta as _td
+                    _min, _max = get_cached_dates(sid)
+                    _today = _date.today()
+                    _wd = _today.weekday()
+                    _latest_td = (_today - _td(days=1) if _wd == 5 else
+                                  _today - _td(days=2) if _wd == 6 else _today)
+                    _max_d = (_max if isinstance(_max, _date)
+                              else _date.fromisoformat(str(_max))) if _max else None
+                    _fresh = _max_d is not None and _max_d >= _latest_td
+                    if _fresh:
+                        cache_hits += 1
+                        status_txt.text(f"快取：{sid}（{i+1}/{total}）")
+                    else:
+                        api_calls += 1
+                        src = "備援" if dsm.fallback_mode else "下載"
+                        status_txt.text(f"{src}：{sid}（{i+1}/{total}）｜快取 {cache_hits} / API {api_calls}")
 
-                df = dsm.get_price(sid, required_days=150)
+                    df = dsm.get_price(sid, required_days=150)
 
-                # 切換備援後顯示警告橫幅
-                if dsm.fallback_mode:
-                    fallback_banner.warning(FALLBACK_WARNING)
+                    # 切換備援後顯示警告橫幅
+                    if dsm.fallback_mode:
+                        fallback_banner.warning(FALLBACK_WARNING)
 
-                if not df.empty:
-                    price_data[sid] = df
+                    if not df.empty:
+                        price_data[sid] = df
 
-                # 法人資料：備援模式下 dsm.institutional_available 為 False，自動跳過
-                if include_institutional and dsm.institutional_available and inst_selection:
-                    idf = dsm.get_institutional(sid, days=10)
-                    if not idf.empty:
-                        inst_data[sid] = summarize_institutional_signal(
-                            idf,
-                            selected_institutions=inst_selection,
-                            strict_days=strict_days,
-                            agg_mode=agg_mode,
-                            agg_days=agg_days,
-                        )
+                    # 法人資料：備援模式下 dsm.institutional_available 為 False，自動跳過
+                    if include_institutional and dsm.institutional_available and inst_selection:
+                        idf = dsm.get_institutional(sid, days=10)
+                        if not idf.empty:
+                            inst_data[sid] = summarize_institutional_signal(
+                                idf,
+                                selected_institutions=inst_selection,
+                                strict_days=strict_days,
+                                agg_mode=agg_mode,
+                                agg_days=agg_days,
+                            )
 
-                if not _fresh and not dsm.fallback_mode:
-                    time.sleep(0.05)   # 只有真正呼叫 FinMind API 時才需要 rate limit
+                    if not _fresh and not dsm.fallback_mode:
+                        time.sleep(0.05)   # 只有真正呼叫 FinMind API 時才需要 rate limit
             except Exception:
                 pass
 
-        src_label = "yfinance 備援" if dsm.fallback_mode else "FinMind"
-        st.info(f"資料取得完成（{src_label}）：快取命中 **{cache_hits}** 檔 / API 呼叫 **{api_calls}** 次")
+        if _cache_only_mode:
+            st.info(f"資料取得完成（資料庫模式）：共讀取 **{cache_hits}** 檔快取資料")
+        else:
+            src_label = "yfinance 備援" if dsm.fallback_mode else "FinMind"
+            st.info(f"資料取得完成（{src_label}）：快取命中 **{cache_hits}** 檔 / API 呼叫 **{api_calls}** 次")
 
         prog.empty()
         status_txt.empty()
@@ -569,21 +631,21 @@ with tab_scan:
             _inst_note = "合計買超 +4；若外資與投信同步買超再 +3"
         _inst_type = "**必要**（強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
         st.markdown(f"""
-        #### 篩選條件（v3）
+        #### 篩選條件（v4 領先攻擊版）
 
         | 條件 | 類型 | 分數 | 說明 |
         |------|------|------|------|
-        | 站上 MA20 且均線向上 | 必要 | +35 | 趨勢確認 |
-        | 量能 > 均量 1.3 倍 | 必要 | +20 | 有效突破 |
-        | MACD 或 RSI 50-70 | 必要 | +15 | 動能確認 |
-        | 不低於布林下軌 | 必要 | +10 | 排除弱勢 |
+        | 第一天站上 5/10/20MA | 必要 | +35 | 今日三線齊穿，昨日全在線下 |
+        | 均線糾結度 < 3% | 必要 | +20 | MA5/10/20 距離極近，籌碼高度集中 |
+        | 量能爆發 > 前一日 1.5 倍 | 必要 | +15 | 當日量能突增，確認突破有效 |
+        | 股價乖離 MA20 < 5% | 必要 | +10 | 排除已追高的股票，控管風險 |
+        | 布林頻寬縮減（vs 20日前） | 加分 | +10 | 盤整極致後的變盤第一天 |
+        | 投信第一天買超 | 加分 | +10 | 法人資金剛開始表態的訊號 |
+        | 突破近 20 日收盤高點 | 加分 | +8 | 確認突破盤整平台 |
+        | 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
         | {_inst_desc} | {_inst_type} | {_inst_score} | {_inst_note} |
-        | 融資減少 | 加分 | +3 | 籌碼乾淨 |
-        | 週線 MA10 多頭 | 加分 | +10 | 多週期共振 |
-        | 相對強度 RS ≥ 60 | 加分 | +8 | 抗跌／領漲特性 |
-        | MA5 > MA10 > MA20 | 加分 | +5 | 多頭排列 |
-        | 近10日量集中在上漲日 | 加分 | +7 | 量能品質優良 |
-        | 突破近60日最高收盤 | 加分 | +8 | 突破盤整 |
+        | 融資減少 / 籌碼集中 | 加分 | +5 | 散戶下車、主力上車 |
+        | 相對強度 RS > 70 | 加分 | +7 | 同族群中最強的領頭羊 |
         """)
 
 
@@ -612,12 +674,10 @@ with tab_funnel:
 
         # 逐條件累積計數（每個條件都是在前一條件基礎上累積）
         MANDATORY = [
-            ("站上 MA20",    lambda s: s.above_ma20),
-            ("MA20 向上",    lambda s: s.above_ma20 and s.ma20_rising),
-            ("量增 1.3 倍",  lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge),
-            ("MACD/RSI 動能",lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge
-                                        and (s.macd_cross or s.rsi_healthy)),
-            ("布林不低於下軌", lambda s: s.passes_basic()),
+            ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
+            ("均線糾結 < 3%",     lambda s: s.ma_triple_breakout and s.ma_squeeze),
+            ("量能爆發 > 1.5 倍", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion),
+            ("乖離 MA20 < 5%",   lambda s: s.passes_basic()),
         ]
         for label, fn in MANDATORY:
             cnt = sum(1 for v in cond_stocks if fn(v["sig"]))
@@ -649,21 +709,40 @@ with tab_funnel:
         )
         st.plotly_chart(fig_funnel, use_container_width=True)
 
-        # ── 每個條件的排除數 ────────────────────────────────────
-        st.markdown("#### 各必要條件排除數")
-        excl_rows = []
+        # ── 每個條件的篩選明細（可展開查看通過名單）──────────────
+        st.markdown("#### 各必要條件篩選明細")
         prev_count = n_cond
         for label, fn in MANDATORY:
-            cnt = sum(1 for v in cond_stocks if fn(v["sig"]))
+            passed_items = [
+                (sid, v) for sid, v in analysis.items()
+                if v["exclude_pre"] is None and v["sig"] is not None and fn(v["sig"])
+            ]
+            cnt = len(passed_items)
             excl = prev_count - cnt
-            excl_rows.append({
-                "條件": label,
-                "通過": cnt,
-                "排除": excl,
-                "排除率": f"{excl/prev_count*100:.1f}%" if prev_count > 0 else "—",
-            })
+            excl_rate = f"{excl/prev_count*100:.1f}%" if prev_count > 0 else "—"
+
+            col_lbl, col_pass, col_excl, col_rate = st.columns([3, 1, 1, 1])
+            col_lbl.markdown(f"**{label}**")
+            col_pass.metric("通過", cnt)
+            col_excl.metric("排除", excl)
+            col_rate.metric("排除率", excl_rate)
+
+            with st.expander(f"查看「{label}」通過的 {cnt} 檔"):
+                if passed_items:
+                    pass_df = pd.DataFrame([
+                        {
+                            "代碼": sid,
+                            "名稱": v.get("stock_name", ""),
+                            "產業": v.get("industry", ""),
+                            "收盤": v.get("close", ""),
+                        }
+                        for sid, v in sorted(passed_items, key=lambda x: x[0])
+                    ])
+                    st.dataframe(pass_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("無符合條件的股票")
+
             prev_count = cnt
-        st.dataframe(pd.DataFrame(excl_rows), use_container_width=True, hide_index=True)
 
         # ── 加分條件命中率（在最終入選股中）────────────────────
         final_sigs = [v["sig"] for v in cond_stocks if v["sig"] and v["sig"].passes_basic()]
@@ -694,11 +773,10 @@ with tab_funnel:
         st.caption("只差一個必要條件就會入選，可作為條件調整的參考")
 
         MANDATORY_CHECKS = [
-            ("站上 MA20",     lambda s: s.above_ma20),
-            ("MA20 向上",     lambda s: s.ma20_rising),
-            ("量增 1.3 倍",   lambda s: s.volume_surge),
-            ("MACD/RSI 動能", lambda s: s.macd_cross or s.rsi_healthy),
-            ("布林不低於下軌", lambda s: s.above_bb_lower),
+            ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
+            ("均線糾結 < 3%",     lambda s: s.ma_squeeze),
+            ("量能爆發 > 1.5 倍", lambda s: s.volume_explosion),
+            ("乖離 MA20 < 5%",   lambda s: s.ma20_bias_ok),
         ]
         near_miss = []
         for sid, v in analysis.items():

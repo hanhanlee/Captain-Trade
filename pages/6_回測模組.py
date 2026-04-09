@@ -185,7 +185,16 @@ with tab_backtest:
         st.markdown("#### 出場策略設定")
         enable_trailing_exit = st.checkbox("啟用 ATR 動態移動停損", value=True)
         atr_multiplier = st.slider("ATR 停損倍數", 1.0, 5.0, 2.5, 0.1) if enable_trailing_exit else 2.5
-        enable_ma20_exit = st.checkbox("啟用跌破月線 (MA20) 出場", value=True)
+        enable_ma20_exit = st.checkbox("啟用跌破均線出場", value=True)
+        ma_exit_period = 20
+        if enable_ma20_exit:
+            ma_exit_label = st.selectbox(
+                "出場均線",
+                options=["MA5（5日線）", "MA10（10日線）", "MA20（月線）"],
+                index=2,
+                help="收盤價跌破選定均線即出場",
+            )
+            ma_exit_period = int(ma_exit_label.split("MA")[1].split("（")[0])
         enable_max_hold_exit = st.checkbox("啟用最大持倉天數出場", value=True)
         max_hold = st.slider("最大持倉天數", 5, 120, 20, 5) if enable_max_hold_exit else 20
         enable_indicator_exit = st.checkbox("啟用技術指標停利法", value=False)
@@ -203,10 +212,21 @@ with tab_backtest:
         min_score = st.slider("最低強度分數", 50.0, 100.0, 65.0, 1.0)
         enable_market_filter = st.checkbox("啟用大盤 MA20 濾網", value=True)
         max_bias_ratio = st.slider("個股最大容許 BIAS (%)", 0.0, 20.0, 10.0, 0.5)
+        exclude_all_etf = st.checkbox(
+            "排除所有 ETF",
+            value=False,
+            help="排除代碼以 0 開頭的股票（如 0050、0056、006208 等），只保留一般上市公司。",
+        )
         exclude_leveraged_etf = st.checkbox(
             "排除槓桿/反向/期貨型 ETF",
             value=True,
-            help="排除代碼末位為 L（槓桿）、R（反向）、U（期貨）的 ETF，如 00631L、00632R、00635U。",
+            disabled=exclude_all_etf,
+            help="排除代碼末位為 L（槓桿）、R（反向）、U（期貨）的 ETF。勾選「排除所有 ETF」後自動涵蓋。",
+        )
+        allow_fractional_shares = st.checkbox(
+            "允許買零股",
+            value=False,
+            help="資金不足買一張（1000股）時，改買最多可負擔的零股股數（最少 1 股）。",
         )
         st.markdown("---")
         st.markdown("**部位計算說明**")
@@ -228,6 +248,7 @@ with tab_backtest:
             enable_trailing_exit=enable_trailing_exit,
             atr_multiplier=atr_multiplier,
             enable_ma20_exit=enable_ma20_exit,
+            ma_exit_period=ma_exit_period,
             enable_max_hold_exit=enable_max_hold_exit,
             max_hold_days=max_hold,
             enable_indicator_exit=enable_indicator_exit,
@@ -235,7 +256,9 @@ with tab_backtest:
             enable_market_filter=enable_market_filter,
             max_bias_ratio=max_bias_ratio,
             min_score=min_score,
+            exclude_all_etf=exclude_all_etf,
             exclude_leveraged_etf=exclude_leveraged_etf,
+            allow_fractional_shares=allow_fractional_shares,
         )
 
         with st.spinner("正在讀取本機快取資料..."):
@@ -403,6 +426,16 @@ with tab_result:
             fig_skip.update_layout(height=320, margin=dict(t=20, b=10))
             st.plotly_chart(fig_skip, use_container_width=True)
 
+    # 未平倉 metric 加到核心績效旁
+    open_count = summary.get("open_count", 0)
+    open_pnl   = summary.get("open_unrealized_pnl", 0)
+    if open_count > 0:
+        st.info(
+            f"回測結束時仍有 **{open_count}** 檔未平倉，"
+            f"估計未實現損益 **{open_pnl:+,.0f} 元**（以期末收盤 × 扣除交易成本估算，"
+            f"已含於最終淨值）。"
+        )
+
     st.markdown("---")
     st.markdown("### 交易明細")
     closed_trades = [t for t in bt_result.trades if t.sell_date is not None]
@@ -426,6 +459,42 @@ with tab_result:
             ]
         )
         st.dataframe(trades_df, use_container_width=True, hide_index=True, height=360)
+
+    # ── 未平倉部位明細 ────────────────────────────────────────────
+    open_trades = [t for t in bt_result.trades if t.sell_date is None]
+    if open_trades:
+        st.markdown("---")
+        st.markdown("### 📂 未平倉部位")
+        st.caption("回測結束日仍持有、尚未出場的部位。損益以期末收盤估算，已含於最終淨值中。")
+
+        end_prices = getattr(bt_result, "open_positions_end_prices", {})
+        open_rows = []
+        for t in sorted(open_trades, key=lambda x: x.buy_date):
+            end_px = end_prices.get(t.stock_id)
+            if end_px is not None and t.cost_basis > 0:
+                sell_fee = config.sell_fee_rate + config.sell_tax_rate
+                est_revenue = end_px * t.shares * (1 - sell_fee)
+                unreal_pnl  = round(est_revenue - t.cost_basis)
+                unreal_pct  = round((est_revenue / t.cost_basis - 1) * 100, 2)
+            else:
+                unreal_pnl = unreal_pct = None
+
+            open_rows.append({
+                "股票代號":     t.stock_id,
+                "買進日":       t.buy_date,
+                "買進價":       t.buy_price,
+                "股數":         t.shares,
+                "成本(元)":     round(t.cost_basis) if t.cost_basis else "-",
+                "期末收盤":     end_px if end_px else "-",
+                "未實現損益(元)": unreal_pnl if unreal_pnl is not None else "-",
+                "未實現報酬(%)": unreal_pct if unreal_pct is not None else "-",
+                "持倉天數":     t.hold_days,
+                "進場分數":     round(t.entry_score, 1) if t.entry_score else "-",
+            })
+
+        open_df = pd.DataFrame(open_rows)
+        st.dataframe(open_df, use_container_width=True, hide_index=True,
+                     height=min(400, 40 + len(open_df) * 35))
 
     if bt_result.skip_logs:
         st.markdown("---")
