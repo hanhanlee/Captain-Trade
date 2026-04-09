@@ -47,6 +47,47 @@ def get_all_trades() -> pd.DataFrame:
         } for r in rows])
 
 
+def get_trade(trade_id: int) -> dict | None:
+    """取得單筆記錄，供編輯表單預填用。找不到回傳 None。"""
+    with get_session() as sess:
+        row = sess.query(TradeJournal).filter(TradeJournal.id == trade_id).first()
+        if not row:
+            return None
+        return {
+            "id": row.id,
+            "stock_id": row.stock_id,
+            "stock_name": row.stock_name or "",
+            "action": row.action,
+            "price": float(row.price),
+            "shares": int(row.shares),
+            "trade_date": row.trade_date,
+            "reason": row.reason or "",
+            "emotion": row.emotion or "",
+            "pnl": float(row.pnl) if row.pnl is not None else None,
+        }
+
+
+def update_trade(trade_id: int, stock_id: str, stock_name: str, action: str,
+                 price: float, shares: int, trade_date: date,
+                 reason: str = "", emotion: str = "", pnl: float = None):
+    """更新既有交易記錄。"""
+    with get_session() as sess:
+        row = sess.query(TradeJournal).filter(TradeJournal.id == trade_id).first()
+        if not row:
+            return False
+        row.stock_id   = stock_id
+        row.stock_name = stock_name
+        row.action     = action.upper()
+        row.price      = price
+        row.shares     = shares
+        row.trade_date = trade_date
+        row.reason     = reason
+        row.emotion    = emotion
+        row.pnl        = pnl
+        sess.commit()
+        return True
+
+
 def delete_trade(trade_id: int):
     with get_session() as sess:
         row = sess.query(TradeJournal).filter(TradeJournal.id == trade_id).first()
@@ -84,6 +125,20 @@ def calc_performance(df: pd.DataFrame) -> dict:
     total_loss = abs(losses["pnl"].sum())
     profit_factor = total_win / total_loss if total_loss > 0 else float("inf")
 
+    # 期望值 = 勝率 × 平均獲利 - (1 - 勝率) × 平均虧損
+    win_rate_dec = win_rate / 100
+    expected_value = win_rate_dec * avg_win - (1 - win_rate_dec) * abs(avg_loss)
+
+    # 盈虧比評級
+    if profit_factor < 1:
+        pf_rating = "長期必虧"
+    elif profit_factor < 1.5:
+        pf_rating = "僅達損益平衡"
+    elif profit_factor < 2:
+        pf_rating = "良好"
+    else:
+        pf_rating = "優秀"
+
     return {
         "total_trades": total,
         "win_trades": win_count,
@@ -92,6 +147,8 @@ def calc_performance(df: pd.DataFrame) -> dict:
         "avg_win": round(avg_win),
         "avg_loss": round(avg_loss),
         "profit_factor": round(profit_factor, 2),
+        "pf_rating": pf_rating,
+        "expected_value": round(expected_value),
         "total_pnl": round(sell_df["pnl"].sum()),
         "best_trade": round(sell_df["pnl"].max()),
         "worst_trade": round(sell_df["pnl"].min()),

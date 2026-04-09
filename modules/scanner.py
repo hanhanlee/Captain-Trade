@@ -1,25 +1,22 @@
 """
-選股雷達 — 核心篩選邏輯（v3）
-混合型交易風格：波段為主 + 部分長期持有
+選股雷達 — 核心篩選邏輯（v4 領先攻擊版）
+核心哲學：找「均線糾結後第一天突破」，捕捉啟動點而非追強勢股
 
 基礎技術條件（必要，全部達到才入選）：
-  1. 收盤價站上 20MA 且 20MA 向上
-  2. 成交量 > 5 日均量 × 1.3（量能確認）
-  3. MACD 黃金交叉 或 RSI(14) 在 50–70 之間
-  4. 收盤價不低於布林通道下軌
+  1. 第一天站上 5/10/20MA（今日三線全穿，昨日全在線下） +35
+  2. 均線糾結度 < 3%（5/10/20MA 三線距離 ÷ MA20 < 3%）    +20
+  3. 量能爆發比 > 前一日 1.5 倍                            +15
+  4. 股價乖離 MA20 < 5%（排除已追高的股票）                +10
 
-進階加分條件（v2）：
-  5. 多週期共振：週線 MA10 向上且收盤站上週線 MA10（+10）
-  6. 相對強度：近 3 個月漲幅優於大盤（+8）
+加分條件（滿足越多分數越高）：
+  5. 布林頻寬縮減（今日 bandwidth < 20 日前）              +10
+  6. 投信第一天買超（昨非正、今轉正）                       +10
+  7. 突破近 20 日收盤高點                                  +8
+  8. 週線 MA10 扣抵值低位（10週前收盤 < 當前週MA10）        +10
+  9. 融資減少 / 籌碼集中                                   +5
+ 10. 相對強度 RS > 70                                      +7
 
-進階加分條件（v3 新增）：
-  7. 多頭排列：MA5 > MA10 > MA20（+5）
-  8. 量能品質：近 10 日上漲日成交量佔比 ≥ 60%（+7）
-  9. 突破盤整：收盤突破近 60 日最高收盤價（+8）
-
-分數說明：
-  基礎條件滿分 100，進階條件最多額外 +38
-  分數 > 100 代表強勢股中的精選標的
+滿分：必要 80 + 加分最多 50 = 130
 """
 import pandas as pd
 import numpy as np
@@ -29,83 +26,88 @@ from .indicators import sma, rsi, macd, bollinger_bands, weekly_ma_trend, relati
 
 @dataclass
 class ScanSignal:
-    # ── 基礎技術條件 ──────────────────────────────
+    # ── v4 必要條件 ───────────────────────────────
+    ma_triple_breakout: bool = False   # 第一天站上5/10/20MA（昨日全在線下）
+    ma_squeeze: bool = False           # 均線糾結度 < 3%
+    volume_explosion: bool = False     # 量能爆發比 > 前一日 1.5 倍
+    ma20_bias_ok: bool = False         # 股價乖離 MA20 < 5%
+    ma20_bias_ratio: float = 0.0       # 月線乖離率數值（%）
+    # ── v4 加分條件 ───────────────────────────────
+    bb_bandwidth_shrink: bool = False  # 布林頻寬縮減（vs 20日前）
+    trust_first_buy: bool = False      # 投信第一天買超（昨非正→今轉正）
+    breakout_20d: bool = False         # 突破近 20 日收盤高點
+    weekly_deduction_low: bool = False # 週線MA10扣抵值低位（10週前收盤 < 當前週MA10）
+    margin_clean: bool = False         # 融資減少 / 籌碼集中
+    rs_positive: bool = False          # 相對強度 RS > 70
+    rs_score: float = 0.0              # RS 分數（0-100）
+    # ── 保留 v3 欄位（供顯示/回測參考，不計入主計分）──
     above_ma20: bool = False
     ma20_rising: bool = False
     volume_surge: bool = False
     macd_cross: bool = False
     rsi_healthy: bool = False
     above_bb_lower: bool = False
-    ma20_bias_ratio: float = 0.0      # 月線乖離率（%）
-    # ── 籌碼面條件 ────────────────────────────────
-    institutional_buy: bool = False    # 嚴格模式：所選法人各自連續買超
-    inst_total_buy: bool = False       # 合計模式：三大法人合計淨買超
-    foreign_trust_buy: bool = False    # 外資＋投信皆買超（土洋合買）
-    margin_clean: bool = False
-    # ── v2 進階條件 ───────────────────────────────
-    weekly_trend_up: bool = False      # 週線 MA10 向上且站上
-    rs_positive: bool = False          # 相對強度優於大盤
-    rs_score: float = 0.0             # RS 分數（0-100）
-    # ── v3 進階條件 ───────────────────────────────
-    ma_aligned: bool = False           # MA5 > MA10 > MA20 多頭排列
-    vol_quality: bool = False          # 近 10 日量集中在上漲日
-    breakout: bool = False             # 突破近 60 日收盤高點
+    institutional_buy: bool = False
+    inst_total_buy: bool = False
+    foreign_trust_buy: bool = False
+    weekly_trend_up: bool = False
+    ma_aligned: bool = False
+    vol_quality: bool = False
+    breakout: bool = False
 
     def passes_basic(self) -> bool:
-        """必要技術條件全部通過才入選"""
+        """v4 必要條件：四項全部達到才入選"""
         return (
-            self.above_ma20
-            and self.ma20_rising
-            and self.volume_surge
-            and self.above_bb_lower
-            and (self.macd_cross or self.rsi_healthy)
+            self.ma_triple_breakout
+            and self.ma_squeeze
+            and self.volume_explosion
+            and self.ma20_bias_ok
         )
 
     def score(self) -> float:
         """
-        技術強度分數
-        基礎滿分 100，進階條件額外加分（可超過 100）
+        v4 領先攻擊版計分
+        必要條件滿分 80，加分條件最多 +50，上限 130
         """
         weights = {
-            "above_ma20": 20,
-            "ma20_rising": 15,
-            "volume_surge": 20,
-            "macd_cross": 15,
-            "rsi_healthy": 10,
-            "above_bb_lower": 10,
-            "institutional_buy": 7,
-            "inst_total_buy": 4,
-            "foreign_trust_buy": 3,
-            "margin_clean": 3,
-            # v2 進階加分
-            "weekly_trend_up": 10,
-            "rs_positive": 8,
-            # v3 進階加分
-            "ma_aligned": 5,
-            "vol_quality": 7,
-            "breakout": 8,
+            # 必要條件（通過才會到達此處，作為基礎分）
+            "ma_triple_breakout": 35,
+            "ma_squeeze": 20,
+            "volume_explosion": 15,
+            "ma20_bias_ok": 10,
+            # 加分條件
+            "bb_bandwidth_shrink": 10,
+            "trust_first_buy": 10,
+            "breakout_20d": 8,
+            "weekly_deduction_low": 10,
+            "margin_clean": 5,
+            "rs_positive": 7,
         }
-        return round(sum(v for k, v in weights.items() if getattr(self, k)), 1)
+        return round(sum(v for k, v in weights.items() if getattr(self, k, False)), 1)
 
     def triggered_labels(self) -> list:
         label_map = {
+            # v4 必要
+            "ma_triple_breakout": "三線齊穿(首日)",
+            "ma_squeeze": "均線糾結<3%",
+            "volume_explosion": "量能爆發>1.5倍",
+            "ma20_bias_ok": "乖離<5%",
+            # v4 加分
+            "bb_bandwidth_shrink": "布林頻寬縮減",
+            "trust_first_buy": "投信首日買超",
+            "breakout_20d": "突破20日高點",
+            "weekly_deduction_low": "週線扣抵低位",
+            "margin_clean": "籌碼乾淨",
+            "rs_positive": "相對強勢RS>70",
+            # v3 參考訊號
             "above_ma20": "站上MA20",
             "ma20_rising": "MA20向上",
-            "volume_surge": "量增",
             "macd_cross": "MACD黃金交叉",
             "rsi_healthy": "RSI健康",
-            "above_bb_lower": "布林正常",
-            "institutional_buy": "個別法人皆買超",
-            "inst_total_buy": "三大法人合計買超",
-            "foreign_trust_buy": "外資投信同步買超",
-            "margin_clean": "籌碼乾淨",
-            "weekly_trend_up": "週線多頭",
-            "rs_positive": "相對強勢",
             "ma_aligned": "多頭排列",
-            "vol_quality": "量能優質",
-            "breakout": "突破盤整",
+            "breakout": "突破60日高點",
         }
-        return [v for k, v in label_map.items() if getattr(self, k)]
+        return [v for k, v in label_map.items() if getattr(self, k, False)]
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -132,6 +134,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_upper"] = bb_upper
     df["bb_mid"] = bb_mid
     df["bb_lower"] = bb_lower
+    # 布林頻寬：(上軌 - 下軌) / 中軌 × 100，單位 %
+    df["bb_bandwidth"] = ((bb_upper - bb_lower) / bb_mid * 100).round(3)
 
     if vol_col:
         df["vol_ma5"] = df[vol_col].rolling(5).mean()
@@ -165,91 +169,150 @@ def analyze_stock(
 
     sig = ScanSignal()
 
-    # 1. 站上 MA20
-    if pd.notna(latest["ma20"]) and latest["close"] > latest["ma20"]:
-        sig.above_ma20 = True
+    vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else None
+
+    # ── 月線乖離率（數值，供後續條件使用）────────────────────────
     if pd.notna(latest.get("ma20_bias_ratio")):
         sig.ma20_bias_ratio = float(latest["ma20_bias_ratio"])
 
-    # 2. MA20 向上（今日 > 5 日前）
+    # ──────────────────────────────────────────────────────────────
+    # v4 必要條件
+    # ──────────────────────────────────────────────────────────────
+
+    # 1. [v4] 第一天站上 5/10/20MA（今日三線全穿，昨日三線全在線下）
+    ma5_ok  = pd.notna(latest.get("ma5"))  and pd.notna(prev.get("ma5"))
+    ma10_ok = pd.notna(latest.get("ma10")) and pd.notna(prev.get("ma10"))
+    ma20_ok = pd.notna(latest.get("ma20")) and pd.notna(prev.get("ma20"))
+    if ma5_ok and ma10_ok and ma20_ok:
+        today_above_all = (
+            latest["close"] > latest["ma5"]
+            and latest["close"] > latest["ma10"]
+            and latest["close"] > latest["ma20"]
+        )
+        yesterday_below_all = (
+            prev["close"] < prev["ma5"]
+            and prev["close"] < prev["ma10"]
+            and prev["close"] < prev["ma20"]
+        )
+        sig.ma_triple_breakout = bool(today_above_all and yesterday_below_all)
+        # 保留 v3 參考訊號
+        sig.above_ma20 = bool(latest["close"] > latest["ma20"])
+
+    # 2. [v4] 均線糾結度 < 3%（5/10/20MA 三線最大偏差 ÷ MA20）
+    if ma5_ok and ma10_ok and ma20_ok and latest["ma20"] > 0:
+        ma_vals = [latest["ma5"], latest["ma10"], latest["ma20"]]
+        spread_pct = (max(ma_vals) - min(ma_vals)) / latest["ma20"] * 100
+        sig.ma_squeeze = bool(spread_pct < 3.0)
+
+    # 3. [v4] 量能爆發比：今日量 > 前一日量 × 1.5
+    if vol_col:
+        today_vol = latest.get(vol_col)
+        prev_vol  = prev.get(vol_col)
+        if pd.notna(today_vol) and pd.notna(prev_vol) and prev_vol > 0:
+            sig.volume_explosion = bool(today_vol > prev_vol * 1.5)
+        # 保留 v3 量增訊號（5日均量 × 1.3）
+        if pd.notna(latest.get("vol_ma5")) and latest["vol_ma5"] > 0:
+            sig.volume_surge = bool(latest[vol_col] > latest["vol_ma5"] * 1.3)
+
+    # 4. [v4] 股價乖離 MA20 < 5%
+    sig.ma20_bias_ok = bool(abs(sig.ma20_bias_ratio) < 5.0)
+
+    # ──────────────────────────────────────────────────────────────
+    # v4 加分條件
+    # ──────────────────────────────────────────────────────────────
+
+    # 5. [v4] 布林頻寬縮減：今日 bandwidth < 20 日前 bandwidth
+    if "bb_bandwidth" in df.columns and len(df) >= 22:
+        bw_now   = df["bb_bandwidth"].iloc[-1]
+        bw_20ago = df["bb_bandwidth"].iloc[-21]
+        if pd.notna(bw_now) and pd.notna(bw_20ago) and bw_20ago > 0:
+            sig.bb_bandwidth_shrink = bool(bw_now < bw_20ago)
+
+    # 6. [v4] 投信第一天買超（昨日 ≤ 0，今日 > 0）
+    if isinstance(inst_buying, dict):
+        recent_inst = inst_buying.get("recent_inst_net", pd.DataFrame())
+        if (not recent_inst.empty
+                and "投信" in recent_inst.columns
+                and len(recent_inst) >= 2):
+            trust_today = recent_inst["投信"].iloc[-1]
+            trust_prev  = recent_inst["投信"].iloc[-2]
+            if pd.notna(trust_today) and pd.notna(trust_prev):
+                sig.trust_first_buy = bool(trust_today > 0 and trust_prev <= 0)
+        # 保留 v3 法人欄位
+        sig.institutional_buy = bool(inst_buying.get("strict_pass", False))
+        sig.inst_total_buy     = bool(inst_buying.get("aggregate_pass", False))
+        sig.foreign_trust_buy  = sig.inst_total_buy and bool(
+            inst_buying.get("foreign_trust_pass", False)
+        )
+    elif inst_buying:
+        sig.institutional_buy = True
+
+    # 7. [v4] 突破近 20 日收盤高點（排除今日本身）
+    if len(df) >= 22:
+        lookback_20 = df["close"].iloc[-21:-1]
+        if not lookback_20.empty:
+            resistance_20d = lookback_20.max()
+            if pd.notna(resistance_20d):
+                sig.breakout_20d = bool(latest["close"] > resistance_20d)
+
+    # 8. [v4] 週線 MA10 扣抵值低位 + v3 週線多頭（共用一次計算）
+    if len(df) >= 70:
+        wt = weekly_ma_trend(df, ma_period=10)
+        if wt:
+            # v3 參考：週線 MA10 向上且站上
+            if wt.get("weekly_above_ma") and wt.get("weekly_ma_rising"):
+                sig.weekly_trend_up = True
+            # v4 扣抵值低位：10週前收盤 < 當前週MA10，代表未來MA10會自然上揚
+            weekly_df = wt.get("weekly_df", pd.DataFrame())
+            if len(weekly_df) >= 12:
+                deduction_val = weekly_df["close"].iloc[-11]   # 10週前的收盤
+                wma10_now = wt.get("weekly_ma_value")
+                if pd.notna(deduction_val) and pd.notna(wma10_now):
+                    sig.weekly_deduction_low = bool(deduction_val < wma10_now)
+
+    # 9. [v4] 融資減少 / 籌碼集中
+    if margin_trend == "down":
+        sig.margin_clean = True
+
+    # 10. [v4] 相對強度 RS > 70
+    if len(df) >= 63:
+        rs = relative_strength_score(df, lookback_days=63, market_returns=market_close)
+        if rs:
+            sig.rs_score = rs["rs_score"]
+            if rs["outperforming"] and rs["rs_score"] > 70:
+                sig.rs_positive = True
+
+    # ── 保留 v3 參考訊號（不計分，僅顯示）──────────────────────
+    # MA20 向上
     if len(df) >= 6:
-        ma20_now = df["ma20"].iloc[-1]
+        ma20_now  = df["ma20"].iloc[-1]
         ma20_5ago = df["ma20"].iloc[-6]
         if pd.notna(ma20_now) and pd.notna(ma20_5ago) and ma20_now > ma20_5ago:
             sig.ma20_rising = True
 
-    # 3. 量能放大
-    vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else None
-    if vol_col and pd.notna(latest.get("vol_ma5")) and latest["vol_ma5"] > 0:
-        if latest[vol_col] > latest["vol_ma5"] * 1.3:
-            sig.volume_surge = True
-
-    # 4. MACD（黃金交叉或多頭排列）
-    if pd.notna(latest["macd"]) and pd.notna(latest["macd_signal"]):
+    # MACD 黃金交叉
+    if pd.notna(latest.get("macd")) and pd.notna(latest.get("macd_signal")):
         cross_up = (latest["macd"] > latest["macd_signal"]
                     and prev["macd"] <= prev["macd_signal"])
         bull_above_zero = latest["macd"] > 0 and latest["macd"] > latest["macd_signal"]
         if cross_up or bull_above_zero:
             sig.macd_cross = True
 
-    # 5. RSI 健康區（50–70）
-    if pd.notna(latest["rsi14"]) and 50 <= latest["rsi14"] <= 70:
+    # RSI 健康區（50–70）
+    if pd.notna(latest.get("rsi14")) and 50 <= latest["rsi14"] <= 70:
         sig.rsi_healthy = True
 
-    # 6. 不低於布林下軌
-    if pd.notna(latest["bb_lower"]) and latest["close"] >= latest["bb_lower"]:
-        sig.above_bb_lower = True
-
-    # 7. 法人條件
-    if isinstance(inst_buying, dict):
-        sig.institutional_buy = bool(inst_buying.get("strict_pass", False))
-        sig.inst_total_buy = bool(inst_buying.get("aggregate_pass", False))
-        sig.foreign_trust_buy = sig.inst_total_buy and bool(
-            inst_buying.get("foreign_trust_pass", False)
-        )
-    elif inst_buying:
-        sig.institutional_buy = True
-
-    # 8. 融資減少
-    if margin_trend == "down":
-        sig.margin_clean = True
-
-    # 9. [v2] 多週期共振：週線 MA10 向上且站上
-    if len(df) >= 70:   # 至少 14 週資料才計算週線
-        wt = weekly_ma_trend(df, ma_period=10)
-        if wt and wt.get("weekly_above_ma") and wt.get("weekly_ma_rising"):
-            sig.weekly_trend_up = True
-
-    # 10. [v2] 相對強度（抗跌 / 領漲特性）
-    if len(df) >= 63:
-        rs = relative_strength_score(df, lookback_days=63, market_returns=market_close)
-        if rs:
-            sig.rs_score = rs["rs_score"]
-            if rs["outperforming"] and rs["rs_score"] >= 60:
-                sig.rs_positive = True
-
-    # 11. [v3] 多頭排列：MA5 > MA10 > MA20
-    if (pd.notna(latest.get("ma5")) and pd.notna(latest.get("ma10"))
-            and pd.notna(latest.get("ma20"))):
+    # 多頭排列 MA5 > MA10 > MA20
+    if ma5_ok and ma10_ok and ma20_ok:
         if latest["ma5"] > latest["ma10"] > latest["ma20"]:
             sig.ma_aligned = True
 
-    # 12. [v3] 量能品質：近 10 日上漲日成交量佔 60% 以上
-    if vol_col and len(df) >= 11:
-        recent = df.tail(11).copy()
-        recent["up_day"] = recent["close"] >= recent["close"].shift(1)
-        recent = recent.dropna(subset=["up_day"])
-        total_vol = recent[vol_col].sum()
-        up_vol = recent.loc[recent["up_day"], vol_col].sum()
-        if total_vol > 0 and up_vol / total_vol >= 0.6:
-            sig.vol_quality = True
-
-    # 13. [v3] 突破盤整：今日收盤 > 近 60 日最高收盤（排除近 3 日避免自我比較）
+    # 突破近 60 日高點（v3 版）
     if len(df) >= 20:
-        lookback = df.iloc[-63:-3] if len(df) >= 66 else df.iloc[:-3]
-        if not lookback.empty:
-            resistance = lookback["close"].max()
-            if pd.notna(resistance) and latest["close"] > resistance:
+        lb = df.iloc[-63:-3] if len(df) >= 66 else df.iloc[:-3]
+        if not lb.empty:
+            resistance_60d = lb["close"].max()
+            if pd.notna(resistance_60d) and latest["close"] > resistance_60d:
                 sig.breakout = True
 
     return sig
@@ -463,7 +526,7 @@ def run_scan(
     hp_density_threshold: float = 0.30,  # 族群創高比例門檻
     use_turnover_ratio: bool = False,  # 資金流向比重偵測
     turnover_top_n: int = 5,          # 資金前幾大族群
-    max_bias_ratio: float = 15.0,     # 最大容許月線乖離率（%）
+    max_bias_ratio: float = 5.0,      # 最大容許月線乖離率（%），v4 收緊至 5%
     overheat_action: str = "drop",    # "drop" | "penalty"
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:

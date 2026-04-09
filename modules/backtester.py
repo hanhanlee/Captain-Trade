@@ -45,6 +45,7 @@ class BacktestConfig:
     atr_period: int = 14
     atr_multiplier: float = 2.5
     enable_ma20_exit: bool = True
+    ma_exit_period: int = 20          # 跌破均線出場用哪條 MA（5 / 10 / 20）
     enable_max_hold_exit: bool = True
     max_hold_days: int = 20
     enable_indicator_exit: bool = False
@@ -55,7 +56,9 @@ class BacktestConfig:
     max_bias_ratio: float = 10.0
     min_score: float = 65.0
     warmup_days: int = 60
-    exclude_leveraged_etf: bool = True     # 排除代碼末位 L/R/U 的 ETF
+    exclude_leveraged_etf: bool = True
+    exclude_all_etf: bool = False         # 排除所有 ETF（代碼以 0 開頭）
+    allow_fractional_shares: bool = False # 允許買零股（資金不足一張時買最多股數）     # 排除代碼末位 L/R/U 的 ETF
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -95,11 +98,36 @@ class BacktestResult:
     equity_curve: list = field(default_factory=list)   # 每日帳戶總淨值（元）
     equity_dates: list = field(default_factory=list)   # 對應日期
     skip_logs: list = field(default_factory=list)
+    open_positions_end_prices: dict = field(default_factory=dict)  # {stock_id: 期末收盤價}
 
     def summary(self) -> dict:
-        closed = [t for t in self.trades if t.sell_date is not None]
-        if not closed:
+        closed     = [t for t in self.trades if t.sell_date is not None]
+        open_trades = [t for t in self.trades if t.sell_date is None]
+        if not closed and not open_trades:
             return {}
+        if not closed:
+            # 只有未平倉，回傳最小摘要讓 UI 能顯示未平倉區塊
+            open_unrealized_pnl = 0.0
+            for pos in open_trades:
+                end_price = self.open_positions_end_prices.get(pos.stock_id)
+                if end_price is not None and pos.cost_basis > 0:
+                    revenue = end_price * pos.shares * (
+                        1 - self.config.sell_fee_rate - self.config.sell_tax_rate)
+                    open_unrealized_pnl += revenue - pos.cost_basis
+            initial     = self.config.initial_capital
+            final_equity = self.equity_curve[-1] if self.equity_curve else initial
+            return {
+                "total_trades": 0, "win_trades": 0, "loss_trades": 0,
+                "win_rate": 0.0, "avg_win_pct": 0.0, "avg_loss_pct": 0.0,
+                "profit_factor": 0.0, "max_drawdown_pct": 0.0,
+                "total_return_pct": round((final_equity / initial - 1) * 100, 2),
+                "total_pnl": round(final_equity - initial),
+                "initial_capital": initial, "final_equity": round(final_equity),
+                "avg_hold_days": 0.0, "exit_reasons": {}, "skip_reasons": {},
+                "skip_count": len(self.skip_logs),
+                "open_count": len(open_trades),
+                "open_unrealized_pnl": round(open_unrealized_pnl),
+            }
 
         wins   = [t for t in closed if t.pnl_pct > 0]
         losses = [t for t in closed if t.pnl_pct <= 0]
@@ -132,23 +160,35 @@ class BacktestResult:
             if self.skip_logs else {}
         )
 
+        # 未平倉統計（以期末收盤估算未實現損益）
+        open_trades = [t for t in self.trades if t.sell_date is None]
+        open_unrealized_pnl = 0.0
+        for pos in open_trades:
+            end_price = self.open_positions_end_prices.get(pos.stock_id)
+            if end_price is not None and pos.cost_basis > 0:
+                revenue = end_price * pos.shares * (1 - self.config.sell_fee_rate
+                                                    - self.config.sell_tax_rate)
+                open_unrealized_pnl += revenue - pos.cost_basis
+
         return {
-            "total_trades":      len(closed),
-            "win_trades":        len(wins),
-            "loss_trades":       len(losses),
-            "win_rate":          round(len(wins) / len(closed) * 100, 1),
-            "avg_win_pct":       round(avg_win, 2),
-            "avg_loss_pct":      round(avg_loss, 2),
-            "profit_factor":     round(profit_factor, 2),
-            "max_drawdown_pct":  round(max_dd, 2),
-            "total_return_pct":  round(total_return, 2),
-            "total_pnl":         round(total_pnl),
-            "initial_capital":   initial,
-            "final_equity":      round(final_equity),
-            "avg_hold_days":     round(np.mean([t.hold_days for t in closed]), 1),
-            "exit_reasons":      pd.Series([t.exit_reason for t in closed]).value_counts().to_dict(),
-            "skip_reasons":      skip_counts,
-            "skip_count":        len(self.skip_logs),
+            "total_trades":          len(closed),
+            "win_trades":            len(wins),
+            "loss_trades":           len(losses),
+            "win_rate":              round(len(wins) / len(closed) * 100, 1),
+            "avg_win_pct":           round(avg_win, 2),
+            "avg_loss_pct":          round(avg_loss, 2),
+            "profit_factor":         round(profit_factor, 2),
+            "max_drawdown_pct":      round(max_dd, 2),
+            "total_return_pct":      round(total_return, 2),
+            "total_pnl":             round(total_pnl),
+            "initial_capital":       initial,
+            "final_equity":          round(final_equity),
+            "avg_hold_days":         round(np.mean([t.hold_days for t in closed]), 1),
+            "exit_reasons":          pd.Series([t.exit_reason for t in closed]).value_counts().to_dict(),
+            "skip_reasons":          skip_counts,
+            "skip_count":            len(self.skip_logs),
+            "open_count":            len(open_trades),
+            "open_unrealized_pnl":   round(open_unrealized_pnl),
         }
 
 
@@ -186,11 +226,14 @@ def _calc_position_size(
     config: BacktestConfig,
 ) -> int:
     """
-    2% 固定風險法部位計算（台股整張制）
+    2% 固定風險法部位計算
 
     risk_per_share = ATR × ATR倍數（與移動停損一致）
     若 ATR 無效，退而以進場價 5% 為風險估算。
-    最終取「風險上限」與「現金上限」兩者較小值，向下取整到整張（1000股）。
+    最終取「風險上限」與「現金上限」兩者較小值。
+
+    整張模式（預設）：向下取整到整張（1000股），買不起一張回傳 0。
+    零股模式：向下取整到 1 股，買不起 1 股才回傳 0。
     """
     risk_budget    = equity * config.risk_per_trade_pct / 100
     risk_per_share = atr_val * config.atr_multiplier if atr_val > 0 else entry_price * 0.05
@@ -202,8 +245,14 @@ def _calc_position_size(
     shares_by_cash = available_cash / (entry_price * (1 + config.buy_fee_rate))
 
     raw_shares = min(shares_by_risk, shares_by_cash)
-    lots = int(raw_shares / 1000)
-    return lots * 1000   # 0 代表買不起一張
+
+    if config.allow_fractional_shares:
+        # 零股模式：最少 1 股，最多不超過現金可買量
+        return max(1, int(raw_shares)) if raw_shares >= 1 else 0
+    else:
+        # 整張模式：向下取整到整張（1000股）
+        lots = int(raw_shares / 1000)
+        return lots * 1000   # 0 代表買不起一張
 
 
 def _prepare_price_frame(df: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
@@ -260,9 +309,10 @@ class Strategy:
                     candidates.append(("ATR移動停損觸發", trail_stop))
 
         if self.config.enable_ma20_exit:
-            ma20 = row.get("ma20")
-            if pd.notna(ma20) and close < float(ma20):
-                candidates.append(("跌破MA20", close))
+            ma_col = f"ma{self.config.ma_exit_period}"
+            ma_val = row.get(ma_col)
+            if pd.notna(ma_val) and close < float(ma_val):
+                candidates.append((f"跌破MA{self.config.ma_exit_period}", close))
 
         if self.config.enable_max_hold_exit and hold_days >= self.config.max_hold_days:
             candidates.append((f"達最大持倉{self.config.max_hold_days}天", close))
@@ -353,9 +403,15 @@ def run_backtest(
                   if market_df is not None and not market_df.empty else None,
     )
 
-    # 排除槓桿/反向/期貨 ETF
+    # 排除所有 ETF（代碼以 0 開頭，如 0050、00631L）
+    _ALL_ETF_RE       = re.compile(r"^0\d{3}", re.IGNORECASE)
+    # 排除槓桿/反向/期貨 ETF（代碼末位為 L/R/U）
     _LEVERAGED_ETF_RE = re.compile(r"^\d{5}[LRU]$", re.IGNORECASE)
-    if config.exclude_leveraged_etf:
+
+    if config.exclude_all_etf:
+        price_data = {sid: df for sid, df in price_data.items()
+                      if not _ALL_ETF_RE.match(sid)}
+    elif config.exclude_leveraged_etf:
         price_data = {sid: df for sid, df in price_data.items()
                       if not _LEVERAGED_ETF_RE.match(sid)}
 
@@ -530,9 +586,9 @@ def run_backtest(
                 config=config,
             )
             if shares <= 0:
-                result.skip_logs.append(
-                    SkipRecord(sid, today, "[Skip] 資金不足（無法買進一張）", score)
-                )
+                reason_cash = "[Skip] 資金不足（無法買進一股）" if config.allow_fractional_shares \
+                              else "[Skip] 資金不足（無法買進一張）"
+                result.skip_logs.append(SkipRecord(sid, today, reason_cash, score))
                 continue
 
             est_cost = _calc_buy_cost(est_price, shares, config)
@@ -552,8 +608,26 @@ def run_backtest(
                 entry_score = score,
             )
 
-    # 未平倉部位（回測結束仍持有）
-    for pos in open_positions.values():
+    # 未平倉部位（回測結束仍持有）：記錄期末收盤價並補 hold_days
+    last_day = trading_days[-1] if trading_days else None
+    for sid, pos in open_positions.items():
+        # 補 hold_days（平倉時才設，未平倉手動算）
+        if last_day:
+            pos.hold_days = (last_day - pos.buy_date).days
+        # 期末收盤價：取回測結束日當天（或之前最近一筆）的收盤
+        df = prepared.get(sid)
+        if df is not None and not df.empty:
+            end_iloc = date_maps.get(sid, {}).get(last_day) if last_day else None
+            if end_iloc is not None:
+                last_close = float(df.iloc[end_iloc]["close"])
+            else:
+                df_to_end = df[df["date"].dt.date <= last_day] if last_day else df
+                if not df_to_end.empty:
+                    last_close = float(df_to_end.iloc[-1]["close"])
+                else:
+                    result.trades.append(pos)
+                    continue
+            result.open_positions_end_prices[sid] = last_close
         result.trades.append(pos)
 
     return result
