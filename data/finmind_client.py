@@ -4,17 +4,25 @@ FinMind API 客戶端
 免費帳號（註冊會員）每小時限制 600 次請求；遇 429 自動退避重試。
 """
 import os
-import time
+import threading
+import logging
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 TOKEN = os.getenv("FINMIND_TOKEN", "")
+
+# ── 全域最新交易日（執行緒安全）────────────────────────────────────
+_trading_day_lock = threading.Lock()
+_global_latest_trading_day: date | None = None
+_trading_day_resolved_at: datetime | None = None
+_TRADING_DAY_TTL_SEC = 3600   # 解析結果快取 1 小時，避免重複打 API
 
 
 def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd.DataFrame:
@@ -28,18 +36,8 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
         params["start_date"] = start_date
     params.update(kwargs)
 
-    # 遇到 429 限額時，指數退避最多重試 3 次
-    wait = 10
-    for attempt in range(4):
-        resp = requests.get(FINMIND_API, params=params, timeout=30)
-        if resp.status_code == 429:
-            if attempt == 3:
-                resp.raise_for_status()
-            time.sleep(wait)
-            wait *= 2
-            continue
-        resp.raise_for_status()
-        break
+    resp = requests.get(FINMIND_API, params=params, timeout=30)
+    resp.raise_for_status()  # 429 立即拋出，由呼叫端決定如何處理（DSM 備援 / Worker 暫停）
 
     data = resp.json()
 
@@ -144,44 +142,116 @@ def get_institutional_investors(stock_id: str, days: int = 30) -> pd.DataFrame:
     return df
 
 
+def resolve_latest_trading_day() -> date:
+    """
+    確立全域最新交易日（GLOBAL_LATEST_TRADING_DAY）。
+
+    判斷邏輯（依序）：
+    1. 若快取結果在 TTL 內，直接回傳快取值。
+    2. 週六 → 週五，週日 → 週五（不打 API）。
+    3. 平日且時間 < 15:00 → 回傳昨日（今日收盤資料尚未入庫）。
+    4. 平日且時間 >= 15:00 → 查 2330 最新一筆日期：
+       - 等於今日 → 確立今日為最新交易日
+       - 早於今日 → 可能颱風假/停市，退回該日期
+    結果快取 1 小時，避免重複打 API。
+    """
+    global _global_latest_trading_day, _trading_day_resolved_at
+
+    with _trading_day_lock:
+        now = datetime.now()
+        # TTL 快取：若已解析且在有效期內直接回傳
+        if (_global_latest_trading_day is not None
+                and _trading_day_resolved_at is not None
+                and (now - _trading_day_resolved_at).total_seconds() < _TRADING_DAY_TTL_SEC):
+            return _global_latest_trading_day
+
+        today = now.date()
+        weekday = today.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+
+        # 週末直接退回上週五，不打 API
+        if weekday == 5:
+            result = today - timedelta(days=1)
+            logger.debug(f"resolve_latest_trading_day: 週六 → {result}")
+        elif weekday == 6:
+            result = today - timedelta(days=2)
+            logger.debug(f"resolve_latest_trading_day: 週日 → {result}")
+        elif now.hour < 15:
+            # 平日收盤前：FinMind 今日資料尚未入庫，退回昨日
+            result = today - timedelta(days=1)
+            # 若昨日是週末，再往前推
+            while result.weekday() >= 5:
+                result -= timedelta(days=1)
+            logger.debug(f"resolve_latest_trading_day: 收盤前 → {result}")
+        else:
+            # 平日 15:00 後：以 2330 最新資料日為基準
+            try:
+                yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+                benchmark_df = get_daily_price("2330", start_date=yesterday)
+                if not benchmark_df.empty:
+                    latest = pd.to_datetime(benchmark_df["date"].max()).date()
+                    result = latest
+                    logger.info(f"resolve_latest_trading_day: 2330 基準 → {result}")
+                else:
+                    # API 回空（可能颱風假），退回上個交易日
+                    result = today - timedelta(days=1)
+                    while result.weekday() >= 5:
+                        result -= timedelta(days=1)
+                    logger.warning(f"resolve_latest_trading_day: 2330 無資料，退回 {result}")
+            except Exception as e:
+                result = today - timedelta(days=1)
+                while result.weekday() >= 5:
+                    result -= timedelta(days=1)
+                logger.warning(f"resolve_latest_trading_day: 查詢失敗（{e}），退回 {result}")
+
+        _global_latest_trading_day = result
+        _trading_day_resolved_at = now
+        return result
+
+
 def smart_get_price(stock_id: str, required_days: int = 150) -> pd.DataFrame:
     """
-    智慧取價：先查本機快取，只補缺少的資料
+    智慧取價：先查本機快取，只補缺少的資料。
 
-    - 快取有 5 日內資料 → 直接讀快取（0 次 API）
-    - 快取有舊資料 → 只抓缺失的新資料後合併（省 90%+ API）
-    - 完全無快取 → 全部抓並存入快取
+    - 快取已是最新交易日 → 視窗查詢快取，0 次 API
+    - 快取有舊資料       → 補抓缺失段後，視窗查詢快取
+    - 完全無快取         → 全段抓取存入後，視窗查詢快取
+
+    最新交易日由 resolve_latest_trading_day() 確立（含 2330 基準驗證）。
+    查詢使用 lookback_days 視窗，避免載入全量歷史造成記憶體瓶頸。
     """
     from db.price_cache import get_cached_dates, save_prices, load_prices
 
+    latest_trading_day = resolve_latest_trading_day()
     today = datetime.now().date()
-    fresh_threshold = today - timedelta(days=5)  # 涵蓋週末與假日
-    start_str = (today - timedelta(days=required_days)).strftime("%Y-%m-%d")
 
     min_date, max_date = get_cached_dates(stock_id)
 
     if max_date is not None:
-        max_cache = max_date if isinstance(max_date, type(today)) else \
-            datetime.strptime(str(max_date), "%Y-%m-%d").date()
+        max_cache = (max_date if isinstance(max_date, date)
+                     else datetime.strptime(str(max_date), "%Y-%m-%d").date())
 
-        # 快取夠新，直接讀
-        if max_cache >= fresh_threshold:
-            return load_prices(stock_id, start_date=start_str)
+        if max_cache >= latest_trading_day:
+            # 快取已是最新，直接視窗讀取
+            logger.debug(f"smart_get_price {stock_id}: 快取命中（{max_cache}）")
+            return load_prices(stock_id, lookback_days=required_days)
 
-        # 快取有舊資料，只抓缺失的部分
+        # 快取有舊資料，補抓缺失段
         fetch_from = (max_cache + timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.debug(f"smart_get_price {stock_id}: 補抓 {fetch_from} 起")
         try:
             new_df = get_daily_price(stock_id, start_date=fetch_from)
             if not new_df.empty:
                 save_prices(stock_id, new_df)
-        except Exception:
-            pass  # 補資料失敗時，仍使用舊快取
-        return load_prices(stock_id, start_date=start_str)
+        except Exception as e:
+            logger.warning(f"smart_get_price {stock_id}: 補抓失敗（{e}），回傳舊快取")
+        return load_prices(stock_id, lookback_days=required_days)
 
-    # 完全無快取，全部抓
+    # 完全無快取，全段抓取後存入再視窗讀取
+    logger.debug(f"smart_get_price {stock_id}: 無快取，全量抓取")
     df = get_daily_price(stock_id, days=required_days)
     if not df.empty:
         save_prices(stock_id, df)
+        return load_prices(stock_id, lookback_days=required_days)
     return df
 
 

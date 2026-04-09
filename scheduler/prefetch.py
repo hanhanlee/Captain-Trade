@@ -39,6 +39,25 @@ def _is_429(exc: Exception) -> bool:
     return "429" in msg or "too many requests" in msg or "rate limit" in msg
 
 
+def _latest_trading_day() -> date:
+    """
+    委派給 finmind_client.resolve_latest_trading_day()（含 2330 基準驗證 + TTL 快取）。
+    呼叫失敗時退回保守的週曆計算，確保 Worker 不因此中斷。
+    """
+    try:
+        from data.finmind_client import resolve_latest_trading_day
+        return resolve_latest_trading_day()
+    except Exception as e:
+        logger.warning(f"_latest_trading_day 呼叫失敗，退回週曆計算：{e}")
+        today = date.today()
+        wd = today.weekday()
+        if wd == 5:
+            return today - timedelta(days=1)
+        if wd == 6:
+            return today - timedelta(days=2)
+        return today
+
+
 class PrefetchWorker:
     """
     背景資料預抓取工作器（單例，透過 get_worker() 取得）
@@ -74,6 +93,7 @@ class PrefetchWorker:
         self.backtest_initial_queue_size: int = 0          # 進度條分母
         self.initial_queue_size: int = 0         # 本次啟動時的初始待更新數量（進度條分母）
         self._skip_stocks: set = set()           # 無資料或抓了也不更新的股票，永久跳過
+        self._error_counts: dict = {}            # 連續 error 次數；超過門檻後暫時跳過
         self._resume_event = threading.Event()
         self._wake_event = threading.Event()     # 模式切換 / 手動操作時喚醒背景迴圈
         self._stop_event   = threading.Event()
@@ -224,6 +244,57 @@ class PrefetchWorker:
         if not self._stop_event.is_set():
             logger.info("429 暫停結束，繼續抓取")
 
+    def _is_market_holiday(self) -> bool:
+        """判斷目前是否處於休市壓力真空期（週末 or 手動休市模式）"""
+        try:
+            from db.settings import is_market_closed
+            if is_market_closed():
+                return True
+        except Exception:
+            pass
+        return date.today().weekday() >= 5  # 週六/日
+
+    def _try_recover_dead_stocks(self):
+        """
+        死股回收：只在休市期且 last_attempt_at > 7 天時重試 no_update 股票，
+        驗證是否已復牌。平時直接略過以節省 API 額度。
+        """
+        if not self._is_market_holiday():
+            return
+        try:
+            from db.price_cache import get_no_update_stocks, set_fetch_status, get_cached_dates
+            from data.finmind_client import get_daily_price, save_prices
+            candidates = get_no_update_stocks(stale_days=7)
+            if not candidates:
+                return
+            logger.info(f"死股回收：嘗試驗證 {len(candidates)} 檔（no_update > 7 天）")
+            for sid in candidates:
+                if self._stop_event.is_set():
+                    break
+                if self._hour_count() >= self._current_hourly_limit():
+                    break
+                try:
+                    df = get_daily_price(sid, days=10)
+                    if not df.empty:
+                        save_prices(sid, df)
+                        set_fetch_status(sid, "normal")
+                        if sid in self._skip_stocks:
+                            self._skip_stocks.discard(sid)
+                        logger.info(f"死股回收：{sid} 已復牌，移除跳過名單")
+                    else:
+                        _, max_before = get_cached_dates(sid)
+                        set_fetch_status(sid, "delisted" if max_before is None else "suspended")
+                        logger.debug(f"死股回收：{sid} 仍無資料")
+                    self._record_request()
+                    self._wait_with_wake(FETCH_INTERVAL_SEC)
+                except Exception as e:
+                    if _is_429(e):
+                        self._pause_for_rate_limit()
+                        break
+                    logger.debug(f"死股回收 {sid} 失敗：{e}")
+        except Exception as e:
+            logger.warning(f"死股回收流程異常：{e}")
+
     def _get_funds_needing_fetch(self) -> list[str]:
         """回傳尚無新鮮基本面快取的股票清單"""
         try:
@@ -257,7 +328,11 @@ class PrefetchWorker:
         """
         try:
             from data.finmind_client import get_stock_list
-            from db.price_cache import get_cache_summary
+            from db.price_cache import (
+                get_cache_summary,
+                get_delisted_stocks,
+                get_suspended_stocks,
+            )
 
             all_ids = set(get_stock_list()["stock_id"].tolist())
             target_start = (date.today() - timedelta(days=BACKTEST_PREFETCH_DAYS)).isoformat()
@@ -313,71 +388,91 @@ class PrefetchWorker:
     def _get_stale_stocks(self) -> tuple[list[str], list[str]]:
         """
         回傳兩個清單：
-          needs_update — 真正需要更新的（無快取 + 快取過期），用於 queue_size 顯示
-          full_queue   — needs_update + 新鮮的（定期巡迴），用於實際抓取迴圈
+          needs_update — 真正需要更新的（無快取 + 快取未達最新交易日），用於 queue_size 顯示
+          full_queue   — needs_update（優先）+ 新鮮（定期巡迴），用於實際抓取迴圈
+
+        優先級：
+          第一優先 (Missing)  — 完全無快取
+          第二優先 (Stale)    — 按 max_date ASC（最久未更新的先抓）
+          跳過     (Fresh)    — 已同步至最新交易日，不計 API 次數
         """
         try:
             from data.finmind_client import get_stock_list
-            from db.price_cache import get_cache_summary
+            from db.price_cache import get_cache_summary, get_delisted_stocks, get_suspended_stocks
 
             all_stocks_df = get_stock_list()
             if all_stocks_df.empty:
                 return [], []
             all_ids = set(all_stocks_df["stock_id"].tolist())
 
+            self._skip_stocks = set(get_delisted_stocks(include_legacy_no_update=True))
+            # 只封鎖「3 小時內才失敗」的 suspended 股票；
+            # 15:xx 試失敗（FinMind 尚未更新）的股票，18:xx 之後會自動重試
+            suspended_today = set(get_suspended_stocks(today_only=True, recent_hours=3))
             summary = get_cache_summary()
-            cutoff = (date.today() - timedelta(days=STALE_DAYS)).isoformat()
+            cutoff = _latest_trading_day().isoformat()
 
             if summary.empty:
-                cached_ids = set()
-                stale_ids  = set()
-            else:
-                cached_ids = set(summary["stock_id"].tolist())
-                stale_ids  = set(
-                    summary.loc[summary["latest"] < cutoff, "stock_id"].tolist()
-                )
+                missing = sorted(all_ids - self._skip_stocks)
+                return missing, missing
+
+            cached_ids = set(summary["stock_id"].tolist())
+
+            # Stale：按 max_date ASC 排序，確保最久未更新的優先處理
+            stale_df = summary[summary["latest"] < cutoff].copy()
+            stale_df = stale_df[~stale_df["stock_id"].isin(self._skip_stocks)]
+            stale_df = stale_df[~stale_df["stock_id"].isin(suspended_today)]
+            stale_df = stale_df.sort_values("latest", ascending=True)
+            stale_list = stale_df["stock_id"].tolist()
 
             missing = sorted(all_ids - cached_ids - self._skip_stocks)
-            stale   = sorted(stale_ids - set(missing) - self._skip_stocks)
-            fresh   = sorted(all_ids - set(missing) - stale_ids - self._skip_stocks)
 
-            needs_update = missing + stale
-            full_queue   = missing + stale + fresh
+            fresh = sorted(
+                all_ids - set(missing) - set(stale_list) - self._skip_stocks
+            )
+
+            needs_update = missing + stale_list
+            full_queue   = missing + stale_list + fresh
             return needs_update, full_queue
         except Exception as e:
             logger.warning(f"取得待抓清單失敗：{e}")
             return [], []
 
     # 回傳值：
-    #   'ok'         — 成功抓取並更新快取
+    #   'normal'     — 成功抓取並更新快取
     #   'cached'     — 快取仍新鮮，跳過
-    #   'no_update'  — 呼叫了 API 但快取沒有更新（無資料 / 無新資料），加入永久跳過名單
+    #   'suspended'  — 有舊快取，但本次抓不到新資料；同日先暫停重試
+    #   'delisted'   — 無舊快取且 API 仍回空值，視為永久跳過
     #   'rate_limit' — 429
     #   'error'      — 其他例外
     def _fetch_one(self, stock_id: str) -> str:
         try:
-            from db.price_cache import get_cached_dates
+            from db.price_cache import get_cached_dates, set_fetch_status
             from data.finmind_client import smart_get_price
 
-            # 記錄呼叫前的最新日期
             _, max_before = get_cached_dates(stock_id)
 
             if max_before is not None:
-                max_date = max_before if isinstance(max_before, date) else \
-                    datetime.strptime(str(max_before), "%Y-%m-%d").date()
-                if (date.today() - max_date).days <= STALE_DAYS:
+                max_d = (max_before if isinstance(max_before, date)
+                         else datetime.strptime(str(max_before), "%Y-%m-%d").date())
+                if max_d >= _latest_trading_day():
                     return "cached"
 
             smart_get_price(stock_id, required_days=PREFETCH_DAYS)
 
-            # 驗證快取是否真的有更新
             _, max_after = get_cached_dates(stock_id)
             if max_after is None or max_after == max_before:
-                # API 呼叫完成但沒有任何新資料存入（權證、下市股、無資料等）
-                logger.debug(f"{stock_id} 無新資料可存，加入跳過名單")
-                return "no_update"
+                if max_before is None:
+                    logger.debug(f"{stock_id} 無舊快取且 API 無資料，標記 delisted")
+                    set_fetch_status(stock_id, "delisted")
+                    return "delisted"
 
-            return "ok"
+                logger.debug(f"{stock_id} 有舊快取但本次無新資料，標記 suspended")
+                set_fetch_status(stock_id, "suspended")
+                return "suspended"
+
+            set_fetch_status(stock_id, "normal")
+            return "normal"
         except Exception as e:
             if _is_429(e):
                 return "rate_limit"
@@ -457,7 +552,9 @@ class PrefetchWorker:
                 logger.info("全速重建完成，自動退出重建模式，恢復正常限速")
 
             if not full_queue:
-                # 價格快取皆為最新，改為嘗試填充基本面快取
+                # 價格快取皆為最新：① 嘗試死股回收 ② 填充基本面 ③ idle
+                self._try_recover_dead_stocks()
+
                 fund_ids = self._get_funds_needing_fetch()
                 self.fund_queue_size = len(fund_ids)
                 if not fund_ids:
@@ -500,9 +597,10 @@ class PrefetchWorker:
                 self.current_stock = stock_id
                 result = self._fetch_one(stock_id)
 
-                if result == "ok":
+                if result == "normal":
                     self._record_request()
                     self.last_fetch_at = datetime.now()
+                    self._error_counts.pop(stock_id, None)  # 成功後清除 error 計數
                     # 若該股原本在待更新清單，完成後遞減計數
                     if stock_id in needs_update_set:
                         self.queue_size = max(0, self.queue_size - 1)
@@ -510,17 +608,33 @@ class PrefetchWorker:
                     interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
                     self._wait_with_wake(interval)
 
-                elif result == "no_update":
-                    # 無資料可存，加入永久跳過名單，不再浪費 API 額度
+                elif result == "suspended":
+                    # 同一天先暫停重試，隔天再由 _get_stale_stocks 放回待更新清單
+                    if stock_id in needs_update_set:
+                        self.queue_size = max(0, self.queue_size - 1)
+
+                elif result == "delisted":
+                    # 永久跳過名單
                     self._skip_stocks.add(stock_id)
                     if stock_id in needs_update_set:
                         self.queue_size = max(0, self.queue_size - 1)
+
+                elif result == "error":
+                    # 連續 error 超過 3 次：標記 suspended 暫時跳過，避免無限卡在同一批股票
+                    self._error_counts[stock_id] = self._error_counts.get(stock_id, 0) + 1
+                    if self._error_counts[stock_id] >= 3:
+                        from db.price_cache import set_fetch_status
+                        set_fetch_status(stock_id, "suspended")
+                        self._error_counts.pop(stock_id, None)
+                        if stock_id in needs_update_set:
+                            self.queue_size = max(0, self.queue_size - 1)
+                        logger.debug(f"{stock_id} 連續 3 次 error，標記 suspended 暫時跳過")
 
                 elif result == "rate_limit":
                     hit_rate_limit = True
                     break
 
-                # "cached" 或 "error" 直接繼續，不等待
+                # "cached" 直接繼續，不等待
 
             self.current_stock = ""
 

@@ -8,9 +8,16 @@
 """
 import pandas as pd
 from datetime import date, datetime, timedelta
+
 from sqlalchemy import text
 from .database import get_session, ENGINE, init_db
 from .models import Base
+
+
+STATUS_NORMAL = "normal"
+STATUS_SUSPENDED = "suspended"
+STATUS_DELISTED = "delisted"
+STATUS_LEGACY_NO_UPDATE = "no_update"
 
 
 def init_cache_table():
@@ -29,7 +36,7 @@ def get_cached_dates(stock_id: str) -> tuple:
 
 def save_prices(stock_id: str, df: pd.DataFrame) -> int:
     """
-    批次寫入日K資料，已存在的 (stock_id, date) 自動跳過
+    批次寫入日K資料，使用 INSERT OR REPLACE 確保新資料覆蓋舊的錯誤資料。
 
     df 欄位：date, open, max(=high), min(=low), close, Trading_Volume
     """
@@ -41,46 +48,65 @@ def save_prices(stock_id: str, df: pd.DataFrame) -> int:
         d = row["date"].date() if hasattr(row["date"], "date") else row["date"]
         rows.append({
             "stock_id": stock_id,
-            "date": str(d),
-            "open":   float(row["open"])            if pd.notna(row.get("open"))            else None,
-            "high":   float(row.get("max", row.get("high", None))) if pd.notna(row.get("max", row.get("high"))) else None,
-            "low":    float(row.get("min", row.get("low",  None))) if pd.notna(row.get("min", row.get("low")))  else None,
-            "close":  float(row["close"])           if pd.notna(row.get("close"))           else None,
-            "volume": float(row.get("Trading_Volume", row.get("volume", None)))
-                      if pd.notna(row.get("Trading_Volume", row.get("volume"))) else None,
-            "ts": datetime.now().isoformat(),
+            "date":   str(d),
+            "open":   float(row["open"])                                          if pd.notna(row.get("open"))                            else None,
+            "high":   float(row.get("max", row.get("high", None)))                if pd.notna(row.get("max", row.get("high")))            else None,
+            "low":    float(row.get("min", row.get("low",  None)))                if pd.notna(row.get("min", row.get("low")))             else None,
+            "close":  float(row["close"])                                         if pd.notna(row.get("close"))                           else None,
+            "volume": float(row.get("Trading_Volume", row.get("volume", None)))   if pd.notna(row.get("Trading_Volume", row.get("volume"))) else None,
+            "ts":     datetime.now().isoformat(),
         })
 
     if not rows:
         return 0
 
+    # INSERT OR REPLACE：(stock_id, date) 衝突時整列覆蓋，修復舊錯誤資料
     sql = text("""
-        INSERT OR IGNORE INTO price_cache
+        INSERT OR REPLACE INTO price_cache
             (stock_id, date, open, high, low, close, volume, updated_at)
         VALUES
             (:stock_id, :date, :open, :high, :low, :close, :volume, :ts)
     """)
 
     with get_session() as sess:
-        sess.execute(sql, rows)   # 批次執行，一次送出所有 rows
+        sess.execute(sql, rows)
         sess.commit()
 
     return len(rows)
 
 
-def load_prices(stock_id: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-    """從本機快取讀取日K資料（利用複合索引快速查詢）"""
-    query = "SELECT date, open, high, low, close, volume FROM price_cache WHERE stock_id = :sid"
+def load_prices(stock_id: str, start_date: str = None, end_date: str = None,
+                lookback_days: int = None) -> pd.DataFrame:
+    """
+    從本機快取讀取日K資料。
+
+    優先使用 lookback_days 視窗查詢（SQL 層截斷，避免載入大量歷史資料）：
+      - lookback_days=150 → 取最近 150 筆，記憶體使用量固定
+      - lookback_days=None → 全量讀取（回測專用）
+    start_date / end_date 可與 lookback_days 並用做二次過濾。
+    """
     params: dict = {"sid": stock_id}
 
-    if start_date:
-        query += " AND date >= :start"
-        params["start"] = start_date
-    if end_date:
-        query += " AND date <= :end"
-        params["end"] = end_date
-
-    query += " ORDER BY date ASC"
+    if lookback_days is not None:
+        # DESC LIMIT 取最新 N 筆，再用子查詢翻回 ASC 順序給 pandas
+        inner = (
+            "SELECT date, open, high, low, close, volume "
+            "FROM price_cache WHERE stock_id = :sid"
+        )
+        if end_date:
+            inner += " AND date <= :end"
+            params["end"] = end_date
+        inner += f" ORDER BY date DESC LIMIT {int(lookback_days)}"
+        query = f"SELECT * FROM ({inner}) ORDER BY date ASC"
+    else:
+        query = "SELECT date, open, high, low, close, volume FROM price_cache WHERE stock_id = :sid"
+        if start_date:
+            query += " AND date >= :start"
+            params["start"] = start_date
+        if end_date:
+            query += " AND date <= :end"
+            params["end"] = end_date
+        query += " ORDER BY date ASC"
 
     with get_session() as sess:
         result = sess.execute(text(query), params).fetchall()
@@ -93,8 +119,125 @@ def load_prices(stock_id: str, start_date: str = None, end_date: str = None) -> 
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 對齊 scanner 期望的欄位名稱
     return df.rename(columns={"high": "max", "low": "min", "volume": "Trading_Volume"})
+
+
+def get_fetch_status(stock_id: str) -> dict | None:
+    """回傳單股的抓取狀態，無記錄時回傳 None"""
+    with get_session() as sess:
+        row = sess.execute(
+            text("SELECT status, last_attempt_at FROM price_fetch_status WHERE stock_id = :sid"),
+            {"sid": stock_id}
+        ).fetchone()
+    if not row:
+        return None
+    return {"status": row[0], "last_attempt_at": row[1]}
+
+
+def set_fetch_status(stock_id: str, status: str):
+    """寫入或更新單股的抓取狀態（ok / no_update / error）"""
+    now = datetime.now().isoformat()
+    with get_session() as sess:
+        sess.execute(text("""
+            INSERT OR REPLACE INTO price_fetch_status
+                (stock_id, status, last_attempt_at, updated_at)
+            VALUES (:sid, :status, :now, :now)
+        """), {"sid": stock_id, "status": status, "now": now})
+        sess.commit()
+
+
+def get_status_stock_ids(statuses: list[str] | tuple[str, ...], *,
+                         stale_days: int | None = None,
+                         today_only: bool = False,
+                         recent_hours: float | None = None) -> list[str]:
+    """
+    依 status 取回股票代碼。
+
+    recent_hours: 只回傳 last_attempt_at 在最近 N 小時內的紀錄。
+                  與 today_only 合用時兩者都要滿足。
+                  用途：suspended 判斷只封鎖「近期才失敗」的股票，
+                  避免同一天早些時候的失敗封鎖整天的重試。
+    """
+    if not statuses:
+        return []
+
+    params = {f"s{i}": status for i, status in enumerate(statuses)}
+    placeholders = ",".join(f":s{i}" for i in range(len(statuses)))
+    clauses = [f"status IN ({placeholders})"]
+
+    if stale_days is not None:
+        params["cutoff"] = (datetime.now() - timedelta(days=stale_days)).isoformat()
+        clauses.append("(last_attempt_at IS NULL OR last_attempt_at < :cutoff)")
+
+    if today_only:
+        params["today"] = datetime.now().date().isoformat()
+        clauses.append("substr(COALESCE(last_attempt_at, ''), 1, 10) = :today")
+
+    if recent_hours is not None:
+        params["recent_cutoff"] = (datetime.now() - timedelta(hours=recent_hours)).isoformat()
+        clauses.append("last_attempt_at >= :recent_cutoff")
+
+    where_sql = " AND ".join(clauses)
+    with get_session() as sess:
+        rows = sess.execute(text(f"""
+            SELECT stock_id
+            FROM price_fetch_status
+            WHERE {where_sql}
+            ORDER BY last_attempt_at ASC, stock_id ASC
+        """), params).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_delisted_stocks(*, stale_days: int | None = None,
+                        include_legacy_no_update: bool = False) -> list[str]:
+    """回傳已標記為 delisted 的股票；必要時可暫時含舊版 no_update。"""
+    statuses = [STATUS_DELISTED]
+    if include_legacy_no_update:
+        statuses.append(STATUS_LEGACY_NO_UPDATE)
+    return get_status_stock_ids(tuple(statuses), stale_days=stale_days)
+
+
+def get_suspended_stocks(*, today_only: bool = False,
+                         recent_hours: float | None = None) -> list[str]:
+    """回傳已標記為 suspended 的股票。"""
+    return get_status_stock_ids((STATUS_SUSPENDED,), today_only=today_only,
+                                recent_hours=recent_hours)
+
+
+def get_failed_today_detail() -> pd.DataFrame:
+    """
+    回傳今日抓取失敗（suspended）的股票詳情，含股票名稱。
+
+    回傳欄位：stock_id, stock_name, industry, failed_at
+    """
+    today = datetime.now().date().isoformat()
+    with get_session() as sess:
+        rows = sess.execute(text("""
+            SELECT
+                f.stock_id,
+                COALESCE(i.stock_name, '') AS stock_name,
+                COALESCE(i.industry_category, '') AS industry,
+                f.last_attempt_at AS failed_at
+            FROM price_fetch_status f
+            LEFT JOIN stock_info_cache i USING (stock_id)
+            WHERE f.status = 'suspended'
+              AND substr(COALESCE(f.last_attempt_at, ''), 1, 10) = :today
+            ORDER BY f.last_attempt_at ASC
+        """), {"today": today}).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=["stock_id", "stock_name", "industry", "failed_at"])
+    df = pd.DataFrame(rows, columns=["stock_id", "stock_name", "industry", "failed_at"])
+    # 只保留時間部分（HH:MM:SS）
+    df["failed_at"] = pd.to_datetime(df["failed_at"], errors="coerce").dt.strftime("%H:%M:%S")
+    return df
+
+
+def get_no_update_stocks(stale_days: int = 7) -> list[str]:
+    """
+    回傳 no_update 且 last_attempt_at 超過 stale_days 天的股票清單
+    （供死股回收邏輯使用）
+    """
+    return get_status_stock_ids((STATUS_LEGACY_NO_UPDATE,), stale_days=stale_days)
 
 
 def load_prices_multi(stock_ids: list, start_date: str = None) -> dict:
@@ -186,19 +329,29 @@ def load_suspend_ids() -> set[str]:
     return set()
 
 
-def diagnose_cache(min_days: int = 100, stale_days: int = 10) -> dict:
+def diagnose_cache(min_days: int = 100) -> dict:
     """
     診斷快取品質，找出問題股票。已下市股票（ref/suspendList.csv）單獨分類，不列入問題清單。
+    「過舊」判斷以 resolve_latest_trading_day() 為基準，而非固定天數。
 
     回傳 dict：
-      summary       — DataFrame：每支有快取的股票完整摘要（含 status 欄）
-      missing       — 在 stock_info_cache 但完全沒有快取的股票代碼列表（排除下市）
-      thin          — 快取筆數 < min_days 的股票 DataFrame（排除下市）
-      stale         — 最新日期超過 stale_days 天前的股票 DataFrame（排除下市）
-      delisted      — 快取中屬於下市股票的 DataFrame
-      problem_ids   — thin + stale + missing 的聯集，供批次補抓用
+      summary          — DataFrame：每支有快取的股票完整摘要（含 status 欄）
+      missing          — 在 stock_info_cache 但完全沒有快取的股票代碼列表（排除下市）
+      thin             — 快取筆數 < min_days 的股票 DataFrame（排除下市）
+      stale            — 最新日期 < 最新交易日 的股票 DataFrame（排除下市）
+      delisted         — 快取中屬於下市股票的 DataFrame
+      problem_ids      — thin + stale + missing 的聯集，供批次補抓用
+      latest_trading_day — 本次使用的基準交易日
     """
-    from datetime import date, timedelta
+    try:
+        from data.finmind_client import resolve_latest_trading_day
+        latest_trading_day = resolve_latest_trading_day()
+    except Exception:
+        from datetime import date, timedelta
+        today = date.today()
+        wd = today.weekday()
+        latest_trading_day = (today - timedelta(days=1) if wd == 5 else
+                              today - timedelta(days=2) if wd == 6 else today)
 
     suspend_ids = load_suspend_ids()
     summary = get_cache_summary()
@@ -217,9 +370,10 @@ def diagnose_cache(min_days: int = 100, stale_days: int = 10) -> dict:
             "delisted": pd.DataFrame(),
             "problem_ids": missing_ids,
             "suspend_ids": suspend_ids,
+            "latest_trading_day": latest_trading_day,
         }
 
-    stale_cutoff = (date.today() - timedelta(days=stale_days)).isoformat()
+    stale_cutoff = latest_trading_day.isoformat()
     summary["latest"] = summary["latest"].astype(str)
     summary["delisted"] = summary["stock_id"].isin(suspend_ids)
 
@@ -236,7 +390,7 @@ def diagnose_cache(min_days: int = 100, stale_days: int = 10) -> dict:
         if row["days"] < min_days:
             flags.append(f"資料不足({row['days']}天)")
         if row["latest"] < stale_cutoff:
-            flags.append("資料過舊")
+            flags.append(f"資料過舊（基準：{stale_cutoff}）")
         return "、".join(flags) if flags else "正常"
 
     summary["status"] = summary.apply(_status, axis=1)
@@ -255,6 +409,7 @@ def diagnose_cache(min_days: int = 100, stale_days: int = 10) -> dict:
         "delisted": delisted_df,
         "problem_ids": problem_ids,
         "suspend_ids": suspend_ids,
+        "latest_trading_day": latest_trading_day,
     }
 
 

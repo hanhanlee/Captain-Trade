@@ -127,6 +127,16 @@ class AppSettings(Base):
     updated_at = Column(DateTime, default=datetime.now)
 
 
+class PriceFetchStatus(Base):
+    """每檔股票的價格抓取狀態（用於死股追蹤與重試管控）"""
+    __tablename__ = "price_fetch_status"
+
+    stock_id        = Column(String(10), primary_key=True)
+    status          = Column(String(20), default="unknown")  # ok | no_update | error
+    last_attempt_at = Column(DateTime)
+    updated_at      = Column(DateTime, default=datetime.now)
+
+
 class InstCache(Base):
     """三大法人買賣超本機快取（每日一次，避免重複 API 請求）"""
     __tablename__ = "inst_cache"
