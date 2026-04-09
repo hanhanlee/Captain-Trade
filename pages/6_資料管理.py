@@ -130,8 +130,47 @@ else:
         c4.metric("回測待補股票", f"{s.get('backtest_queue_size', 0)} 檔",
                   help="歷史深度不足 10 年、需要補抓回測資料的股票數")
     else:
-        c4.metric("待更新股票", f"{s['queue_size']} 檔",
-                  help="無快取 + 快取超過 5 天（已排除無資料股票）")
+        # 直接查 DB 取得即時數字，排除 worker 會略過的股票：
+        # delisted / legacy no_update / 今日 suspended
+        try:
+            from db.price_cache import (
+                get_cache_summary,
+                get_known_stock_ids,
+                get_delisted_stocks,
+                get_suspended_stocks,
+            )
+            from data.finmind_client import resolve_latest_trading_day
+            from datetime import date as _date
+            _latest_td = resolve_latest_trading_day()
+            _summary = get_cache_summary()
+            _known = get_known_stock_ids()
+            _skip_ids = set(get_delisted_stocks(include_legacy_no_update=True))
+            _suspended_today = set(get_suspended_stocks(today_only=True))
+
+            if _summary.empty:
+                _real_pending = len([x for x in _known if x not in _skip_ids])
+                _skip_cnt = len(_skip_ids)
+            else:
+                _cached_ids = set(_summary["stock_id"])
+                _stale_ids = set(_summary.loc[
+                    _summary["latest"] < _latest_td.isoformat(), "stock_id"
+                ]) - _skip_ids - _suspended_today
+                _missing_ids = set(_known) - _cached_ids - _skip_ids
+                _real_pending = len(_stale_ids) + len(_missing_ids)
+                _skip_cnt = len(_skip_ids)
+        except Exception:
+            _real_pending = None
+            _skip_cnt = 0
+
+        _worker_q = s['queue_size']
+        if _real_pending is not None:
+            c4.metric("待更新股票（即時）", f"{_real_pending} 檔",
+                      delta=f"Worker快照：{_worker_q} 檔",
+                      delta_color="off",
+                      help=f"基準日：{_latest_td}，已排除 {_skip_cnt} 檔略過股票與今日失敗股票")
+        else:
+            c4.metric("待更新股票", f"{_worker_q} 檔",
+                      help="無快取 + 快取未達最新交易日")
     c5.metric("正在抓取", s["current_stock"] or "—")
     c6.metric("⏭ 略過（無資料）", s.get("skip_count", 0),
               help="FinMind 無價格資料的股票（權證、下市股等），已從清單移除不再重試")
