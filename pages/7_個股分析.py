@@ -55,7 +55,7 @@ def _color(passed: bool) -> str:
     return "#27ae60" if passed else "#e74c3c"
 
 
-def render_scorecard(sig, df: pd.DataFrame):
+def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
     """v4 條件逐項評分卡"""
     latest = df.iloc[-1]
     prev   = df.iloc[-2] if len(df) >= 2 else latest
@@ -97,9 +97,13 @@ def render_scorecard(sig, df: pd.DataFrame):
             "detail": (
                 f"今收 **{close:.1f}**，"
                 f"MA5={ma5:.1f} / MA10={ma10:.1f} / MA20={ma20:.1f}  \n"
-                f"昨收 {p_close:.1f}（需在三線下方）"
+                f"昨收 {p_close:.1f}（需在{'三線全部' if ma_mode == 'strict' else '至少一條'}線下方）"
             ),
-            "rule": "今日收盤 > 三均線，昨日收盤 < 三均線",
+            "rule": (
+                "今日收盤 > 三均線，昨日收盤 < min(MA5,MA10,MA20)【嚴謹】"
+                if ma_mode == "strict" else
+                "今日收盤 > 三均線，昨日收盤 < max(MA5,MA10,MA20)【寬鬆】"
+            ),
         },
         {
             "name": "均線糾結度 < 3%",
@@ -200,7 +204,12 @@ def render_scorecard(sig, df: pd.DataFrame):
             "name": "融資減少 / 籌碼集中",
             "pass": sig.margin_clean,
             "score": 5,
-            "detail": "融資張數較前日減少（需載入融資資料）",
+            "detail": (
+                f"融資餘額 **{_margin_latest:,}** 張 ← 前日 **{_margin_prev:,}** 張"
+                f"（{'↓ 減少' if _margin_trend == 'down' else '↑ 增加' if _margin_trend == 'up' else '持平'}）"
+                if _margin_latest or _margin_prev
+                else "無融資資料（特別股或 FinMind 未收錄）"
+            ),
         },
         {
             "name": "相對強度 RS > 70",
@@ -385,11 +394,31 @@ with st.sidebar:
         max_chars=6,
     ).strip()
 
+    from datetime import date as _date_cls
+    analysis_date = st.date_input(
+        "分析基準日",
+        value=_date_cls.today(),
+        max_value=_date_cls.today(),
+        help="預設為今日。選擇過去日期可查看當日技術條件，並觀察後續盤勢。",
+    )
+    _is_historical = analysis_date < _date_cls.today()
+    if _is_historical:
+        st.info(f"📅 歷史模式：{analysis_date}")
+        st.caption("歷史模式只回放價格條件；法人與融資不回補當日歷史資料，避免混入今日 API 結果。")
+
     load_inst = st.checkbox(
         "載入法人買賣超",
         value=False,
         help="需消耗 API 額度，可查詢投信第一天買超條件",
     )
+
+    _ma_mode_label = st.radio(
+        "三線齊穿判斷模式",
+        options=["嚴謹型（昨日三線全在線下）", "寬鬆型（昨日任一線在線下）"],
+        index=0,
+        help="嚴謹型：昨收 < min(MA5,MA10,MA20)；寬鬆型：昨收 < max(MA5,MA10,MA20)",
+    )
+    ma_breakout_mode = "strict" if _ma_mode_label.startswith("嚴謹") else "loose"
 
     analyze_btn = st.button("🔎 開始分析", type="primary", use_container_width=True)
 
@@ -411,12 +440,17 @@ if not analyze_btn and "analysis_stock" not in st.session_state:
     st.info("請在左側按「開始分析」")
     st.stop()
 
-# 記住上次查詢的股票
+# 記住上次查詢的股票與日期
 if analyze_btn:
     st.session_state["analysis_stock"] = stock_input
+    st.session_state["analysis_date"] = analysis_date
+    st.session_state["analysis_ma_mode"] = ma_breakout_mode
     st.session_state.pop("analysis_df", None)
 
-target_id = st.session_state.get("analysis_stock", stock_input)
+target_id        = st.session_state.get("analysis_stock", stock_input)
+_active_date     = st.session_state.get("analysis_date", _date_cls.today())
+_is_hist         = _active_date < _date_cls.today()
+_ma_breakout_mode = st.session_state.get("analysis_ma_mode", ma_breakout_mode)
 
 # ── 載入資料 ─────────────────────────────────────────────────────
 with st.spinner(f"載入 {target_id} 資料中..."):
@@ -428,6 +462,15 @@ if df is None:
         "請確認代號正確，或前往「資料管理」頁面先更新資料。"
     )
     st.stop()
+
+# 歷史模式：保留完整 df 供後續盤勢計算，分析用 df slice 至基準日
+_full_df = df.copy()
+if _is_hist and "date" in df.columns:
+    _sliced = df[df["date"] <= pd.Timestamp(_active_date)]
+    if _sliced.empty or len(_sliced) < 5:
+        st.error(f"基準日 {_active_date} 前的資料不足，無法分析。")
+        st.stop()
+    df = _sliced.reset_index(drop=True)
 
 # 取得股票名稱
 try:
@@ -442,11 +485,27 @@ except Exception:
 # 法人資料（選填）
 inst_buying = {}
 if load_inst:
-    with st.spinner("載入法人資料..."):
-        inst_buying = _load_inst(target_id)
+    if _is_hist:
+        st.info("歷史模式已自動忽略法人買賣超，評分卡只使用價格衍生條件。")
+        load_inst = False
+    else:
+        with st.spinner("載入法人資料..."):
+            inst_buying = _load_inst(target_id)
+
+# 融資資料（歷史模式下 API 只回傳近期資料，跳過以免誤判）
+_margin_trend, _margin_latest, _margin_prev = "flat", 0, 0
+if not _is_hist:
+    try:
+        from data.finmind_client import get_margin_trading, compute_margin_trend
+        _mdf = get_margin_trading(target_id, days=5)
+        _margin_trend, _margin_latest, _margin_prev = compute_margin_trend(_mdf)
+    except Exception:
+        pass
 
 # 分析
-sig = analyze_stock(df, inst_buying=inst_buying, precomputed=True)
+sig = analyze_stock(df, inst_buying=inst_buying, precomputed=True,
+                    margin_trend=_margin_trend,
+                    ma_breakout_mode=_ma_breakout_mode)
 
 # ── 標頭 ─────────────────────────────────────────────────────────
 latest  = df.iloc[-1]
@@ -462,6 +521,8 @@ st.markdown(
     + (f"　<span style='font-size:0.9rem;color:#aaa'>{industry}</span>" if industry else ""),
     unsafe_allow_html=True,
 )
+if _is_hist:
+    st.info(f"📅 歷史回溯：顯示 **{_active_date}** 當日技術條件（收盤後狀態）")
 
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("收盤價", f"{close:.1f} 元")
@@ -481,7 +542,7 @@ col_score, col_chart = st.columns([0.4, 0.6])
 
 with col_score:
     st.subheader("📋 v4 條件評分卡")
-    render_scorecard(sig, df)
+    render_scorecard(sig, df, ma_mode=_ma_breakout_mode)
 
 with col_chart:
     st.subheader("📈 日K線圖")
@@ -548,3 +609,92 @@ with tech_col2:
         pd.DataFrame({"指標": tech_data["指標"][half:], "數值": tech_data["數值"][half:]}),
         hide_index=True, use_container_width=True,
     )
+
+# ── 後續盤勢（歷史模式才顯示）───────────────────────────────────
+if _is_hist:
+    st.markdown("---")
+    st.subheader(f"📅 後續盤勢  ·  基準日：{_active_date}")
+
+    _base_close = df.iloc[-1]["close"]
+    _future = _full_df[_full_df["date"] > pd.Timestamp(_active_date)].reset_index(drop=True)
+
+    if _future.empty:
+        st.info("資料庫中尚無基準日之後的價格資料。")
+    else:
+        # 逐日報酬表
+        _rows = []
+        for i, row in _future.iterrows():
+            _ret = (row["close"] - _base_close) / _base_close * 100
+            _rows.append({
+                "交易日": row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"]),
+                "第 N 日": i + 1,
+                "收盤": round(row["close"], 1),
+                "報酬%": round(_ret, 2),
+                "最高": round(row.get("max", row["close"]), 1),
+                "最低": round(row.get("min", row["close"]), 1),
+            })
+
+        _future_df = pd.DataFrame(_rows)
+
+        # 摘要 metrics
+        _offsets = [d for d in [1, 3, 5, 10] if d <= len(_future_df)]
+        if _offsets:
+            _mcols = st.columns(len(_offsets))
+            for _mc, _d in zip(_mcols, _offsets):
+                _r = _future_df.loc[_d - 1, "報酬%"]
+                _mc.metric(
+                    f"+{_d} 日",
+                    f"{_future_df.loc[_d-1, '收盤']} 元",
+                    delta=f"{_r:+.2f}%",
+                    delta_color="normal" if _r >= 0 else "inverse",
+                )
+
+        # 最高漲幅 / 最大回撤
+        _period = min(10, len(_future_df))
+        _highs = _future_df["最高"].iloc[:_period]
+        _lows  = _future_df["最低"].iloc[:_period]
+        _max_gain = (_highs.max() - _base_close) / _base_close * 100
+        _max_dd   = (_lows.min()  - _base_close) / _base_close * 100
+        _mg1, _mg2 = st.columns(2)
+        _mg1.metric(f"前 {_period} 日最高漲幅", f"{_max_gain:+.2f}%",
+                    help=f"最高價 {_highs.max():.1f} 元")
+        _mg2.metric(f"前 {_period} 日最大回撤", f"{_max_dd:+.2f}%",
+                    help=f"最低價 {_lows.min():.1f} 元")
+
+        # 詳細走勢圖
+        with st.expander("展開後續走勢圖", expanded=False):
+            import plotly.graph_objects as _go
+            _fig = _go.Figure()
+            _fig.add_trace(_go.Candlestick(
+                x=_future_df["交易日"],
+                open=_full_df.loc[_full_df["date"] > pd.Timestamp(_active_date), "open"].values[:len(_future_df)],
+                high=_future_df["最高"],
+                low=_future_df["最低"],
+                close=_future_df["收盤"],
+                name="K線",
+                increasing_line_color="#e74c3c",
+                decreasing_line_color="#27ae60",
+            ))
+            _fig.add_hline(
+                y=_base_close, line_dash="dash",
+                line_color="rgba(255,255,255,0.4)",
+                annotation_text=f"基準收盤 {_base_close}",
+            )
+            _fig.update_layout(
+                height=320, template="plotly_dark",
+                title=f"{target_id} 基準日後走勢",
+                xaxis_rangeslider_visible=False,
+                margin=dict(t=40, b=10),
+            )
+            st.plotly_chart(_fig, use_container_width=True)
+
+        # 明細表（可展開）
+        with st.expander("展開逐日報酬明細"):
+            def _style_ret(val):
+                if not isinstance(val, (int, float)):
+                    return ""
+                return "color: #e74c3c" if val > 0 else ("color: #27ae60" if val < 0 else "")
+            st.dataframe(
+                _future_df.style.applymap(_style_ret, subset=["報酬%"]),
+                hide_index=True, use_container_width=True,
+            )

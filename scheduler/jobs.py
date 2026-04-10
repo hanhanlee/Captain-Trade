@@ -18,7 +18,7 @@ from modules.portfolio import run_portfolio_check
 from modules.journal import get_all_trades, calc_performance
 from db.database import init_db, get_session
 from db.models import Portfolio
-from notifications.line_notify import send_message, send_scan_results
+from notifications.line_notify import send_multicast, send_scan_results
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def job_daily_scan(top_n: int = 5, scan_count: int = 200):
         result_df, _, _ = run_scan(price_data=price_data, stock_info=stock_list)
 
         if result_df.empty:
-            send_message("📊 今日選股雷達：無符合條件的股票")
+            send_multicast("📊 今日選股雷達：無符合條件的股票")
         else:
             results = result_df.to_dict("records")
             send_scan_results(results, top_n=top_n)
@@ -58,13 +58,13 @@ def job_daily_scan(top_n: int = 5, scan_count: int = 200):
 
     except Exception as e:
         logger.error(f"選股任務失敗：{e}")
-        send_message(f"⚠️ 選股掃描失敗：{e}")
+        send_multicast(f"⚠️ 選股掃描失敗：{e}")
 
 
 def job_portfolio_check():
     """
     持股警示任務
-    每日 13:30（盤中）、14:30（盤後）執行
+    每日 13:30（盤中）、14:35（盤後）執行
     """
     logger.info("開始持股警示檢查...")
     try:
@@ -107,7 +107,7 @@ def job_portfolio_check():
             lines.append(f"   {a.reason}")
             lines.append(f"   現價 {a.current_price} 元  損益 {a.pnl_pct:+.1f}%")
 
-        send_message("\n".join(lines))
+        send_multicast("\n".join(lines))
         logger.info(f"推播 {len(all_alerts)} 則警示")
 
     except Exception as e:
@@ -133,7 +133,7 @@ def job_weekly_performance():
             f"\n最佳交易：{perf['best_trade']:+,.0f} 元"
             f"\n最差交易：{perf['worst_trade']:+,.0f} 元"
         )
-        send_message(msg)
+        send_multicast(msg)
     except Exception as e:
         logger.error(f"週報任務失敗：{e}")
 

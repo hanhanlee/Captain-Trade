@@ -149,6 +149,7 @@ def analyze_stock(
     margin_trend: str = "flat",
     market_close: pd.Series = None,   # 大盤收盤序列，供 RS 計算（選填）
     precomputed: bool = False,        # True 時跳過 compute_indicators（已預先計算）
+    ma_breakout_mode: str = "strict", # "strict"：昨日須全在三線下；"loose"：昨日只要在任一線下
 ):
     """
     分析單一股票，回傳 ScanSignal 或 None（資料不足）
@@ -189,11 +190,20 @@ def analyze_stock(
             and latest["close"] > latest["ma10"]
             and latest["close"] > latest["ma20"]
         )
-        yesterday_below_all = (
-            prev["close"] < prev["ma5"]
-            and prev["close"] < prev["ma10"]
-            and prev["close"] < prev["ma20"]
-        )
+        if ma_breakout_mode == "loose":
+            # 寬鬆：昨日收盤 < max(MA5, MA10, MA20)，只要還有一條線沒過即可
+            yesterday_below_all = (
+                prev["close"] < prev["ma5"]
+                or prev["close"] < prev["ma10"]
+                or prev["close"] < prev["ma20"]
+            )
+        else:
+            # 嚴謹（預設）：昨日收盤 < min(MA5, MA10, MA20)，三線全在線下
+            yesterday_below_all = (
+                prev["close"] < prev["ma5"]
+                and prev["close"] < prev["ma10"]
+                and prev["close"] < prev["ma20"]
+            )
         sig.ma_triple_breakout = bool(today_above_all and yesterday_below_all)
         # 保留 v3 參考訊號
         sig.above_ma20 = bool(latest["close"] > latest["ma20"])
@@ -528,6 +538,7 @@ def run_scan(
     turnover_top_n: int = 5,          # 資金前幾大族群
     max_bias_ratio: float = 5.0,      # 最大容許月線乖離率（%），v4 收緊至 5%
     overheat_action: str = "drop",    # "drop" | "penalty"
+    ma_breakout_mode: str = "strict", # "strict"：昨日三線全在線下；"loose"：昨日任一線在線下
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:
     """
@@ -679,6 +690,7 @@ def run_scan(
             inst_buying=inst_data.get(stock_id, False),
             margin_trend=margin_data.get(stock_id, "flat"),
             market_close=market_close,
+            ma_breakout_mode=ma_breakout_mode,
         )
 
         if debug:

@@ -461,6 +461,32 @@ def get_margin_trading(stock_id: str, days: int = 10) -> pd.DataFrame:
     return df
 
 
+def compute_margin_trend(margin_df: pd.DataFrame) -> tuple[str, int, int]:
+    """
+    根據融資餘額趨勢回傳 (trend, latest_balance, prev_balance)
+
+    trend:
+      'down'  — 最新融資餘額 < 前一日，散戶去槓桿（籌碼轉乾淨）
+      'up'    — 融資餘額上升
+      'flat'  — 無資料或持平
+
+    回傳值中 latest_balance / prev_balance 供 UI 顯示用（張數）。
+    """
+    col = "MarginPurchaseBalance"
+    if margin_df.empty or col not in margin_df.columns:
+        return "flat", 0, 0
+    df = margin_df.sort_values("date").dropna(subset=[col])
+    if len(df) < 2:
+        return "flat", 0, 0
+    latest = int(df[col].iloc[-1])
+    prev   = int(df[col].iloc[-2])
+    if latest < prev:
+        return "down", latest, prev
+    if latest > prev:
+        return "up", latest, prev
+    return "flat", latest, prev
+
+
 def get_financial_statements(stock_id: str, years: int = 3) -> pd.DataFrame:
     """
     取得綜合損益表、資產負債表、現金流量表（季頻）

@@ -3,6 +3,7 @@
 
 用途：儲存需要跨 session 記憶的設定，例如「休市模式」開關。
 """
+import json
 from datetime import datetime
 from sqlalchemy import text
 from .database import get_session
@@ -42,3 +43,32 @@ def is_market_closed() -> bool:
 def set_market_closed(closed: bool) -> None:
     """設定「休市模式」開關"""
     set_setting("market_closed", "true" if closed else "false")
+
+
+def get_prefetch_optimal_time() -> str:
+    """
+    回傳上次記錄的盤後首筆更新時間（格式 HH:MM）。
+    尚未記錄時回傳空字串。
+    """
+    return get_setting("prefetch_first_update_hhmm", "")
+
+
+def set_prefetch_optimal_time(hhmm: str) -> None:
+    """儲存當日盤後首筆成功更新的時間（格式 HH:MM）"""
+    set_setting("prefetch_first_update_hhmm", hhmm)
+
+
+def get_scanner_preset() -> dict:
+    """讀取使用者自訂掃描預設（JSON dict），尚未儲存時回傳空 dict"""
+    raw = get_setting("scanner_custom_preset", "")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def set_scanner_preset(preset: dict) -> None:
+    """儲存使用者自訂掃描預設"""
+    set_setting("scanner_custom_preset", json.dumps(preset, ensure_ascii=False))

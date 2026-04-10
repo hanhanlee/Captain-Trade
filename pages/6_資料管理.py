@@ -117,9 +117,9 @@ else:
             f"剩餘 **{remain_min} 分 {remain_sec} 秒**，預計 {resume_at} 自動恢復"
         )
     elif s["paused_for_market"]:
-        st.warning("🟡 交易時間降速模式（09:00–15:05），每小時上限 100 次，保留額度給手動操作")
+        st.warning("🟡 交易時間降速模式（09:00–自適應盤後切換前），每小時上限 100 次，保留額度給手動操作")
     else:
-        st.success("🟢 工作器運行中（非交易時間，每小時上限 500 次）")
+        st.success("🟢 工作器運行中（盤後/非交易時間，每小時上限 600 次）")
 
     # ── 指標列 ────────────────────────────────────────────────
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
@@ -245,9 +245,11 @@ else:
         st.markdown("""
         **工作器說明：**
         - App 啟動時自動開始，不需手動啟動
-        - **非交易時間**（15:05–隔日 09:00）：每小時最多 500 次，7 秒抓一檔
-        - **交易時間**（09:00–15:05）：每小時上限降為 100 次，優先保留給手動掃描
+        - **交易時間**（09:00–盤後全速切換前）：每小時上限 100 次，優先保留給手動掃描
+        - **盤後/非交易時間**：每小時最多 600 次，約 5.8 秒抓一檔
+        - 系統會記錄盤後「第一筆成功更新時間」，之後自動把全速切換點提早 10 分鐘
         - 快取仍新鮮的股票（5 天內）自動跳過，不消耗額度
+        - 超過 180 天都沒有新資料的舊快取，會視為下市/合併，自動停止重試
         - **遇到 429**：整體暫停 20 分鐘，暫停期間可按「⚡ 立即恢復」提前繼續
         - FinMind 免費帳號：600 次/小時（註冊會員）
         """)
@@ -793,6 +795,88 @@ if manual_fetch and manual_ids.strip():
     st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
     # 清除快取摘要快照，讓下次載入時重新計算
     st.session_state.pop("cache_summary", None)
+
+st.markdown("---")
+
+# ══ 區塊五：LINE 推播訂閱者管理 ═════════════════════════════════
+st.subheader("📣 LINE 推播訂閱者")
+st.markdown(
+    "管理群播名單。**群播**（選股、警示、週報）會推送給所有已啟用的訂閱者；"
+    "停用訂閱者可暫停其接收而不刪除記錄。"
+)
+
+from notifications.line_notify import (
+    get_all_subscribers, add_subscriber, remove_subscriber, set_subscriber_enabled,
+    send_message as _line_send_single, sync_env_subscriber,
+)
+
+sync_env_subscriber()   # env LINE_USER_ID 若不在 DB，自動補入
+subscribers = get_all_subscribers()
+
+# ── 現有訂閱者列表 ──────────────────────────────────────────────
+if not subscribers:
+    st.info("尚無訂閱者。使用下方表單新增 LINE User ID。")
+else:
+    for sub in subscribers:
+        uid   = sub["user_id"]
+        name  = sub["display_name"] or uid
+        col_name, col_toggle, col_test, col_del = st.columns([4, 2, 2, 1])
+
+        col_name.markdown(
+            f"**{name}**  \n"
+            f"<span style='font-size:0.8em;color:gray'>{uid}</span>",
+            unsafe_allow_html=True,
+        )
+
+        # 啟用 / 停用 toggle
+        new_enabled = col_toggle.toggle(
+            "群播啟用",
+            value=sub["enabled"],
+            key=f"sub_toggle_{uid}",
+        )
+        if new_enabled != sub["enabled"]:
+            set_subscriber_enabled(uid, new_enabled)
+            st.rerun()
+
+        # 測試單人推播
+        if col_test.button("📨 測試", key=f"sub_test_{uid}"):
+            ok = _line_send_single("✅ LINE 推播測試訊息（來自 srock tool）", user_id=uid)
+            if ok:
+                st.toast(f"已傳送測試訊息給 {name}", icon="✅")
+            else:
+                st.toast("傳送失敗，請確認 Token 與 User ID", icon="❌")
+
+        # 刪除
+        if col_del.button("🗑️", key=f"sub_del_{uid}", help=f"刪除 {name}"):
+            remove_subscriber(uid)
+            st.rerun()
+
+st.markdown("---")
+
+# ── 新增訂閱者 ──────────────────────────────────────────────────
+with st.expander("➕ 新增訂閱者", expanded=not subscribers):
+    st.caption(
+        "LINE User ID 格式為 `Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`（32 碼）。  \n"
+        "取得方式：在 LINE Bot 聊天視窗輸入任意訊息後，"
+        "到 LINE Developers Console → Messaging API → Webhook 日誌可查看。"
+    )
+    new_uid  = st.text_input("LINE User ID", placeholder="Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+    new_name = st.text_input("顯示名稱（選填）", placeholder="例：王小明")
+    if st.button("新增", type="primary"):
+        if not new_uid.strip():
+            st.warning("請填入 LINE User ID")
+        else:
+            result = add_subscriber(new_uid.strip(), new_name.strip())
+            if result == "added":
+                st.success(f"已新增訂閱者：{new_name or new_uid}")
+                st.rerun()
+            elif result == "updated":
+                st.info("User ID 已存在，已更新顯示名稱")
+                st.rerun()
+            elif result == "invalid":
+                st.error("LINE User ID 格式錯誤，需為 U 開頭加 32 碼十六進位字元")
+            else:
+                st.error("新增失敗，請查看日誌")
 
 # ── 自動刷新執行（放在頁面最底部）────────────────────────────────
 if auto_refresh:

@@ -130,180 +130,295 @@ def render_weekly_chart(stock_id: str, df: pd.DataFrame):
 # ── 側邊欄 ───────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ 掃描設定")
+
+    from datetime import date as _date_cls
+    scan_date = st.date_input(
+        "分析基準日",
+        value=_date_cls.today(),
+        max_value=_date_cls.today(),
+        help="預設為今日（最新資料）。選擇過去日期可重現當日選股結果，並查看後續盤勢。",
+    )
+    _is_historical = scan_date < _date_cls.today()
+    if _is_historical:
+        st.info(f"📅 歷史回溯模式：{scan_date}（自動使用資料庫）")
+        st.caption("歷史模式只回放價格資料；法人、融資與基本面條件不套用，避免混入今日 API 資料。")
+
+    # ── 掃描模式 preset ────────────────────────────────────────
+    _PRESET_KEYS = [
+        "sb_min_price", "sb_scan_range", "sb_include_inst", "sb_include_margin",
+        "sb_inst_mode", "sb_inst_selection", "sb_strict_days", "sb_agg_mode_label",
+        "sb_agg_days", "sb_require_inst", "sb_vol_filter_mode", "sb_top_volume_n",
+        "sb_min_avg_volume", "sb_use_sector_filter", "sb_top_sector_n",
+        "sb_use_hp_density", "sb_hp_density_lookback", "sb_hp_density_threshold_pct",
+        "sb_use_turnover_ratio", "sb_turnover_top_n", "sb_require_weekly",
+        "sb_min_rs", "sb_max_bias_ratio", "sb_overheat_action_label",
+        "sb_use_fundamental", "sb_req_eps", "sb_req_cf", "sb_min_roe", "sb_max_debt",
+        "sb_ma_mode",
+    ]
+    _BASE = {
+        "sb_min_price": 10.0, "sb_inst_mode": "個別法人皆須買超",
+        "sb_inst_selection": ["外資", "投信", "自營商"], "sb_strict_days": 2,
+        "sb_agg_mode_label": "近 N 日累計 > 0", "sb_agg_days": 5,
+        "sb_require_inst": False, "sb_top_sector_n": 3,
+        "sb_hp_density_lookback": 20, "sb_hp_density_threshold_pct": 30,
+        "sb_turnover_top_n": 5, "sb_require_weekly": False, "sb_min_rs": 0,
+        "sb_max_bias_ratio": 15.0,
+        "sb_overheat_action_label": "直接剔除（不入選候選清單）",
+        "sb_use_fundamental": False, "sb_req_eps": True, "sb_req_cf": True,
+        "sb_min_roe": 0, "sb_max_debt": 0,
+        "sb_ma_mode": "嚴謹型（三線全穿）",
+        "sb_vol_filter_mode": "前日量前 N 名（推薦）", "sb_min_avg_volume": 0,
+    }
+    _PRESETS = {
+        "極速": {**_BASE,
+            "sb_scan_range": "快速測試（20 檔）",
+            "sb_include_inst": False, "sb_include_margin": False,
+            "sb_top_volume_n": 100, "sb_use_sector_filter": False,
+            "sb_use_hp_density": False, "sb_use_turnover_ratio": False,
+        },
+        "標準": {**_BASE,
+            "sb_scan_range": "小型掃描（100 檔）",
+            "sb_include_inst": True, "sb_include_margin": False,
+            "sb_top_volume_n": 200, "sb_use_sector_filter": False,
+            "sb_use_hp_density": False, "sb_use_turnover_ratio": False,
+        },
+        "完整": {**_BASE,
+            "sb_scan_range": "全市場掃描（需時較長）",
+            "sb_include_inst": True, "sb_include_margin": True,
+            "sb_top_volume_n": 300, "sb_use_sector_filter": True,
+            "sb_use_hp_density": True, "sb_use_turnover_ratio": True,
+        },
+    }
+
+    from db.settings import get_scanner_preset as _get_cpreset, set_scanner_preset as _set_cpreset
+    _custom_data = _get_cpreset()
+    if _custom_data:
+        _PRESETS["自訂"] = _custom_data
+
+    _mode_opts = ["⚡ 極速", "🎯 標準", "🔬 完整", "⚙️ 自訂"]
+    scan_preset = st.selectbox(
+        "掃描模式",
+        options=_mode_opts,
+        key="sb_preset_select",
+        help="快速套用預設組合；「⚙️ 自訂」載入你上次儲存的設定",
+    )
+    _preset_name = scan_preset.split(" ", 1)[1]
+
+    # 當模式切換時，把 preset 值寫入 session_state（在 widget 渲染前執行）
+    if st.session_state.get("_sb_preset_prev") != scan_preset:
+        if _preset_name in _PRESETS:
+            for _k, _v in _PRESETS[_preset_name].items():
+                st.session_state[_k] = _v
+        st.session_state["_sb_preset_prev"] = scan_preset
+
+    if _preset_name == "自訂" and not _custom_data:
+        st.caption("尚未儲存自訂設定，調整後點擊下方「儲存為自訂模式」")
+
+    st.markdown("---")
+
+    # ── 核心設定 ───────────────────────────────────────────────
     min_price = st.number_input("最低股價（元）", min_value=1.0, max_value=100.0,
-                                value=10.0, step=1.0)
+                                value=10.0, step=1.0, key="sb_min_price")
     scan_mode = st.radio("掃描範圍",
                           ["快速測試（20 檔）", "小型掃描（100 檔）", "全市場掃描（需時較長）"],
-                          index=0)
-    include_institutional = st.checkbox("納入法人買賣超（較慢）", value=False)
-    inst_selection: list = []
-    require_institutional = False
-    if include_institutional:
-        inst_mode = st.radio(
-            "法人判斷模式",
-            options=["個別法人皆須買超", "三大法人合計買超"],
-            index=0,
-            help="前者保留原本嚴格邏輯；後者只看整體資金是否淨流入",
+                          key="sb_scan_range")
+    ma_breakout_mode_label = st.radio(
+        "🔀 三線齊穿模式",
+        options=["嚴謹型（三線全穿）", "寬鬆型（任一線即可）"],
+        key="sb_ma_mode",
+        help=(
+            "嚴謹：昨收 < min(MA5, MA10, MA20)，三線全穿才算首日突破，訊號精準。\n"
+            "寬鬆：昨收 < max(MA5, MA10, MA20)，突破任一均線即納入，標的較多。"
+        ),
+    )
+    ma_breakout_mode = "strict" if ma_breakout_mode_label.startswith("嚴謹") else "loose"
+
+    # ── 法人 & 融資條件 ────────────────────────────────────────
+    _inst_exp = (
+        st.session_state.get("sb_include_inst", False)
+        or st.session_state.get("sb_include_margin", False)
+    )
+    with st.expander("📊 法人 & 融資條件", expanded=_inst_exp):
+        include_institutional = st.checkbox("納入法人買賣超（較慢）", value=False,
+                                            key="sb_include_inst")
+        include_margin = st.checkbox(
+            "納入融資餘額（消耗 API 額度）", value=False, key="sb_include_margin",
+            help="抓取每檔股票近 5 日融資餘額，判斷散戶是否去槓桿（籌碼乾淨）。每檔多 1 次 API 呼叫。",
         )
-        if inst_mode == "個別法人皆須買超":
-            inst_selection = st.multiselect(
-                "選擇法人",
-                options=["外資", "投信", "自營商"],
-                default=["外資", "投信", "自營商"],
-                help="勾選的法人都必須各自連續買超才算符合",
-            )
-            strict_days = st.slider(
-                "個別法人連續買超天數",
-                min_value=1,
-                max_value=5,
-                value=2,
-                step=1,
-            )
-            agg_mode = "rolling_sum"
-            agg_days = 5
-        else:
-            inst_selection = ["外資", "投信", "自營商"]
-            strict_days = 2
-            agg_mode_label = st.radio(
-                "合計買超判斷方式",
-                options=["近 N 日累計 > 0", "連續 N 日每日 > 0"],
-                index=0,
-                horizontal=True,
-                help="可用近 N 日合計淨買超，或要求最近每一天合計都為正",
-            )
-            agg_mode = "rolling_sum" if agg_mode_label == "近 N 日累計 > 0" else "consecutive"
-            agg_days = st.slider(
-                "合計買超觀察天數",
-                min_value=2,
-                max_value=10,
-                value=5,
-                step=1,
-            )
-        require_institutional = st.checkbox(
-            "法人條件為必要條件（不符合直接排除）",
-            value=False,
-            help="勾選後，未符合法人條件的股票直接剔除，而非只是少加分",
-        )
-    else:
-        inst_mode = "個別法人皆須買超"
+        inst_selection: list = []
+        require_institutional = False
         strict_days = 2
         agg_mode = "rolling_sum"
         agg_days = 5
+        if include_institutional:
+            inst_mode = st.radio(
+                "法人判斷模式",
+                options=["個別法人皆須買超", "三大法人合計買超"],
+                key="sb_inst_mode",
+                help="前者保留原本嚴格邏輯；後者只看整體資金是否淨流入",
+            )
+            if inst_mode == "個別法人皆須買超":
+                inst_selection = st.multiselect(
+                    "選擇法人",
+                    options=["外資", "投信", "自營商"],
+                    default=["外資", "投信", "自營商"],
+                    key="sb_inst_selection",
+                    help="勾選的法人都必須各自連續買超才算符合",
+                )
+                strict_days = st.slider("個別法人連續買超天數",
+                                        min_value=1, max_value=5, value=2, step=1,
+                                        key="sb_strict_days")
+                agg_mode = "rolling_sum"
+                agg_days = 5
+            else:
+                inst_selection = ["外資", "投信", "自營商"]
+                strict_days = 2
+                agg_mode_label = st.radio(
+                    "合計買超判斷方式",
+                    options=["近 N 日累計 > 0", "連續 N 日每日 > 0"],
+                    key="sb_agg_mode_label",
+                    horizontal=True,
+                    help="可用近 N 日合計淨買超，或要求最近每一天合計都為正",
+                )
+                agg_mode = "rolling_sum" if agg_mode_label == "近 N 日累計 > 0" else "consecutive"
+                agg_days = st.slider("合計買超觀察天數",
+                                     min_value=2, max_value=10, value=5, step=1,
+                                     key="sb_agg_days")
+            require_institutional = st.checkbox(
+                "法人條件為必要條件（不符合直接排除）", value=False, key="sb_require_inst",
+                help="勾選後，未符合法人條件的股票直接剔除，而非只是少加分",
+            )
+        else:
+            inst_mode = "個別法人皆須買超"
 
-    st.markdown("---")
-    st.markdown("**流動性前置過濾**")
-    vol_filter_mode = st.radio(
-        "篩選方式",
-        ["不過濾", "前日量前 N 名（推薦）", "日均量 ≥ N 張"],
-        index=1,
-        help="先過濾低流動性股票，加快掃描速度並聚焦主流股",
-    )
-    if vol_filter_mode == "前日量前 N 名（推薦）":
-        top_volume_n = st.number_input("取前 N 名", min_value=50, max_value=500,
-                                        value=100, step=50)
-        min_avg_volume = 0
-        st.caption("💡 鎖定當天最活躍的股票，動態追蹤市場熱點")
-    elif vol_filter_mode == "日均量 ≥ N 張":
-        min_avg_volume = st.number_input("最低日均量（張）", min_value=0,
-                                          max_value=50000, value=1000, step=100)
-        top_volume_n = 0
-        st.caption("💡 日均量 > 1000 張通常對應資本額 20 億以上")
-    else:
-        min_avg_volume, top_volume_n = 0, 0
-
-    st.markdown("---")
-    st.markdown("**產業輪動過濾**")
-    use_sector_filter = st.checkbox("只掃描近一週漲幅前 N 類股", value=False,
-                                     help="自動算出哪些產業最強，只在那幾個產業裡選股")
-    top_sector_n = 0
-    if use_sector_filter:
-        top_sector_n = st.number_input("取前 N 個產業", min_value=1, max_value=10,
-                                        value=3, step=1)
-        st.caption("💡 資金正在流入的產業，勝率更高")
-
-    st.markdown("---")
-    st.markdown("**🔥 族群集體突破偵測**")
-    use_hp_density = st.checkbox(
-        "族群創高密度（HP Density）",
-        value=False,
-        help="統計族群內有多少比例的股票今日收盤等於近 N 日高點。"
-             "比例越高代表該族群成員集體向上突破，是強勢輪動的早期訊號。",
-    )
-    hp_density_lookback = 20
-    hp_density_threshold = 0.30
-    if use_hp_density:
-        hp_density_lookback = st.slider("創高天數 N", 10, 60, 20, 5,
-                                        help="計算「近幾天新高」的回溯天數")
-        hp_density_threshold_pct = st.slider("創高比例門檻 %", 10, 80, 30, 5,
-                                              help="族群內達到此比例的股票在創高，才視為有效突破")
-        hp_density_threshold = hp_density_threshold_pct / 100.0
-
-    use_turnover_ratio = st.checkbox(
-        "資金流向比重（Turnover Ratio）",
-        value=False,
-        help="以「收盤價 × 成交量」估算各族群成交額佔全市場比重，"
-             "鎖定資金集中流入的強勢族群。",
-    )
-    turnover_top_n = 5
-    if use_turnover_ratio:
-        turnover_top_n = st.number_input("資金前幾大族群", min_value=1,
-                                          max_value=15, value=5, step=1,
-                                          help="成交額排名在此範圍內的族群視為資金集中")
-
-    st.markdown("---")
-    st.markdown("**v2 進階選項**")
-    require_weekly = st.checkbox("必須週線多頭（更嚴格，結果更少）", value=False)
-    min_rs = st.slider("最低相對強度 RS 分數", 0, 80, 0, 5,
-                       help="0 = 不限制；60 以上 = 強勢股")
-
-    st.markdown("---")
-    st.markdown("**🌡️ 過熱股防護機制**")
-    max_bias_ratio = st.slider(
-        "最大容許乖離率 (%)",
-        min_value=5.0,
-        max_value=30.0,
-        value=15.0,
-        step=0.5,
-        help="月線乖離率 = (收盤價 - MA20) / MA20 × 100%。超過門檻代表短線漲幅過大。",
-    )
-    overheat_action_label = st.radio(
-        "超過門檻時的處置方式",
-        options=["直接剔除（不入選候選清單）", "扣分懲罰（總強度分數扣減 10 分）"],
-        index=0,
-        help="直接剔除較保守；扣分可保留強勢但過熱的標的供人工觀察。",
-    )
-    overheat_action = "drop" if overheat_action_label.startswith("直接剔除") else "penalty"
-
-    st.markdown("---")
-    st.markdown("**📊 基本面過濾（財報品質篩選）**")
-    use_fundamental = st.checkbox(
-        "啟用基本面過濾",
-        value=False,
-        help="從財報剔除虧損股與地雷股，快取 90 天不重複耗 API",
-    )
-    fundamental_filter: dict = {}
-    if use_fundamental:
-        req_eps = st.checkbox("EPS TTM > 0（排除虧損股）", value=True)
-        req_cf  = st.checkbox("營業現金流 > 0（排除假獲利）", value=True)
-        min_roe = st.number_input(
-            "最低 ROE (%)　（0 = 不限）",
-            min_value=0, max_value=50, value=0, step=5,
-            help="巴菲特標準 ≥ 15%，一般優質公司 ≥ 10%",
+    # ── 流動性 & 產業過濾 ──────────────────────────────────────
+    with st.expander("💧 流動性 & 產業過濾", expanded=True):
+        vol_filter_mode = st.radio(
+            "流動性過濾",
+            ["不過濾", "前日量前 N 名（推薦）", "日均量 ≥ N 張"],
+            key="sb_vol_filter_mode",
+            help="先過濾低流動性股票，加快掃描速度並聚焦主流股",
         )
-        max_debt = st.number_input(
-            "負債比上限 (%)　（0 = 不限）",
-            min_value=0, max_value=100, value=0, step=10,
-            help="一般產業 < 60%，金融業本身高負債屬正常可設 0",
+        if vol_filter_mode == "前日量前 N 名（推薦）":
+            top_volume_n = st.number_input("取前 N 名", min_value=50, max_value=500,
+                                            value=100, step=50, key="sb_top_volume_n")
+            min_avg_volume = 0
+            st.caption("💡 鎖定當天最活躍的股票，動態追蹤市場熱點")
+        elif vol_filter_mode == "日均量 ≥ N 張":
+            min_avg_volume = st.number_input("最低日均量（張）", min_value=0,
+                                              max_value=50000, value=1000, step=100,
+                                              key="sb_min_avg_volume")
+            top_volume_n = 0
+            st.caption("💡 日均量 > 1000 張通常對應資本額 20 億以上")
+        else:
+            min_avg_volume, top_volume_n = 0, 0
+
+        st.markdown("---")
+        use_sector_filter = st.checkbox("只掃描近一週漲幅前 N 類股", value=False,
+                                         key="sb_use_sector_filter",
+                                         help="自動算出哪些產業最強，只在那幾個產業裡選股")
+        top_sector_n = 0
+        if use_sector_filter:
+            top_sector_n = st.number_input("取前 N 個產業", min_value=1, max_value=10,
+                                            value=3, step=1, key="sb_top_sector_n")
+            st.caption("💡 資金正在流入的產業，勝率更高")
+
+    # ── 族群偵測 ───────────────────────────────────────────────
+    _cluster_exp = (
+        st.session_state.get("sb_use_hp_density", False)
+        or st.session_state.get("sb_use_turnover_ratio", False)
+    )
+    with st.expander("🔥 族群偵測", expanded=_cluster_exp):
+        use_hp_density = st.checkbox(
+            "族群創高密度（HP Density）", value=False, key="sb_use_hp_density",
+            help="統計族群內有多少比例的股票今日收盤等於近 N 日高點。"
+                 "比例越高代表該族群成員集體向上突破，是強勢輪動的早期訊號。",
         )
-        fundamental_filter = {
-            "require_eps_positive": req_eps,
-            "require_positive_cf":  req_cf,
-            "min_roe":              float(min_roe),
-            "max_debt_ratio":       float(max_debt),
-        }
-        st.caption("💡 首次啟用時需從 API 抓財報資料，建議先讓背景工作器預先填充")
+        hp_density_lookback = 20
+        hp_density_threshold = 0.30
+        if use_hp_density:
+            hp_density_lookback = st.slider("創高天數 N", 10, 60, 20, 5,
+                                            key="sb_hp_density_lookback",
+                                            help="計算「近幾天新高」的回溯天數")
+            hp_density_threshold_pct = st.slider("創高比例門檻 %", 10, 80, 30, 5,
+                                                  key="sb_hp_density_threshold_pct",
+                                                  help="族群內達到此比例的股票在創高，才視為有效突破")
+            hp_density_threshold = hp_density_threshold_pct / 100.0
+
+        use_turnover_ratio = st.checkbox(
+            "資金流向比重（Turnover Ratio）", value=False, key="sb_use_turnover_ratio",
+            help="以「收盤價 × 成交量」估算各族群成交額佔全市場比重，"
+                 "鎖定資金集中流入的強勢族群。",
+        )
+        turnover_top_n = 5
+        if use_turnover_ratio:
+            turnover_top_n = st.number_input("資金前幾大族群", min_value=1, max_value=15,
+                                              value=5, step=1, key="sb_turnover_top_n",
+                                              help="成交額排名在此範圍內的族群視為資金集中")
+
+    # ── 進階選項 ───────────────────────────────────────────────
+    _adv_exp = (
+        st.session_state.get("sb_require_weekly", False)
+        or st.session_state.get("sb_min_rs", 0) > 0
+        or st.session_state.get("sb_max_bias_ratio", 15.0) != 15.0
+    )
+    with st.expander("🔬 進階選項", expanded=_adv_exp):
+        require_weekly = st.checkbox("必須週線多頭（更嚴格，結果更少）", value=False,
+                                     key="sb_require_weekly")
+        min_rs = st.slider("最低相對強度 RS 分數", 0, 80, 0, 5, key="sb_min_rs",
+                           help="0 = 不限制；60 以上 = 強勢股")
+        st.markdown("**🌡️ 過熱股防護**")
+        max_bias_ratio = st.slider(
+            "最大容許乖離率 (%)", min_value=5.0, max_value=30.0, value=15.0, step=0.5,
+            key="sb_max_bias_ratio",
+            help="月線乖離率 = (收盤價 - MA20) / MA20 × 100%。超過門檻代表短線漲幅過大。",
+        )
+        overheat_action_label = st.radio(
+            "超過門檻時的處置",
+            options=["直接剔除（不入選候選清單）", "扣分懲罰（總強度分數扣減 10 分）"],
+            key="sb_overheat_action_label",
+            help="直接剔除較保守；扣分可保留強勢但過熱的標的供人工觀察。",
+        )
+        overheat_action = "drop" if overheat_action_label.startswith("直接剔除") else "penalty"
+
+    # ── 基本面過濾 ─────────────────────────────────────────────
+    _fund_exp = st.session_state.get("sb_use_fundamental", False)
+    with st.expander("📋 基本面過濾", expanded=_fund_exp):
+        use_fundamental = st.checkbox(
+            "啟用基本面過濾", value=False, key="sb_use_fundamental",
+            help="從財報剔除虧損股與地雷股，快取 90 天不重複耗 API",
+        )
+        fundamental_filter: dict = {}
+        if use_fundamental:
+            req_eps = st.checkbox("EPS TTM > 0（排除虧損股）", value=True, key="sb_req_eps")
+            req_cf  = st.checkbox("營業現金流 > 0（排除假獲利）", value=True, key="sb_req_cf")
+            min_roe = st.number_input(
+                "最低 ROE (%)　（0 = 不限）", min_value=0, max_value=50, value=0, step=5,
+                key="sb_min_roe", help="巴菲特標準 ≥ 15%，一般優質公司 ≥ 10%",
+            )
+            max_debt = st.number_input(
+                "負債比上限 (%)　（0 = 不限）", min_value=0, max_value=100, value=0, step=10,
+                key="sb_max_debt", help="一般產業 < 60%，金融業本身高負債屬正常可設 0",
+            )
+            fundamental_filter = {
+                "require_eps_positive": req_eps,
+                "require_positive_cf":  req_cf,
+                "min_roe":              float(min_roe),
+                "max_debt_ratio":       float(max_debt),
+            }
+            st.caption("💡 首次啟用時需從 API 抓財報資料，建議先讓背景工作器預先填充")
 
     st.markdown("---")
+
+    # ── 儲存自訂模式 ───────────────────────────────────────────
+    if st.button("💾 儲存為自訂模式", use_container_width=True,
+                 help="將目前所有設定儲存為「⚙️ 自訂」模式，下次可從掃描模式直接套用"):
+        _to_save = {k: st.session_state.get(k) for k in _PRESET_KEYS}
+        _to_save = {k: v for k, v in _to_save.items() if v is not None}
+        _set_cpreset(_to_save)
+        st.success("✅ 已儲存！下次選「⚙️ 自訂」即可套用")
+        st.rerun()
+
     st.caption("全市場掃描約需 30-50 分鐘")
 
 
@@ -330,26 +445,32 @@ with tab_scan:
     clicked_scan = st.button("🚀 開始掃描", type="primary", use_container_width=True)
 
     if clicked_scan:
-        from db.price_cache import get_cache_summary as _get_cache_summary
-        from datetime import datetime as _dt, date as _date
-        _now = _dt.now()
-        _today = _date.today()
-        _after_close = _now.hour >= 15
-        _summary = _get_cache_summary()
-        if not _summary.empty:
-            _max_date_str = _summary["latest"].max()
-            _max_date = _date.fromisoformat(str(_max_date_str))
-            _already_updated = _after_close and _max_date >= _today
-        else:
-            _already_updated = False
-            _max_date = None
-
-        if _already_updated:
-            # 收盤後已更新今日資料，直接掃描
+        # 歷史日期：資料已在 DB，直接走 cache-only 不需要確認
+        if _is_historical:
+            st.session_state["scan_cache_only"] = True
+            st.session_state["scan_date"] = scan_date
             st.session_state["do_scan"] = True
         else:
-            st.session_state["scan_pending"] = True
-            st.session_state["scan_cache_max"] = str(_max_date) if _max_date else "無資料"
+            from db.price_cache import get_cache_summary as _get_cache_summary
+            from datetime import datetime as _dt, date as _date
+            _now = _dt.now()
+            _today = _date.today()
+            _after_close = _now.hour >= 15
+            _summary = _get_cache_summary()
+            if not _summary.empty:
+                _max_date_str = _summary["latest"].max()
+                _max_date = _date.fromisoformat(str(_max_date_str))
+                _already_updated = _after_close and _max_date >= _today
+            else:
+                _already_updated = False
+                _max_date = None
+
+            if _already_updated:
+                st.session_state["scan_date"] = scan_date
+                st.session_state["do_scan"] = True
+            else:
+                st.session_state["scan_pending"] = True
+                st.session_state["scan_cache_max"] = str(_max_date) if _max_date else "無資料"
 
     # 確認對話框
     if st.session_state.get("scan_pending"):
@@ -360,12 +481,14 @@ with tab_scan:
             if st.button("🌐 更新後掃描", type="primary", use_container_width=True):
                 st.session_state["scan_pending"] = False
                 st.session_state["scan_cache_only"] = False
+                st.session_state["scan_date"] = scan_date
                 st.session_state["do_scan"] = True
                 st.rerun()
         with _c_cache:
             if st.button("📦 直接用資料庫掃描", use_container_width=True):
                 st.session_state["scan_pending"] = False
                 st.session_state["scan_cache_only"] = True
+                st.session_state["scan_date"] = scan_date
                 st.session_state["do_scan"] = True
                 st.rerun()
         with _c_cancel:
@@ -375,6 +498,9 @@ with tab_scan:
 
     if st.session_state.pop("do_scan", False):
         _cache_only_mode = st.session_state.pop("scan_cache_only", False)
+        _active_scan_date = st.session_state.get("scan_date", _date_cls.today())
+        _is_hist_scan = _active_scan_date < _date_cls.today()
+        _disable_non_price_extras = _is_hist_scan
         # 建立資料來源管理器（每次掃描重新初始化，確保從 FinMind 優先）
         dsm = DataSourceManager()
 
@@ -402,7 +528,7 @@ with tab_scan:
         prog = st.progress(0)
         status_txt = st.empty()
         fallback_banner = st.empty()
-        price_data, inst_data = {}, {}
+        price_data, inst_data, margin_data = {}, {}, {}
         api_calls, cache_hits = 0, 0
 
         for i, sid in enumerate(sample_ids):
@@ -415,6 +541,8 @@ with tab_scan:
                     if not df.empty:
                         cache_hits += 1
                         status_txt.text(f"資料庫：{sid}（{i+1}/{total}）")
+                        if _is_hist_scan and "date" in df.columns:
+                            df = df[df["date"] <= pd.Timestamp(_active_scan_date)]
                         price_data[sid] = df
                     # 法人資料：cache_only 下不抓
                 else:
@@ -443,10 +571,15 @@ with tab_scan:
                         fallback_banner.warning(FALLBACK_WARNING)
 
                     if not df.empty:
+                        if _is_hist_scan and "date" in df.columns:
+                            df = df[df["date"] <= pd.Timestamp(_active_scan_date)]
                         price_data[sid] = df
 
                     # 法人資料：備援模式下 dsm.institutional_available 為 False，自動跳過
-                    if include_institutional and dsm.institutional_available and inst_selection:
+                    if (not _disable_non_price_extras
+                            and include_institutional
+                            and dsm.institutional_available
+                            and inst_selection):
                         idf = dsm.get_institutional(sid, days=10)
                         if not idf.empty:
                             inst_data[sid] = summarize_institutional_signal(
@@ -456,6 +589,14 @@ with tab_scan:
                                 agg_mode=agg_mode,
                                 agg_days=agg_days,
                             )
+
+                    # 融資餘額
+                    if not _disable_non_price_extras and include_margin and not dsm.fallback_mode:
+                        from data.finmind_client import get_margin_trading, compute_margin_trend
+                        mdf = get_margin_trading(sid, days=5)
+                        trend, _, _ = compute_margin_trend(mdf)
+                        if trend != "flat":
+                            margin_data[sid] = trend
 
                     if not _fresh and not dsm.fallback_mode:
                         time.sleep(0.05)   # 只有真正呼叫 FinMind API 時才需要 rate limit
@@ -473,7 +614,7 @@ with tab_scan:
 
         # ── 基本面資料預載（快取優先，首次可能需要 API）──────────
         fund_data: dict = {}
-        if use_fundamental and fundamental_filter:
+        if use_fundamental and fundamental_filter and not _disable_non_price_extras:
             from data.finmind_client import smart_get_fundamentals
             fund_prog = st.progress(0, text="載入基本面資料（讀取快取）...")
             fund_api, fund_cache = 0, 0
@@ -507,13 +648,16 @@ with tab_scan:
                 )
 
         with st.spinner("計算指標，篩選中..."):
-            use_inst = include_institutional and dsm.institutional_available
+            use_inst = (include_institutional
+                        and dsm.institutional_available
+                        and not _disable_non_price_extras)
             result_df, sector_info, debug_info = run_scan(
                 price_data=price_data,
                 stock_info=stock_list,
                 inst_data=inst_data if use_inst else {},
-                fundamental_data=fund_data if use_fundamental else {},
-                fundamental_filter=fundamental_filter if use_fundamental else {},
+                margin_data=margin_data if not _disable_non_price_extras else {},
+                fundamental_data=fund_data if use_fundamental and not _disable_non_price_extras else {},
+                fundamental_filter=fundamental_filter if use_fundamental and not _disable_non_price_extras else {},
                 min_price=min_price,
                 min_avg_volume=min_avg_volume,
                 top_volume_n=top_volume_n,
@@ -525,6 +669,7 @@ with tab_scan:
                 turnover_top_n=turnover_top_n,
                 max_bias_ratio=float(max_bias_ratio),
                 overheat_action=overheat_action,
+                ma_breakout_mode=ma_breakout_mode,
                 debug=True,
             )
             st.session_state["debug_info"] = debug_info
@@ -567,6 +712,7 @@ with tab_scan:
             st.success(f"找到 **{len(result_df)}** 檔符合條件的股票")
             st.session_state["scan_results"] = result_df
             st.session_state["price_data"] = price_data
+            st.session_state["result_scan_date"] = _active_scan_date
 
             # ── 自動儲存掃描歷史 ──────────────────────────────
             sector_filter_str = ""
@@ -615,6 +761,82 @@ with tab_scan:
         display_df.index = range(1, len(display_df) + 1)
 
         st.dataframe(display_df, use_container_width=True, height=500)
+
+        # ── 後續盤勢（歷史回溯模式才顯示）──────────────────────
+        _result_scan_date = st.session_state.get("result_scan_date")
+        if _result_scan_date and _result_scan_date < _date_cls.today():
+            st.markdown("---")
+            st.subheader(f"📅 後續盤勢  ·  基準日：{_result_scan_date}")
+            st.caption("以基準日收盤價為基礎，計算後續各日的報酬率與最高漲幅")
+
+            _day_offsets = [1, 3, 5, 10]
+            _perf_rows = []
+
+            from db.price_cache import load_prices as _lp_hist
+            for _, row in result_df.iterrows():
+                sid = row["stock_id"]
+                full_df = _lp_hist(sid)
+                if full_df.empty or "date" not in full_df.columns:
+                    continue
+                full_df = full_df.sort_values("date").reset_index(drop=True)
+                full_df["date"] = pd.to_datetime(full_df["date"])
+
+                # 找基準日（若非交易日則取最近前一個交易日）
+                base_rows = full_df[full_df["date"] <= pd.Timestamp(_result_scan_date)]
+                if base_rows.empty:
+                    continue
+                base_idx = base_rows.index[-1]
+                base_close = full_df.loc[base_idx, "close"]
+                if not base_close or base_close == 0:
+                    continue
+
+                perf = {
+                    "代碼": sid,
+                    "名稱": row.get("stock_name", ""),
+                    "基準收盤": round(base_close, 1),
+                }
+                future = full_df.iloc[base_idx + 1:]
+                for days in _day_offsets:
+                    if len(future) >= days:
+                        target_close = future.iloc[days - 1]["close"]
+                        ret = (target_close - base_close) / base_close * 100
+                        perf[f"+{days}日%"] = round(ret, 1)
+                        period_high = future.iloc[:days]["close"].max()
+                        max_ret = (period_high - base_close) / base_close * 100
+                        perf[f"+{days}日最高%"] = round(max_ret, 1)
+                    else:
+                        perf[f"+{days}日%"] = None
+                        perf[f"+{days}日最高%"] = None
+                _perf_rows.append(perf)
+
+            if _perf_rows:
+                _perf_df = pd.DataFrame(_perf_rows)
+
+                def _color_ret(val):
+                    if val is None or not isinstance(val, (int, float)):
+                        return ""
+                    color = "#e74c3c" if val > 0 else ("#27ae60" if val < 0 else "")
+                    return f"color: {color}" if color else ""
+
+                ret_cols = [c for c in _perf_df.columns if c.endswith("%")]
+                styled = _perf_df.style.applymap(_color_ret, subset=ret_cols)
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+
+                # 勝率小結
+                _plus_cols = [c for c in ret_cols if "最高" not in c]
+                for dc in _plus_cols:
+                    vals = _perf_df[dc].dropna()
+                    if len(vals) == 0:
+                        continue
+                    win = (vals > 0).sum()
+                    avg = vals.mean()
+                    st.caption(
+                        f"{dc}：勝率 **{win}/{len(vals)}**（{win/len(vals)*100:.0f}%）　"
+                        f"平均報酬 **{avg:+.1f}%**"
+                    )
+            else:
+                st.info("資料庫中尚無基準日之後的價格資料，無法計算後續盤勢。")
+
     else:
         if inst_mode == "個別法人皆須買超":
             _inst_label = "、".join(inst_selection) if inst_selection else "三大法人"

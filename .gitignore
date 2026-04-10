@@ -6,6 +6,8 @@
 
 # 資料庫
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 

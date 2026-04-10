@@ -72,6 +72,19 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 price_fetch_status 表")
 
+        # line_subscribers 表（舊 DB 補建）
+        if not _table_exists(conn, "line_subscribers"):
+            conn.execute(text("""
+                CREATE TABLE line_subscribers (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      TEXT UNIQUE NOT NULL,
+                    display_name TEXT DEFAULT '',
+                    enabled      INTEGER DEFAULT 1,
+                    created_at   TEXT
+                )
+            """))
+            logger.info("migration: 建立 line_subscribers 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

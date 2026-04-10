@@ -127,6 +127,17 @@ class AppSettings(Base):
     updated_at = Column(DateTime, default=datetime.now)
 
 
+class LineSubscriber(Base):
+    """LINE 推播訂閱者清單"""
+    __tablename__ = "line_subscribers"
+
+    id           = Column(Integer, primary_key=True)
+    user_id      = Column(String(50), unique=True, nullable=False)  # LINE User ID (Uxxxx...)
+    display_name = Column(String(100), default="")                  # 顯示名稱（方便辨識）
+    enabled      = Column(Boolean, default=True)                    # False = 暫停群播
+    created_at   = Column(DateTime, default=datetime.now)
+
+
 class PriceFetchStatus(Base):
     """每檔股票的價格抓取狀態（用於死股追蹤與重試管控）"""
     __tablename__ = "price_fetch_status"

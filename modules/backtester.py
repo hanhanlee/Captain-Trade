@@ -58,7 +58,8 @@ class BacktestConfig:
     warmup_days: int = 60
     exclude_leveraged_etf: bool = True
     exclude_all_etf: bool = False         # 排除所有 ETF（代碼以 0 開頭）
-    allow_fractional_shares: bool = False # 允許買零股（資金不足一張時買最多股數）     # 排除代碼末位 L/R/U 的 ETF
+    allow_fractional_shares: bool = False # 允許買零股（資金不足一張時買最多股數）
+    ma_breakout_mode: str = "strict"      # "strict"：昨日三線全在線下；"loose"：任一線在線下
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -347,7 +348,8 @@ class Strategy:
         precomputed: bool = False,
     ) -> tuple[bool, str, float | None, float | None]:
         """檢查是否允許進場。回傳 (allowed, reason, score, bias_ratio)。"""
-        signal = analyze_stock(stock_df_to_today, precomputed=precomputed)
+        signal = analyze_stock(stock_df_to_today, precomputed=precomputed,
+                               ma_breakout_mode=self.config.ma_breakout_mode)
         if signal is None or not signal.passes_basic():
             return False, "Signal Not Ready", None, None
 

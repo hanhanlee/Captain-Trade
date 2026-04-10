@@ -4,9 +4,9 @@
 FinMind 免費帳號限制：每小時 600 次（註冊會員）
 
 策略：
-  - 交易時間（09:00–15:05）：每小時上限 100 次，保留 500 次給手動操作
-  - 非交易時間：每小時上限 500 次，快速填滿全市場快取
-  - 每 7 秒抓一檔（≈ 514 次/小時，略低於上限）
+  - 交易時間（09:00–13:30）：每小時上限 100 次，保留額度給手動操作
+  - 盤後/非交易時間（13:35+）：每小時上限 600 次，全力更新資料庫
+  - 每 5.8 秒抓一檔（≈ 620 次/小時，讓 600 次上限當煞車）
   - 優先順序：① 完全無快取 → ② 快取 > 5 天舊 → ③ 其餘
   - 遇到 429：暫停 20 分鐘後自動恢復；可手動提前恢復
 
@@ -22,15 +22,18 @@ from collections import deque
 logger = logging.getLogger(__name__)
 
 # ── 可調整參數 ─────────────────────────────────────────────────
-HOURLY_LIMIT_OFFPEAK      = 500   # 非交易時間每小時上限
+HOURLY_LIMIT_OFFPEAK      = 600   # 盤後/非交易時間每小時上限（用滿 FinMind 全額度）
 HOURLY_LIMIT_TRADING      = 100   # 交易時間每小時上限
-FETCH_INTERVAL_SEC        = 6.1   # 正常模式每次請求間隔（秒）≈ 590 次/小時
+FETCH_INTERVAL_SEC        = 5.8   # 正常模式每次請求間隔（秒）≈ 620 次/小時，讓上限當煞車
 FETCH_INTERVAL_REBUILD    = 2.0   # 重建模式間隔（秒）；讓 429 來當剎車
 STALE_DAYS                = 5     # 快取幾天未更新視為過期
 RATE_LIMIT_PAUSE_MIN      = 20    # 遇到 429 後暫停幾分鐘（一般模式）
 PREFETCH_DAYS             = 400   # 一般預抓天數（涵蓋回測需求：365天 + 60天指標暖身）
 BACKTEST_PREFETCH_YEARS   = 10    # 回測資料重建：往前幾年
 BACKTEST_PREFETCH_DAYS    = BACKTEST_PREFETCH_YEARS * 365  # ≈ 3650 天
+TRADING_END_DEFAULT_HHMM  = (15, 0)    # 尚無學習記錄時的保底開始時間（最晚 15:00）
+ADAPTIVE_LEAD_MIN         = 10         # 比學習到的最早更新時間提早幾分鐘開始全速
+STALE_DELISTED_DAYS       = 180        # 快取超過此天數仍無新資料 → 視為下市/合併，永久跳過
 
 
 def _is_429(exc: Exception) -> bool:
@@ -98,6 +101,9 @@ class PrefetchWorker:
         self._wake_event = threading.Event()     # 模式切換 / 手動操作時喚醒背景迴圈
         self._stop_event   = threading.Event()
         self._thread: threading.Thread | None = None
+        # 自適應開始時間：收盤後首筆成功更新的學習記錄
+        self._today_first_update_recorded: bool = False   # 當天已記錄過則不重複寫
+        self._today_record_date: date | None = None       # 用於每日重置上方旗標
 
     # ── 公開控制 ───────────────────────────────────────────────
 
@@ -181,12 +187,86 @@ class PrefetchWorker:
 
     # ── 私有方法 ───────────────────────────────────────────────
 
+    def _get_trading_end_time(self):
+        """
+        回傳全速更新的開始時間（即「交易時間」的結束點）。
+        - 若已有學習記錄：使用歷史最早首筆更新時間 − ADAPTIVE_LEAD_MIN 分鐘
+        - 尚無記錄：使用 TRADING_END_DEFAULT_HHMM（保底 15:00）
+        """
+        from datetime import time as _time, timedelta
+        try:
+            from db.settings import get_prefetch_optimal_time
+            hhmm = get_prefetch_optimal_time()
+            if hhmm:
+                h, m = map(int, hhmm.split(":"))
+                ref = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
+                ref -= timedelta(minutes=ADAPTIVE_LEAD_MIN)
+                return _time(ref.hour, ref.minute)
+        except Exception:
+            pass
+        return _time(*TRADING_END_DEFAULT_HHMM)
+
     def _within_trading_hours(self) -> bool:
         if self.rebuild_mode or self.backtest_rebuild_mode:
             return False   # 重建模式：不受交易時間限制
         now = datetime.now().time()
         from datetime import time as _time
-        return _time(9, 0) <= now <= _time(15, 5)
+        return _time(9, 0) <= now <= self._get_trading_end_time()
+
+    def _try_record_first_update_time(self):
+        """
+        收盤後（13:30 以後）每日首次抓到新資料時，與歷史最早記錄比較：
+        - 若比現有記錄更早（或尚無記錄）→ 更新，全速開始時間往前移
+        - 否則保留既有的最早記錄不變
+        這樣學習值只會越來越早，收斂到 FinMind 最快更新的窗口。
+        """
+        now = datetime.now()
+        today = now.date()
+
+        # 每日重置旗標（每天只取第一筆，避免同日多次比較）
+        if self._today_record_date != today:
+            self._today_record_date = today
+            self._today_first_update_recorded = False
+
+        if self._today_first_update_recorded:
+            return
+
+        # 僅在 13:30 之後才記錄（避免盤中資料污染學習值）
+        from datetime import time as _time
+        if now.time() < _time(13, 30):
+            return
+
+        self._today_first_update_recorded = True  # 無論是否更新，今日只比較一次
+        hhmm = now.strftime("%H:%M")
+
+        try:
+            from db.settings import get_prefetch_optimal_time, set_prefetch_optimal_time
+            current = get_prefetch_optimal_time()
+
+            if not current:
+                # 首次記錄
+                set_prefetch_optimal_time(hhmm)
+                end_t = self._get_trading_end_time()
+                logger.info(
+                    f"[自適應] 首次記錄最早更新時間：{hhmm}，"
+                    f"明日全速開始時間：{end_t.strftime('%H:%M')}"
+                )
+            else:
+                cur_h, cur_m = map(int, current.split(":"))
+                new_h, new_m = map(int, hhmm.split(":"))
+                if (new_h, new_m) < (cur_h, cur_m):
+                    set_prefetch_optimal_time(hhmm)
+                    end_t = self._get_trading_end_time()
+                    logger.info(
+                        f"[自適應] 刷新最早更新記錄：{hhmm}（舊：{current}），"
+                        f"明日全速開始時間前移至 {end_t.strftime('%H:%M')}"
+                    )
+                else:
+                    logger.info(
+                        f"[自適應] 今日首筆：{hhmm}，未早於最早記錄 {current}，保留不變"
+                    )
+        except Exception as e:
+            logger.warning(f"記錄首筆更新時間失敗：{e}")
 
     def _current_hourly_limit(self) -> int:
         if self.rebuild_mode or self.backtest_rebuild_mode:
@@ -283,8 +363,16 @@ class PrefetchWorker:
                         logger.info(f"死股回收：{sid} 已復牌，移除跳過名單")
                     else:
                         _, max_before = get_cached_dates(sid)
-                        set_fetch_status(sid, "delisted" if max_before is None else "suspended")
-                        logger.debug(f"死股回收：{sid} 仍無資料")
+                        if max_before is None:
+                            new_status = "delisted"
+                        else:
+                            max_d = (max_before if isinstance(max_before, date)
+                                     else datetime.strptime(str(max_before), "%Y-%m-%d").date())
+                            cache_age = (date.today() - max_d).days
+                            # 超過門檻天數仍無新資料 → 已下市或合併，永久跳過
+                            new_status = "delisted" if cache_age >= STALE_DELISTED_DAYS else "suspended"
+                        set_fetch_status(sid, new_status)
+                        logger.debug(f"死股回收：{sid} 仍無資料 → {new_status}")
                     self._record_request()
                     self._wait_with_wake(FETCH_INTERVAL_SEC)
                 except Exception as e:
@@ -467,6 +555,19 @@ class PrefetchWorker:
                     set_fetch_status(stock_id, "delisted")
                     return "delisted"
 
+                # 有舊快取但長時間（>STALE_DELISTED_DAYS 天）仍無新資料
+                # → 股票已下市或合併，永久標記 delisted 避免無限重試
+                max_d = (max_before if isinstance(max_before, date)
+                         else datetime.strptime(str(max_before), "%Y-%m-%d").date())
+                cache_age = (date.today() - max_d).days
+                if cache_age >= STALE_DELISTED_DAYS:
+                    logger.info(
+                        f"{stock_id} 有舊快取但已 {cache_age} 天無新資料"
+                        f"（最新 {max_d}），視為下市/合併，標記 delisted"
+                    )
+                    set_fetch_status(stock_id, "delisted")
+                    return "delisted"
+
                 logger.debug(f"{stock_id} 有舊快取但本次無新資料，標記 suspended")
                 set_fetch_status(stock_id, "suspended")
                 return "suspended"
@@ -601,6 +702,7 @@ class PrefetchWorker:
                     self._record_request()
                     self.last_fetch_at = datetime.now()
                     self._error_counts.pop(stock_id, None)  # 成功後清除 error 計數
+                    self._try_record_first_update_time()     # 自適應：收盤後首筆成功則學習時間
                     # 若該股原本在待更新清單，完成後遞減計數
                     if stock_id in needs_update_set:
                         self.queue_size = max(0, self.queue_size - 1)
