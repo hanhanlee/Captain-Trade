@@ -67,8 +67,11 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
         # 查快取，同時檢查最新更新時間是否在 TTL 內
         with get_session() as sess:
             result = sess.execute(text(
-                "SELECT stock_id, stock_name, industry_category, MAX(updated_at) as latest "
-                "FROM stock_info_cache GROUP BY stock_id"
+                "SELECT s.stock_id, s.stock_name, s.industry_category, MAX(s.updated_at) as latest "
+                "FROM stock_info_cache s "
+                "LEFT JOIN price_fetch_status p ON s.stock_id = p.stock_id "
+                "WHERE p.status IS NULL OR p.status != 'delisted' "
+                "GROUP BY s.stock_id"
             )).fetchall()
 
         if result:
@@ -131,7 +134,7 @@ def get_daily_price(stock_id: str, days: int = 120, start_date: str = None) -> p
 def get_institutional_investors(stock_id: str, days: int = 30) -> pd.DataFrame:
     """取得三大法人買賣超（外資、投信、自營）"""
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    df = _get("TaiwanStockInstitutionalInvestors", stock_id=stock_id, start_date=start)
+    df = _get("TaiwanStockInstitutionalInvestorsBuySell", stock_id=stock_id, start_date=start)
     if df.empty:
         return df
 

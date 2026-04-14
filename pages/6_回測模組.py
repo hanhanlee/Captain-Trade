@@ -3,7 +3,6 @@
 """
 
 from datetime import date, timedelta
-import time
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -14,6 +13,7 @@ from db.database import init_db
 from db.price_cache import (
     get_all_cached_stocks,
     get_cache_summary,
+    get_cached_dates,
     init_cache_table,
     load_prices,
     save_prices,
@@ -28,9 +28,7 @@ st.title("📉 回測模組")
 st.markdown("使用本機快取資料驗證策略，並加入大盤濾網與動態停損。")
 st.markdown("---")
 
-tab_download, tab_backtest, tab_result = st.tabs(
-    ["下載回測資料", "設定回測參數", "查看回測結果"]
-)
+tab_backtest, tab_result = st.tabs(["設定回測參數", "查看回測結果"])
 
 
 def _load_market_index(start_date: str = "2019-01-01") -> pd.DataFrame:
@@ -45,111 +43,32 @@ def _load_market_index(start_date: str = "2019-01-01") -> pd.DataFrame:
     return market_df
 
 
-with tab_download:
-    st.subheader("下載與檢查歷史資料")
-    st.info("回測前可先檢查本機快取是否足夠，必要時再補抓。")
-
-    # ── 加權指數狀態 ──────────────────────────────────────────────
-    st.markdown("#### 加權指數（大盤濾網必要條件）")
-    from db.price_cache import get_cached_dates
-    market_earliest, market_latest = get_cached_dates("TAIEX")
-    if market_earliest:
-        mc1, mc2, mc3, mc4 = st.columns(4)
-        mc1.metric("加權指數快取", "已下載")
-        mc2.metric("最早日期", str(market_earliest))
-        mc3.metric("最新日期", str(market_latest))
-        from datetime import date
-        stale = (date.today() - date.fromisoformat(str(market_latest))).days > 7
-        mc4.metric("狀態", "需要更新" if stale else "正常", delta_color="inverse" if stale else "off")
-        if stale:
-            st.warning("加權指數資料超過 7 天未更新，建議重新下載。")
-    else:
-        st.error("⚠️ 加權指數尚未下載，大盤濾網功能無法使用！請點擊下方按鈕下載。")
-
-    if st.button("下載加權指數歷史資料", use_container_width=True):
-        with st.spinner("正在下載加權指數..."):
-            mdf = get_daily_price("TAIEX", start_date="2019-01-01")
-        if mdf.empty:
-            st.error("下載失敗，請確認 API Token 是否有效。")
-        else:
-            save_prices("TAIEX", mdf)
-            st.success(f"加權指數下載完成，共 {len(mdf)} 筆資料。")
-            st.rerun()
-
-    st.markdown("---")
-
-    summary = get_cache_summary()
-    if not summary.empty:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("已快取股票數", f"{len(summary)} 檔")
-        col2.metric("最早資料日", str(summary["earliest"].min()))
-        col3.metric("最新資料日", str(summary["latest"].max()))
-        with st.expander("檢視快取明細"):
-            st.dataframe(summary, use_container_width=True, hide_index=True)
-    else:
-        st.warning("目前沒有任何回測快取資料。")
-
-    st.markdown("---")
-
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        download_count = st.number_input("下載股票檔數", min_value=20, max_value=600, value=100, step=20)
-        start_year = st.selectbox("起始年度", options=[2019, 2020, 2021, 2022, 2023], index=0)
-    with col_d2:
-        st.markdown("**API 使用估算**")
-        st.markdown(f"- 本次預計抓取 **{download_count}** 檔")
-        st.markdown("- 免費額度約每小時 600 次")
-        st.markdown(f"- 執行後剩餘預估額度 **{600 - download_count}** 次")
-
-    if st.button("開始下載歷史資料", type="primary", use_container_width=True):
-        with st.spinner("正在取得股票清單..."):
-            stock_list = get_stock_list()
-            if stock_list.empty:
-                st.error("無法取得股票清單，請先確認 API Token。")
-                st.stop()
-
-        target_ids = stock_list["stock_id"].head(download_count).tolist()
-        start_date_str = f"{start_year}-01-01"
-        progress = st.progress(0)
-        status = st.empty()
-        success = 0
-        skip = 0
-        fail = 0
-
-        cache_summary = get_cache_summary()
-        for idx, stock_id in enumerate(target_ids):
-            progress.progress((idx + 1) / len(target_ids))
-            status.text(f"下載中 {stock_id} ({idx + 1}/{len(target_ids)})")
-            try:
-                if not cache_summary.empty and stock_id in cache_summary["stock_id"].values:
-                    row = cache_summary.loc[cache_summary["stock_id"] == stock_id].iloc[0]
-                    if str(row["earliest"]) <= start_date_str:
-                        skip += 1
-                        continue
-
-                df = get_daily_price(stock_id, start_date=start_date_str)
-                if df.empty:
-                    fail += 1
-                else:
-                    save_prices(stock_id, df)
-                    success += 1
-
-                time.sleep(0.1)
-            except Exception:
-                fail += 1
-
-        progress.empty()
-        status.empty()
-        st.success(f"下載完成，成功 {success} 檔，已覆蓋略過 {skip} 檔，失敗 {fail} 檔。")
-        st.rerun()
-
-
 with tab_backtest:
     st.subheader("設定回測參數")
 
+    # ── 加權指數快取狀態 ──────────────────────────────────────────
+    market_earliest, market_latest = get_cached_dates("TAIEX")
+    if not market_earliest:
+        st.error(
+            "⚠️ 加權指數（大盤濾網必要條件）尚未下載，啟用大盤濾網時無法執行回測。  \n"
+            "請前往 **6 - 資料管理** → 啟動「回測重建模式」補充歷史資料。"
+        )
+    else:
+        stale = (date.today() - date.fromisoformat(str(market_latest))).days > 7
+        if stale:
+            st.warning(
+                f"加權指數快取已超過 7 天未更新（最新：{market_latest}）。  \n"
+                "建議前往 **6 - 資料管理** → 啟動「回測重建模式」更新。"
+            )
+        else:
+            st.success(f"加權指數快取正常（{market_earliest} ～ {market_latest}）")
+
     cached_stocks = get_all_cached_stocks()
     if not cached_stocks:
-        st.warning("目前沒有可用快取資料，請先到上一頁籤下載。")
+        st.warning(
+            "目前沒有可用快取資料。  \n"
+            "請前往 **6 - 資料管理** → 啟動「回測重建模式」下載歷史資料。"
+        )
         st.stop()
 
     st.info(f"目前可回測股票數：**{len(cached_stocks)}** 檔")
