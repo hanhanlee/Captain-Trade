@@ -443,17 +443,44 @@ with tab_result:
         st.dataframe(skip_df, use_container_width=True, hide_index=True, height=320)
 
     st.markdown("---")
-    st.markdown("### 匯出 Gemini 分析報告")
-    st.caption("產生包含策略配置、績效統計、月度分析、完整交易明細的 Markdown 報告，可直接貼給 Gemini 分析。")
+    st.markdown("### 匯出與 AI 分析")
+
     report_text = generate_text_report(bt_result, config)
     report_filename = f"backtest_report_{config.start_date}_{config.end_date}.md"
-    st.download_button(
-        label="下載分析報告 (.md)",
-        data=report_text.encode("utf-8"),
-        file_name=report_filename,
-        mime="text/markdown",
-        use_container_width=True,
-        type="primary",
-    )
-    with st.expander("預覽報告內容"):
-        st.text(report_text[:3000] + ("\n...(截斷預覽，完整內容請下載)" if len(report_text) > 3000 else ""))
+
+    col_dl, col_ai = st.columns(2)
+
+    with col_dl:
+        st.caption("下載完整報告，可自行上傳至任何 AI 平台進行分析。")
+        st.download_button(
+            label="📄 下載分析報告 (.md)",
+            data=report_text.encode("utf-8"),
+            file_name=report_filename,
+            mime="text/markdown",
+            use_container_width=True,
+        )
+        with st.expander("預覽報告內容"):
+            st.text(report_text[:3000] + ("\n...(截斷預覽，完整內容請下載)" if len(report_text) > 3000 else ""))
+
+    with col_ai:
+        st.caption("使用 Gemini 2.0 Flash 直接在頁面內解讀回測結果。")
+        ai_btn = st.button(
+            "🤖 AI 深度解讀回測結果",
+            use_container_width=True,
+            type="primary",
+        )
+
+    if ai_btn:
+        with st.spinner("AI 正在分析數百筆交易紀錄，請稍候..."):
+            from agents.reviewer import analyze_backtest_report
+            ai_result = analyze_backtest_report(report_text)
+
+        st.markdown("---")
+        st.markdown("### 🤖 AI 深度解讀")
+        st.markdown(ai_result)
+        st.markdown(
+            "*使用模型：Gemini 2.5 Flash*\n\n"
+            "> ⚠️ **提示：** 此內容為 AI 自動生成，僅供參考。"
+            "若需使用更進階的模型（如 Claude 3.5 Sonnet 或 Gemini 1.5 Pro）進行私密深度分析，"
+            "請點擊上方「📄 下載分析報告」並自行上傳至對應平台。"
+        )
