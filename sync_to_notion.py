@@ -41,24 +41,41 @@ def load_index() -> dict:
     return json.loads(INDEX_JSON_PATH.read_text(encoding="utf-8"))
 
 
+def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
+    """Send a request and retry up to 3 times on 429 / 5xx."""
+    for attempt in range(4):
+        r = requests.request(method, url, headers=HEADERS, **kwargs)
+        if r.status_code == 429:
+            retry_after = int(r.headers.get("Retry-After", "1"))
+            wait = max(retry_after, 1) * (attempt + 1)
+            print(f"  ⏳ Notion 限速，等待 {wait}s (嘗試 {attempt + 1}/4)...")
+            time.sleep(wait)
+            continue
+        return r
+    r.raise_for_status()
+    return r
+
+
 def clear_page(page_id: str):
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+    deleted = 0
     while True:
-        r = requests.get(url, headers=HEADERS)
+        r = _request_with_retry("GET", url)
         r.raise_for_status()
         data = r.json()
         blocks = data.get("results", [])
         if not blocks:
             break
         for block in blocks:
-            requests.delete(
-                f"https://api.notion.com/v1/blocks/{block['id']}",
-                headers=HEADERS,
-            )
+            dr = _request_with_retry("DELETE", f"https://api.notion.com/v1/blocks/{block['id']}")
+            if dr.status_code not in (200, 404):
+                print(f"  ⚠️ 刪除 block 失敗 ({dr.status_code}): {block['id']}")
+            deleted += 1
+            time.sleep(0.35)  # stay under Notion's 3 req/s limit
+        print(f"  已刪除 {deleted} 個 block ...")
         if not data.get("has_more"):
             break
-        time.sleep(0.3)
-    print("✅ 頁面已清空")
+    print(f"✅ 頁面已清空（共刪除 {deleted} 個 block）")
 
 
 def rich_text(text: str) -> list:
@@ -175,12 +192,12 @@ def append_blocks(page_id: str, blocks: list):
     total = len(blocks)
     for start in range(0, total, 100):
         batch = blocks[start:start + 100]
-        r = requests.patch(url, headers=HEADERS, json={"children": batch})
+        r = _request_with_retry("PATCH", url, json={"children": batch})
         if r.status_code != 200:
             print(f"❌ 上傳失敗 (block {start}): {r.text}")
             r.raise_for_status()
         print(f"  上傳進度：{min(start + 100, total)}/{total} blocks")
-        time.sleep(0.3)
+        time.sleep(0.35)
 
 
 def build_index_blocks(index: dict) -> list:
