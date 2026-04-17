@@ -21,41 +21,30 @@ init_db()
 
 st.set_page_config(page_title="資料管理", page_icon="🗄️", layout="wide")
 
-# ══ 自訂 CSS ══════════════════════════════════════════════════════
+# ══ 自訂 CSS（使用 Streamlit CSS 變數，自動適配 Light/Dark）══════
 st.markdown("""
 <style>
-/* ── 色彩系統 ── */
-:root {
-    --c-bg-card:    rgba(255,255,255,0.03);
-    --c-border:     rgba(255,255,255,0.07);
-    --c-text-dim:   rgba(255,255,255,0.40);
-    --c-green:  #4ade80;
-    --c-amber:  #fbbf24;
-    --c-red:    #f87171;
-    --c-blue:   #60a5fa;
-}
-
-/* ── 狀態卡 ── */
+/* ── 狀態卡：使用 Streamlit 主題變數 ── */
 .status-card {
-    background: var(--c-bg-card);
-    border: 1px solid var(--c-border);
+    background: var(--secondary-background-color);
+    border: 1px solid rgba(128,128,128,0.18);
     border-left-width: 3px;
     border-radius: 8px;
     padding: 13px 18px;
-    margin: 2px 0 14px 0;
+    margin: 2px 0 10px 0;
     display: flex;
     align-items: flex-start;
     gap: 14px;
 }
-.status-card.ok    { border-left-color: var(--c-green); }
-.status-card.info  { border-left-color: var(--c-blue);  }
-.status-card.warn  { border-left-color: var(--c-amber); }
-.status-card.error { border-left-color: var(--c-red);   }
-.status-card .sc-icon { font-size: 20px; flex-shrink: 0; padding-top: 1px; }
+.status-card.ok    { border-left-color: #16a34a; }
+.status-card.info  { border-left-color: #2563eb; }
+.status-card.warn  { border-left-color: #d97706; }
+.status-card.error { border-left-color: #dc2626; }
+.status-card .sc-icon { font-size: 20px; flex-shrink: 0; padding-top: 2px; }
 .status-card .sc-main { font-size: 14px; font-weight: 600;
-                        color: #e2e8f0; line-height: 1.35; }
-.status-card .sc-sub  { font-size: 12px; color: var(--c-text-dim);
-                        margin-top: 3px; line-height: 1.5; }
+                        color: var(--text-color); line-height: 1.35; }
+.status-card .sc-sub  { font-size: 12px; color: var(--text-color);
+                        opacity: 0.55; margin-top: 3px; line-height: 1.5; }
 
 /* ── 指標格 ── */
 .metric-grid {
@@ -65,19 +54,19 @@ st.markdown("""
     margin: 8px 0 14px 0;
 }
 .metric-box {
-    background: var(--c-bg-card);
-    border: 1px solid var(--c-border);
+    background: var(--secondary-background-color);
+    border: 1px solid rgba(128,128,128,0.18);
     border-radius: 8px;
     padding: 11px 15px;
 }
-.metric-box .mb-label { font-size: 10.5px; color: var(--c-text-dim);
-                        text-transform: uppercase; letter-spacing: 0.06em; }
+.metric-box .mb-label { font-size: 10.5px; color: var(--text-color);
+                        opacity: 0.5; text-transform: uppercase; letter-spacing: 0.06em; }
 .metric-box .mb-val   { font-size: 24px; font-weight: 700;
-                        color: #f1f5f9; margin: 2px 0 1px; line-height: 1; }
-.metric-box .mb-sub   { font-size: 11px; color: var(--c-text-dim); }
-.metric-box.warn  .mb-val { color: var(--c-amber); }
-.metric-box.error .mb-val { color: var(--c-red);   }
-.metric-box.ok    .mb-val { color: var(--c-green);  }
+                        color: var(--text-color); margin: 2px 0 1px; line-height: 1; }
+.metric-box .mb-sub   { font-size: 11px; color: var(--text-color); opacity: 0.45; }
+.metric-box.warn  .mb-val { color: #d97706 !important; }
+.metric-box.error .mb-val { color: #dc2626 !important; }
+.metric-box.ok    .mb-val { color: #16a34a !important; }
 
 /* ── 區塊標題 ── */
 .sec-header {
@@ -85,25 +74,69 @@ st.markdown("""
     font-weight: 700;
     letter-spacing: 0.09em;
     text-transform: uppercase;
-    color: var(--c-text-dim);
+    color: var(--text-color);
+    opacity: 0.45;
     padding: 18px 0 7px 0;
-    border-bottom: 1px solid var(--c-border);
+    border-bottom: 1px solid rgba(128,128,128,0.15);
     margin-bottom: 12px;
 }
 
-/* expander header 字體稍小 */
-summary, .streamlit-expanderHeader p {
-    font-size: 13.5px !important;
+/* ── 最近嘗試列 ── */
+.attempt-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 5px 2px 10px 2px;
+    font-size: 12px;
+    color: var(--text-color);
+    opacity: 0.55;
+    flex-wrap: wrap;
 }
+.attempt-row .ar-label { opacity: 0.7; }
+.attempt-row .ar-src   { font-weight: 600; opacity: 1; }
+.attempt-row .ar-stock { font-family: monospace; opacity: 0.85; }
+.attempt-row .ar-time  { opacity: 0.7; }
+.attempt-row .ar-ok    { color: #16a34a; opacity: 1; font-weight: 500; }
+.attempt-row .ar-warn  { color: #d97706; opacity: 1; font-weight: 500; }
+.attempt-row .ar-err   { color: #dc2626; opacity: 1; font-weight: 500; }
+.attempt-row .ar-dim   { opacity: 0.45; }
+
+summary, .streamlit-expanderHeader p { font-size: 13.5px !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ══ 頁首 ══════════════════════════════════════════════════════════
-h_left, h_right = st.columns([5, 2])
-h_left.title("🗄️ 資料管理")
-with h_right:
+# ══ 頁首：標題 + 常用開關 + 自動刷新 ═════════════════════════════
+h_title, h_mc, h_fy, h_rf = st.columns([3, 1.3, 1.6, 1.6])
+h_title.title("🗄️ 資料管理")
+
+_mc = is_market_closed()
+_fy = get_force_yahoo()
+
+with h_mc:
+    st.markdown("<br>", unsafe_allow_html=True)
+    new_mc = st.toggle("🏖️ 休市模式", value=_mc,
+                        help="開啟後法人資料快取永不過期，不消耗 API 額度。適用連假/停市期間。")
+    if new_mc != _mc:
+        set_market_closed(new_mc); st.rerun()
+
+with h_fy:
+    st.markdown("<br>", unsafe_allow_html=True)
+    new_fy = st.toggle("🔀 強制 Yahoo Finance", value=_fy,
+                        help="FinMind 異常時切換。三大法人條件自動停用；價格有 15 分鐘延遲。")
+    if new_fy != _fy:
+        set_force_yahoo(new_fy); st.rerun()
+
+with h_rf:
     st.markdown("<br>", unsafe_allow_html=True)
     auto_refresh = st.toggle("🔄 自動刷新（每 5 秒）", value=False)
+
+# 休市/Yahoo 啟用提示（只在開啟時顯示）
+if new_mc:
+    st.warning("**🏖️ 休市模式啟用中** — 法人資料使用快取，不呼叫 API。恢復交易後請關閉。",
+                icon=None)
+if new_fy:
+    st.warning("**🔀 Yahoo Finance 模式啟用中** — 三大法人條件停用；價格有 15 分鐘延遲。"
+                "FinMind 恢復後請關閉。", icon=None)
 
 # ══ 取得工作器 ════════════════════════════════════════════════════
 @st.cache_resource
@@ -220,17 +253,17 @@ if _la_at and _la_stock:
 
     # 結果標籤
     _result_map = {
-        "normal":     ("✅", "已更新",    "#4ade80"),
-        "ok":         ("✅", "成功",      "#4ade80"),
-        "cached":     ("⏭",  "快取命中",  "rgba(255,255,255,0.3)"),
-        "suspended":  ("⚠️", "暫無資料", "#fbbf24"),
-        "no_update":  ("⚠️", "無資料",   "#fbbf24"),
-        "delisted":   ("🚫", "已下市",   "rgba(255,255,255,0.3)"),
-        "rate_limit": ("🚫", "429 限流", "#f87171"),
-        "error":      ("❌", "錯誤",     "#f87171"),
+        "normal":     ("✅", "已更新",   "ar-ok"),
+        "ok":         ("✅", "成功",     "ar-ok"),
+        "cached":     ("⏭",  "快取命中", "ar-dim"),
+        "suspended":  ("⚠️", "暫無資料","ar-warn"),
+        "no_update":  ("⚠️", "無資料",  "ar-warn"),
+        "delisted":   ("🚫", "已下市",  "ar-dim"),
+        "rate_limit": ("🚫", "429 限流","ar-err"),
+        "error":      ("❌", "錯誤",    "ar-err"),
     }
-    _r_icon, _r_label, _r_color = _result_map.get(
-        _la_result, ("—", _la_result or "—", "rgba(255,255,255,0.35)")
+    _r_icon, _r_label, _r_cls = _result_map.get(
+        _la_result, ("—", _la_result or "—", "ar-dim")
     )
 
     # 時間
@@ -239,13 +272,12 @@ if _la_at and _la_stock:
     _time_str = _la_at.strftime("%H:%M:%S")
 
     st.markdown(f"""
-<div style="display:flex; align-items:center; gap:14px; padding:5px 2px 10px 2px;
-            font-size:12px; color:rgba(255,255,255,0.4); flex-wrap:wrap;">
-  <span>最近嘗試</span>
-  <span style="color:{_src_color}; font-weight:600;">{_src_label}</span>
-  <span style="color:rgba(255,255,255,0.75); font-family:monospace;">{_clean_stock}</span>
-  <span>{_time_str}（{_ago}）</span>
-  <span style="color:{_r_color};">{_r_icon} {_r_label}</span>
+<div class="attempt-row">
+  <span class="ar-label">最近嘗試</span>
+  <span class="ar-src" style="color:{_src_color};">{_src_label}</span>
+  <span class="ar-stock">{_clean_stock}</span>
+  <span class="ar-time">{_time_str}（{_ago}）</span>
+  <span class="{_r_cls}">{_r_icon} {_r_label}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -817,50 +849,25 @@ with st.expander("🔨 維護操作（重建資料庫）", expanded=False):
             if bc2.button("取消", use_container_width=True):
                 st.session_state.bt_rebuild_confirm = False; st.rerun()
 
-# ══ 區塊 6：系統設定 ══════════════════════════════════════════════
-with st.expander("⚙️ 系統設定", expanded=False):
-    sg1, sg2 = st.columns(2)
-
-    with sg1:
-        _mc = is_market_closed()
-        new_mc = st.toggle(
-            "🏖️ 休市模式",
-            value=_mc,
-            help="開啟後法人資料快取永不過期，完全不消耗 API 額度。適用於連假、停市期間。",
-        )
-        if new_mc != _mc:
-            set_market_closed(new_mc); st.rerun()
-        if new_mc:
-            st.caption("**啟用中** — 法人資料使用快取，不重新呼叫 API。恢復交易後請關閉。")
-            stats_mc = get_inst_cache_stats()
-            if stats_mc["stock_count"] > 0 and stats_mc["newest_fetch"]:
-                st.caption(f"法人快取：**{stats_mc['stock_count']}** 檔，"
-                            f"最新 {str(stats_mc['newest_fetch'])[:16]}")
-            if st.button("🗑️ 清除法人快取", help="清除後下次掃描將重新從 API 抓取"):
-                from sqlalchemy import text
-                from db.database import get_session
-                with get_session() as sess:
-                    sess.execute(text("DELETE FROM inst_cache")); sess.commit()
-                st.success("法人快取已清除"); st.rerun()
-        else:
-            st.caption("正常模式 — 法人資料快取 24 小時後自動更新。"
-                        "若為連假/停市建議開啟以避免浪費 API 額度。")
-
-    with sg2:
-        _fy = get_force_yahoo()
-        new_fy = st.toggle(
-            "🔀 強制 Yahoo Finance",
-            value=_fy,
-            help="FinMind 異常時手動切換至 Yahoo Finance。三大法人條件自動停用。",
-        )
-        if new_fy != _fy:
-            set_force_yahoo(new_fy); st.rerun()
-        if new_fy:
-            st.caption("**啟用中** — 選股掃描與持股監控改用 Yahoo Finance 取價。"
-                        "⚠️ 三大法人條件停用；價格可能有 15 分鐘延遲。"
-                        "FinMind 恢復後請關閉。")
-        else:
-            st.caption("正常模式 — 使用 FinMind 取價（本機快取優先）。")
+# ══ 區塊 6：系統設定（進階）══════════════════════════════════════
+# 頁首的開關控制開/關；此 expander 提供進階設定（如清除法人快取）
+with st.expander("⚙️ 系統設定（進階）", expanded=False):
+    st.caption("休市模式與強制 Yahoo 開關已在頁首，此處提供進階操作。")
+    if new_mc:
+        st.markdown("**🏖️ 休市模式 — 法人快取管理**")
+        stats_mc = get_inst_cache_stats()
+        if stats_mc["stock_count"] > 0 and stats_mc["newest_fetch"]:
+            st.caption(f"法人快取：**{stats_mc['stock_count']}** 檔，"
+                        f"最新抓取 {str(stats_mc['newest_fetch'])[:16]}")
+        if st.button("🗑️ 清除法人快取", help="清除後下次掃描將重新從 API 抓取"):
+            from sqlalchemy import text
+            from db.database import get_session
+            with get_session() as sess:
+                sess.execute(text("DELETE FROM inst_cache")); sess.commit()
+            st.success("法人快取已清除，下次掃描將重新抓取"); st.rerun()
+    else:
+        st.info("目前無進階設定需要操作。"
+                "開啟休市模式後，此處會出現法人快取管理選項。")
 
 # ══ 區塊 7：LINE 推播訂閱者管理 ══════════════════════════════════
 with st.expander("📣 LINE 推播訂閱者管理", expanded=False):
