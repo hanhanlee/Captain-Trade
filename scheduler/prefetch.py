@@ -999,8 +999,8 @@ class PrefetchWorker:
                 self.rebuild_completed_at = datetime.now()
                 logger.info("全速重建完成，自動退出重建模式，恢復正常限速")
 
-            if not full_queue:
-                # 價格快取皆為最新：① Supplementary ② 死股回收 ③ 填充基本面 ④ idle
+            if not needs_update:
+                # 待更新清單為空（needs_update 空）：① Supplementary ② 死股回收 ③ 填充基本面 ④ idle
 
                 # Supplementary：FinMind 已更新今日資料後抓取法人 + 融資
                 if self._should_run_supplementary():

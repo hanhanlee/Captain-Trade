@@ -100,6 +100,13 @@ st.markdown("""
 .attempt-row .ar-warn  { color: #d97706; opacity: 1; font-weight: 500; }
 .attempt-row .ar-err   { color: #dc2626; opacity: 1; font-weight: 500; }
 .attempt-row .ar-dim   { opacity: 0.45; }
+.attempt-row .ar-phase {
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.5;
+  font-style: italic;
+  white-space: nowrap;
+}
 
 summary, .streamlit-expanderHeader p { font-size: 13.5px !important; }
 </style>
@@ -191,32 +198,77 @@ else:
     _ltd          = s.get("latest_trading_day")
     _yb_done      = s.get("yahoo_bridge_done", False)
     _finmind_ok   = (_ltd == date.today())
+    _queue        = s.get("queue_size", 0)
+    _fund_q       = s.get("fund_queue_size", 0)
+
+    # 判斷當前工作階段
+    if _cur_stock.startswith("[法人]"):
+        _w_phase = "inst"
+    elif _cur_stock.startswith("[融資]"):
+        _w_phase = "margin"
+    elif _cur_stock.startswith("[基本面]"):
+        _w_phase = "fund"
+    elif _cur_stock and not _cur_stock.startswith("["):
+        # 純股票代碼：queue > 0 表示真正在更新，queue = 0 表示巡迴已完成快取的股票
+        _w_phase = "ohlcv" if _queue > 0 else "idle"
+    else:
+        _w_phase = "idle"
+
+    def _strip_prefix(s_: str) -> str:
+        return s_.split("] ", 1)[-1] if "] " in s_ else s_
 
     if _yb_prog:
         bd, bt = s.get("yahoo_bridge_batch_done", 0), s.get("yahoo_bridge_batch_total", 0)
         _cls, _icon = "info", "🔵"
         _main = f"Yahoo Bridge 抓取中（批次 {bd}/{bt}）"
         _sub  = f"從 Yahoo Finance 批次補充今日收盤資料，共 {s.get('yahoo_bridge_total',0)} 檔待抓"
+
+    elif _w_phase == "ohlcv":
+        _cls, _icon = "ok", "🟢"
+        _main = f"OHLCV 核心價格更新中（待完成 {_queue} 檔）"
+        _sub  = f"正在抓取：{_cur_stock}　｜　完成後自動開始法人/融資補充"
+
+    elif _w_phase in ("inst", "margin"):
+        _inst_d = s.get("inst_supplementary_done", 0)
+        _inst_t = s.get("inst_supplementary_total", 0) or "?"
+        _marg_d = s.get("margin_supplementary_done", 0)
+        _marg_t = s.get("margin_supplementary_total", 0) or "?"
+        _phase_name = "法人資料" if _w_phase == "inst" else "融資融券"
+        _cls, _icon = "ok", "🟢"
+        _main = f"附加資料補充中（{_phase_name}）"
+        _sub  = (f"法人：{_inst_d}/{_inst_t}　融資：{_marg_d}/{_marg_t}"
+                 f"　｜　正在抓取：{_strip_prefix(_cur_stock)}")
+
+    elif _w_phase == "fund":
+        _cls, _icon = "ok", "🟢"
+        _main = f"基本面快取填充中（{_fund_q} 檔待處理）"
+        _sub  = f"正在抓取：{_strip_prefix(_cur_stock)}"
+
     elif _finmind_ok and s.get("supplementary_completed_at"):
         _sup = s["supplementary_completed_at"]
         _cls, _icon = "ok", "🟢"
         _main = f"今日資料全部更新完成（{_sup.strftime('%H:%M')}）"
         _sub  = "核心 OHLCV + 法人 + 融資融券 皆已就緒"
+
     elif _yb_done and not _finmind_ok and datetime.now().hour >= 15:
         _cls, _icon = "info", "🔵"
         _main = "Yahoo Bridge 已完成　等待 FinMind 盤後更新"
         _sub  = f"核心資料由 Yahoo 補充（基準日 {_ltd}），法人/融資待 FinMind 上線後補充"
+
     elif not _finmind_ok and datetime.now().hour >= 15:
         _cls, _icon = "info", "🔵"
         _main = "等待 FinMind 更新今日資料"
         _sub  = "FinMind 通常 15:30–19:00 發布，Worker 每輪自動重查，無需手動操作"
+
+    elif _queue > 0:
+        _cls, _icon = "ok", "🟢"
+        _main = f"OHLCV 核心價格更新中（待完成 {_queue} 檔）"
+        _sub  = "等待下一輪抓取　｜　完成後自動開始法人/融資補充"
+
     else:
         _cls, _icon = "ok", "🟢"
         _main = "工作器正常運行中"
         _sub  = "盤後/非交易時間，每小時上限 600 次"
-
-    if _cur_stock and not _yb_prog:
-        _sub += f"　｜　正在抓取：{_cur_stock}"
 
 st.markdown(f"""
 <div class="status-card {_cls}">
@@ -271,6 +323,27 @@ if _la_at and _la_stock:
     _ago = f"{_el}s 前" if _el < 60 else f"{_el//60}m{_el%60:02d}s 前"
     _time_str = _la_at.strftime("%H:%M:%S")
 
+    # 工作階段上下文標籤
+    _now_phase = s.get("current_stock", "")
+    if _now_phase.startswith("[法人]"):
+        _inst_d2 = s.get("inst_supplementary_done", 0)
+        _inst_t2 = s.get("inst_supplementary_total", 0) or "?"
+        _phase_ctx = f"補充法人 {_inst_d2}/{_inst_t2}"
+    elif _now_phase.startswith("[融資]"):
+        _marg_d2 = s.get("margin_supplementary_done", 0)
+        _marg_t2 = s.get("margin_supplementary_total", 0) or "?"
+        _phase_ctx = f"補充融資 {_marg_d2}/{_marg_t2}"
+    elif _now_phase and not _now_phase.startswith("["):
+        _q2 = s.get("queue_size", 0)
+        _phase_ctx = f"OHLCV 更新 剩 {_q2} 檔"
+    else:
+        _phase_ctx = ""
+
+    _phase_ctx_html = (
+        f'  <span class="ar-phase">{_phase_ctx}</span>'
+        if _phase_ctx else ""
+    )
+
     st.markdown(f"""
 <div class="attempt-row">
   <span class="ar-label">最近嘗試</span>
@@ -278,6 +351,7 @@ if _la_at and _la_stock:
   <span class="ar-stock">{_clean_stock}</span>
   <span class="ar-time">{_time_str}（{_ago}）</span>
   <span class="{_r_cls}">{_r_icon} {_r_label}</span>
+{_phase_ctx_html}
 </div>
 """, unsafe_allow_html=True)
 
@@ -295,54 +369,138 @@ if bc3.button("⚡ 立即恢復", disabled=not is_paused, use_container_width=Tr
 if bc4.button("🔄 重整", use_container_width=True):
     st.rerun()
 
-# ── 關鍵指標（4格）────────────────────────────────────────────────
-# 即時待更新數
+# ── 統一計算：以 resolve_latest_trading_day() 為基準 ─────────────
+# 此函式確認 FinMind 實際有資料的最新交易日（含台灣假日/休市判斷）
 try:
     from db.price_cache import get_suspended_stocks
     from data.finmind_client import resolve_latest_trading_day
-    _ltd2   = resolve_latest_trading_day()
-    _smr    = get_cache_summary()
-    _skip2  = set(get_delisted_stocks(include_legacy_no_update=True))
-    _susp2  = set(get_suspended_stocks(today_only=True))
+
+    _ref_date  = resolve_latest_trading_day()
+    _ref_str   = _ref_date.isoformat()
+    _smr       = get_cache_summary()
+    _skip_ids  = set(get_delisted_stocks(include_legacy_no_update=True))
+    _susp_ids  = set(get_suspended_stocks(today_only=True))
+    _known_ids = get_known_stock_ids()
+    _active_total = max(len(set(_known_ids) - _skip_ids), 1)
+
+    # OHLCV 待更新
     if _smr.empty:
-        _pending = len([x for x in get_known_stock_ids() if x not in _skip2])
+        _ohlcv_pending = len([x for x in _known_ids if x not in _skip_ids])
     else:
-        _stale2  = set(_smr.loc[_smr["latest"] < _ltd2.isoformat(), "stock_id"]) - _skip2 - _susp2
-        _miss2   = set(get_known_stock_ids()) - set(_smr["stock_id"]) - _skip2
-        _pending = len(_stale2) + len(_miss2)
+        _stale_ids = (
+            set(_smr.loc[_smr["latest"] < _ref_str, "stock_id"]) - _skip_ids - _susp_ids
+        )
+        _miss_ids  = set(_known_ids) - set(_smr["stock_id"]) - _skip_ids
+        _ohlcv_pending = len(_stale_ids) + len(_miss_ids)
+
+    # 法人待更新（同一參考日）
+    _inst_no_upd = s.get("inst_no_update_count", 0)
+    _inst_active = max(_active_total - _inst_no_upd, 1)
+    with get_session() as _sess:
+        _inst_done_ref = _sess.execute(
+            _sqla_text("SELECT COUNT(DISTINCT stock_id) FROM inst_cache WHERE date=:d"),
+            {"d": _ref_str}).fetchone()[0]
+    _inst_pending = max(_inst_active - _inst_done_ref, 0)
+
+    # 融資融券待更新（同一參考日）
+    _margin_no_upd   = s.get("margin_no_update_count", 0)
+    _margin_active   = max(_active_total - _margin_no_upd, 1)
+    _m_ref_stats     = get_margin_cache_stats(_ref_date)
+    _margin_done_ref = _m_ref_stats["done_today"]
+    _margin_pending  = max(_margin_active - _margin_done_ref, 0)
+
+    # 今日是否為交易日但 FinMind 尚未發布（例如下午 2 點）
+    _ref_behind_today = (
+        _ref_date < date.today()
+        and date.today().weekday() < 5
+        and datetime.now().hour >= 13
+    )
+
 except Exception:
-    _pending = s["queue_size"]
+    _ref_date = date.today()
+    _ref_str  = _ref_date.isoformat()
+    _ohlcv_pending   = s["queue_size"]
+    _inst_pending    = None
+    _margin_pending  = None
+    _active_total    = 950
+    _inst_no_upd     = s.get("inst_no_update_count", 0)
+    _margin_no_upd   = s.get("margin_no_update_count", 0)
+    _inst_active     = 950
+    _margin_active   = 950
+    _inst_done_ref   = 0
+    _margin_done_ref = 0
+    _ref_behind_today = False
 
 elapsed_str = "—"
 if s["last_fetch_at"]:
     el = int((datetime.now() - s["last_fetch_at"]).total_seconds())
     elapsed_str = f"{el}s 前" if el < 60 else f"{el//60}m 前"
 
-_pend_cls  = "warn"  if _pending  > 50 else ""
-_rate_cls  = "warn"  if s.get("rate_limit_count", 0) > 0 else ""
-_total_cls = "ok"    if s["total_fetched"] > 0 else ""
+# ── Worker 健康指標（3格）────────────────────────────────────────
+_rate_cls  = "warn" if s.get("rate_limit_count", 0) > 0 else ""
+_total_cls = "ok"   if s["total_fetched"] > 0 else ""
 
 st.markdown(f"""
-<div class="metric-grid">
+<div class="metric-grid" style="grid-template-columns:repeat(3,1fr);">
   <div class="metric-box">
     <div class="mb-label">本小時用量</div>
     <div class="mb-val">{s['hour_fetched']}</div>
-    <div class="mb-sub">上限 {s['hourly_limit']} 次 / 小時</div>
-  </div>
-  <div class="metric-box {_pend_cls}">
-    <div class="mb-label">待更新股票</div>
-    <div class="mb-val">{_pending}</div>
-    <div class="mb-sub">Worker 快照 {s['queue_size']} 檔</div>
+    <div class="mb-sub">上限 {s['hourly_limit']}　剩餘 {s['hourly_remaining']} 次</div>
   </div>
   <div class="metric-box {_total_cls}">
-    <div class="mb-label">累計抓取</div>
+    <div class="mb-label">本次累計抓取</div>
     <div class="mb-val">{s['total_fetched']}</div>
     <div class="mb-sub">最近：{elapsed_str}</div>
   </div>
   <div class="metric-box {_rate_cls}">
-    <div class="mb-label">429 次數</div>
+    <div class="mb-label">429 限流次數</div>
     <div class="mb-val">{s.get('rate_limit_count', 0)}</div>
-    <div class="mb-sub">已略過 {s.get('skip_count', 0)} 檔</div>
+    <div class="mb-sub">已略過 {s.get('skip_count', 0)} 檔無資料</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── 資料待更新（3格，以 resolve_latest_trading_day 為準）────────
+_ref_display = _ref_str
+if _ref_date == date.today():
+    _ref_display = f"{_ref_str}（今日）"
+elif _ref_behind_today:
+    _ref_display = f"{_ref_str}　⚠️ 今日 {date.today()} 尚待 FinMind 發布"
+
+# Worker supplementary 計數器 — 提前計算，供 metric 框與 progress bars 共用
+_w_inst_done  = s.get("inst_supplementary_done",   0)
+_w_inst_total = s.get("inst_supplementary_total",  0)
+_w_marg_done  = s.get("margin_supplementary_done", 0)
+_w_marg_total = s.get("margin_supplementary_total",0)
+
+_ohlcv_cls  = "warn" if _ohlcv_pending > 20 else ("ok" if _ohlcv_pending == 0 else "")
+_inst_cls   = "warn" if (_inst_pending or 0) > 20 else ("ok" if (_inst_pending or 0) == 0 else "")
+_margin_cls = "warn" if (_margin_pending or 0) > 20 else ("ok" if (_margin_pending or 0) == 0 else "")
+_inst_val   = str(_inst_pending)   if _inst_pending   is not None else "—"
+_margin_val = str(_margin_pending) if _margin_pending is not None else "—"
+
+st.markdown(f"""
+<div style="font-size:10.5px; color:var(--text-color); opacity:0.42;
+            letter-spacing:0.05em; text-transform:uppercase;
+            padding: 16px 0 6px 0; border-bottom:1px solid rgba(128,128,128,0.12);
+            margin-bottom:8px;">
+  資料待更新　參考交易日：{_ref_display}
+</div>
+<div class="metric-grid" style="grid-template-columns:repeat(3,1fr); margin-top:8px;">
+  <div class="metric-box {_ohlcv_cls}">
+    <div class="mb-label">核心 OHLCV</div>
+    <div class="mb-val">{_ohlcv_pending}</div>
+    <div class="mb-sub">Worker 快照 {s['queue_size']} 檔</div>
+  </div>
+  <div class="metric-box {_inst_cls}">
+    <div class="mb-label">法人資料</div>
+    <div class="mb-val">{_inst_val}</div>
+    <div class="mb-sub">已完成 {_inst_done_ref if _w_inst_total == 0 else _w_inst_done} / {_inst_active} 檔</div>
+  </div>
+  <div class="metric-box {_margin_cls}">
+    <div class="mb-label">融資融券</div>
+    <div class="mb-val">{_margin_val}</div>
+    <div class="mb-sub">已完成 {_margin_done_ref if _w_marg_total == 0 else _w_marg_done} / {_margin_active} 檔</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -361,43 +519,33 @@ elif s.get("rebuild_mode"):
         rp = min((iq - rq) / iq, 1.0)
         st.progress(rp, text=f"全速重建：{iq-rq}/{iq} 檔（{rp*100:.0f}%）")
 
-# ══ 區塊 2：今日資料進度 ══════════════════════════════════════════
+# ══ 區塊 2：資料更新進度 ══════════════════════════════════════════
 if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
-    st.markdown('<div class="sec-header">今日資料進度</div>', unsafe_allow_html=True)
-    today_str = date.today().strftime("%Y-%m-%d")
-
-    try:
-        _skip_ids     = set(get_delisted_stocks(include_legacy_no_update=True))
-        _active_total = max(len(set(get_known_stock_ids()) - _skip_ids), 1)
-    except Exception:
-        _active_total = 950
+    _prog_title = f"資料更新進度（{_ref_str}）"
+    st.markdown(f'<div class="sec-header">{_prog_title}</div>', unsafe_allow_html=True)
 
     try:
         with get_session() as _sess:
             _core_done = _sess.execute(
                 _sqla_text("SELECT COUNT(DISTINCT stock_id) FROM price_cache WHERE date=:d"),
-                {"d": today_str}).fetchone()[0]
+                {"d": _ref_str}).fetchone()[0]
     except Exception:
         _core_done = 0
 
-    try:
-        with get_session() as _sess:
-            _inst_done = _sess.execute(
-                _sqla_text("SELECT COUNT(DISTINCT stock_id) FROM inst_cache WHERE date=:d"),
-                {"d": today_str}).fetchone()[0]
-    except Exception:
-        _inst_done = 0
+    # Worker supplementary 計數器比 DB date 查詢更即時（不受法人/融資發布時間落差影響）
+    if _w_inst_total > 0:
+        _inst_done  = _w_inst_done
+        _inst_total = _w_inst_total
+    else:
+        _inst_done  = _inst_done_ref
+        _inst_total = _inst_active
 
-    try:
-        _m_stats    = get_margin_cache_stats(date.today())
-        _margin_done = _m_stats["done_today"]
-    except Exception:
-        _margin_done = 0
-
-    _inst_no_upd   = s.get("inst_no_update_count", 0)
-    _margin_no_upd = s.get("margin_no_update_count", 0)
-    _inst_total    = max(_active_total - _inst_no_upd, 1)
-    _margin_total  = max(_active_total - _margin_no_upd, 1)
+    if _w_marg_total > 0:
+        _margin_done  = _w_marg_done
+        _margin_total = _w_marg_total
+    else:
+        _margin_done  = _margin_done_ref
+        _margin_total = _margin_active
     _core_pct      = _core_done / _active_total if _active_total else 0
     _finmind_updated = (s.get("latest_trading_day") == date.today())
     _is_waiting_now  = (not _finmind_updated and datetime.now().hour >= 15)
@@ -413,10 +561,15 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
             text = f"{label}：{pct_str}（{done}/{total} 檔）"
         st.progress(pct, text=text)
 
-    _supp_note = (
-        "⏳ 等待 FinMind 盤後更新（通常 17–19 時）" if _is_waiting_now
-        else ("等待核心資料完成" if _core_pct < 0.5 else "")
-    )
+    _ohlcv_queue_left = s.get("queue_size", 0)
+    if _is_waiting_now:
+        _supp_note = "⏳ 等待 FinMind 盤後更新（通常 17–19 時）"
+    elif _ohlcv_queue_left > 0:
+        _supp_note = f"⏳ 等待 OHLCV 核心資料完成（還剩 {_ohlcv_queue_left} 檔）"
+    elif _core_pct < 0.5:
+        _supp_note = "等待核心資料完成"
+    else:
+        _supp_note = ""
 
     _pbar("核心資料（OHLCV）", _core_done, _active_total,
           note="Yahoo Bridge 已補充" if s.get("yahoo_bridge_done") and not _finmind_updated else "")
