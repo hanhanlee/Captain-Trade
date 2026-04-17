@@ -195,6 +195,60 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ── 最近嘗試資訊列 ────────────────────────────────────────────────
+_la_at     = s.get("last_attempt_at")
+_la_result = s.get("last_attempt_result", "")
+_la_stock  = s.get("last_attempt_stock", "")
+
+if _la_at and _la_stock:
+    # 來源標籤
+    _src_map = {
+        "[法人]":  ("法人資料",  "#60a5fa"),
+        "[融資]":  ("融資融券",  "#60a5fa"),
+        "[基本面]":("基本面",    "#60a5fa"),
+        "[回測]":  ("回測歷史",  "#a78bfa"),
+        "[Yahoo]": ("Yahoo Finance", "#34d399"),
+        "[重建]":  ("全速重建",  "#f87171"),
+    }
+    _src_label, _src_color = "FinMind 價格", "#60a5fa"
+    _clean_stock = _la_stock
+    for _prefix, (_lbl, _col) in _src_map.items():
+        if _la_stock.startswith(_prefix):
+            _src_label, _src_color = _lbl, _col
+            _clean_stock = _la_stock[len(_prefix):].strip()
+            break
+
+    # 結果標籤
+    _result_map = {
+        "normal":     ("✅", "已更新",    "#4ade80"),
+        "ok":         ("✅", "成功",      "#4ade80"),
+        "cached":     ("⏭",  "快取命中",  "rgba(255,255,255,0.3)"),
+        "suspended":  ("⚠️", "暫無資料", "#fbbf24"),
+        "no_update":  ("⚠️", "無資料",   "#fbbf24"),
+        "delisted":   ("🚫", "已下市",   "rgba(255,255,255,0.3)"),
+        "rate_limit": ("🚫", "429 限流", "#f87171"),
+        "error":      ("❌", "錯誤",     "#f87171"),
+    }
+    _r_icon, _r_label, _r_color = _result_map.get(
+        _la_result, ("—", _la_result or "—", "rgba(255,255,255,0.35)")
+    )
+
+    # 時間
+    _el = int((datetime.now() - _la_at).total_seconds())
+    _ago = f"{_el}s 前" if _el < 60 else f"{_el//60}m{_el%60:02d}s 前"
+    _time_str = _la_at.strftime("%H:%M:%S")
+
+    st.markdown(f"""
+<div style="display:flex; align-items:center; gap:14px; padding:5px 2px 10px 2px;
+            font-size:12px; color:rgba(255,255,255,0.4); flex-wrap:wrap;">
+  <span>最近嘗試</span>
+  <span style="color:{_src_color}; font-weight:600;">{_src_label}</span>
+  <span style="color:rgba(255,255,255,0.75); font-family:monospace;">{_clean_stock}</span>
+  <span>{_time_str}（{_ago}）</span>
+  <span style="color:{_r_color};">{_r_icon} {_r_label}</span>
+</div>
+""", unsafe_allow_html=True)
+
 # ── 控制按鈕 ─────────────────────────────────────────────────────
 is_paused = s.get("pause_remaining_sec", 0) > 0
 bc1, bc2, bc3, bc4, _ = st.columns([1, 1, 1.2, 1, 4])

@@ -112,6 +112,10 @@ class PrefetchWorker:
         self.yahoo_bridge_batch_total: int = 0            # 總批次數
         self.yahoo_bridge_failed_ids: list = []           # 無 Yahoo 資料的股票清單
         self.yahoo_bridge_in_progress: bool = False       # 是否正在執行
+        # 最近嘗試追蹤
+        self.last_attempt_at: datetime | None = None
+        self.last_attempt_result: str = ""   # normal/cached/suspended/delisted/rate_limit/error/no_update/ok
+        self.last_attempt_stock: str = ""    # stock_id 或帶前綴的標籤，如 "[法人] 2330"
         # Supplementary 附加資料（法人 + 融資）
         self.inst_supplementary_total: int = 0
         self.inst_supplementary_done: int = 0
@@ -567,6 +571,12 @@ class PrefetchWorker:
 
         return True
 
+    def _note_attempt(self, stock_label: str, result: str):
+        """記錄最近一次嘗試（無論成功與否）"""
+        self.last_attempt_at     = datetime.now()
+        self.last_attempt_result = result
+        self.last_attempt_stock  = stock_label
+
     def reset_yahoo_bridge(self):
         """重置 Yahoo Bridge，讓 worker 下一輪重新執行（已快取的會自動跳過）"""
         self._yahoo_bridge_date = None
@@ -794,6 +804,7 @@ class PrefetchWorker:
 
             self.current_stock = f"[法人] {stock_id}"
             result = self._fetch_inst_today(stock_id)
+            self._note_attempt(f"[法人] {stock_id}", result)
 
             if result in ("ok", "cached"):
                 self._record_request()
@@ -825,6 +836,7 @@ class PrefetchWorker:
 
             self.current_stock = f"[融資] {stock_id}"
             result = self._fetch_margin_today(stock_id)
+            self._note_attempt(f"[融資] {stock_id}", result)
 
             if result in ("ok", "cached"):
                 self._record_request()
@@ -942,6 +954,7 @@ class PrefetchWorker:
                         break
                     self.current_stock = f"[回測] {stock_id}"
                     result = self._fetch_one_backtest(stock_id)
+                    self._note_attempt(f"[回測] {stock_id}", result)
                     if result == "ok":
                         self._record_request()
                         self.last_fetch_at = datetime.now()
@@ -1023,6 +1036,7 @@ class PrefetchWorker:
                             break
                         self.current_stock = f"[基本面] {stock_id}"
                         result = self._fetch_one_fundamental(stock_id)
+                        self._note_attempt(f"[基本面] {stock_id}", result)
                         if result == "ok":
                             self._record_request()
                             self.last_fetch_at = datetime.now()
@@ -1049,6 +1063,7 @@ class PrefetchWorker:
 
                 self.current_stock = stock_id
                 result = self._fetch_one(stock_id)
+                self._note_attempt(stock_id, result)
 
                 if result == "normal":
                     self._record_request()
@@ -1144,6 +1159,9 @@ class PrefetchWorker:
             "yahoo_bridge_batch_total":    self.yahoo_bridge_batch_total,
             "yahoo_bridge_failed_ids":     list(self.yahoo_bridge_failed_ids),
             "yahoo_bridge_in_progress":    self.yahoo_bridge_in_progress,
+            "last_attempt_at":             self.last_attempt_at,
+            "last_attempt_result":         self.last_attempt_result,
+            "last_attempt_stock":          self.last_attempt_stock,
             "inst_no_update_count":        len(self._inst_no_update),
             "margin_no_update_count":      len(self._margin_no_update),
             "inst_supplementary_total":    self.inst_supplementary_total,
