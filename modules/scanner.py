@@ -9,15 +9,16 @@
   4. 股價 < MA20 + 3.5 × ATR(14)（動態門檻排除過熱股）   +10
   5. 相對強度 RS > 80（領先大盤，確認個股強勢）            +10
   6. 突破近 60 日收盤高點（確認為真實突破，而非盤整反彈）  +10
+  7. 主力連續 3 日買超（三大法人合計淨買超皆為正）          +10
 
 加分條件（滿足越多分數越高）：
-  7. 布林頻寬縮減（今日 bandwidth < 20 日前）              +10
-  8. 投信第一天買超（昨非正、今轉正）                       +10
-  9. 突破近 20 日收盤高點                                  +8
- 10. 週線 MA10 扣抵值低位（10週前收盤 < 當前週MA10）        +10
- 11. 融資減少 / 籌碼集中                                   +5
+  8. 布林頻寬縮減（今日 bandwidth < 20 日前）              +10
+  9. 投信第一天買超（昨非正、今轉正）                       +10
+ 10. 突破近 20 日收盤高點                                  +8
+ 11. 週線 MA10 扣抵值低位（10週前收盤 < 當前週MA10）        +10
+ 12. 融資減少 / 籌碼集中                                   +5
 
-滿分：必要 100 + 加分最多 43 = 143
+滿分：必要 110 + 計分加分最多 35 = 145
 """
 import pandas as pd
 import numpy as np
@@ -45,6 +46,7 @@ class ScanSignal:
     margin_clean: bool = False         # 融資減少 / 籌碼集中
     rs_positive: bool = False          # 相對強度 RS > 70
     rs_score: float = 0.0              # RS 分數（0-100）
+    main_force_buy_3d: bool = False    # 主力（三大法人合計）連續 3 日買超
     # ── 保留 v3 欄位（供顯示/回測參考，不計入主計分）──
     above_ma20: bool = False
     ma20_rising: bool = False
@@ -69,6 +71,7 @@ class ScanSignal:
             and self.atr_ok
             and self.rs_strong
             and self.breakout_60d
+            and self.main_force_buy_3d
         )
 
     def passes_basic_v3(self) -> bool:
@@ -79,12 +82,13 @@ class ScanSignal:
             and self.volume_surge
             and self.above_bb_lower
             and (self.macd_cross or self.rsi_healthy)
+            and self.main_force_buy_3d
         )
 
     def score(self) -> float:
         """
         v4 領先攻擊版計分
-        必要條件滿分 80，加分條件最多 +50，上限 130
+        必要條件滿分 110，加分條件最多 +35，上限 145
         """
         weights = {
             # 必要條件（通過才會到達此處，作為基礎分）
@@ -94,6 +98,7 @@ class ScanSignal:
             "atr_ok": 10,
             "rs_strong": 10,
             "breakout_60d": 10,
+            "main_force_buy_3d": 10,
             # 加分條件
             "bb_bandwidth_shrink": 10,
             "trust_first_buy": 10,
@@ -110,7 +115,7 @@ class ScanSignal:
         weights = {
             "above_ma20": 20, "ma20_rising": 15, "volume_surge": 20,
             "macd_cross": 15, "rsi_healthy": 10, "above_bb_lower": 10,
-            "institutional_buy": 7, "margin_clean": 3,
+            "main_force_buy_3d": 10, "institutional_buy": 7, "margin_clean": 3,
             "weekly_trend_up": 10, "rs_positive": 8,
             "ma_aligned": 5, "vol_quality": 7, "breakout": 8,
         }
@@ -125,6 +130,7 @@ class ScanSignal:
             "atr_ok": "股價<MA20+3.5ATR",
             "rs_strong": "RS>80強勢",
             "breakout_60d": "突破60日新高",
+            "main_force_buy_3d": "主力連3日買超",
             # v4 加分
             "bb_bandwidth_shrink": "布林頻寬縮減",
             "trust_first_buy": "投信首日買超",
@@ -304,11 +310,13 @@ def analyze_stock(
         # 保留 v3 法人欄位
         sig.institutional_buy = bool(inst_buying.get("strict_pass", False))
         sig.inst_total_buy     = bool(inst_buying.get("aggregate_pass", False))
+        sig.main_force_buy_3d  = bool(inst_buying.get("main_force_buy_3d", False))
         sig.foreign_trust_buy  = sig.inst_total_buy and bool(
             inst_buying.get("foreign_trust_pass", False)
         )
     elif inst_buying:
         sig.institutional_buy = True
+        sig.main_force_buy_3d = True
 
     # 7. [v4] 突破近 20 日收盤高點（排除今日本身）
     if len(df) >= 22:

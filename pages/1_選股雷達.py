@@ -631,14 +631,12 @@ with tab_scan:
 
                     # 法人資料：備援模式下 dsm.institutional_available 為 False，自動跳過
                     if (not _disable_non_price_extras
-                            and include_institutional
-                            and dsm.institutional_available
-                            and inst_selection):
+                            and dsm.institutional_available):
                         idf = dsm.get_institutional(sid, days=10)
                         if not idf.empty:
                             inst_data[sid] = summarize_institutional_signal(
                                 idf,
-                                selected_institutions=inst_selection,
+                                selected_institutions=inst_selection or None,
                                 strict_days=strict_days,
                                 agg_mode=agg_mode,
                                 agg_days=agg_days,
@@ -702,9 +700,13 @@ with tab_scan:
                 )
 
         with st.spinner("計算指標，篩選中..."):
-            use_inst = (include_institutional
-                        and dsm.institutional_available
+            use_inst = (dsm.institutional_available
                         and not _disable_non_price_extras)
+            if not use_inst:
+                st.warning(
+                    "目前無法取得法人資料；v3/v4 都需要「主力連續 3 日買超」作為必要條件，"
+                    "本次掃描可能不會產生入選結果。"
+                )
             result_df, sector_info, debug_info = run_scan(
                 price_data=price_data,
                 stock_info=stock_list,
@@ -926,7 +928,7 @@ with tab_scan:
             )
             _inst_score = "+4 / +7"
             _inst_note = "合計買超 +4；若外資與投信同步買超再 +3"
-        _inst_type = "**必要**（強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
+        _inst_type = "**必要**（額外強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
         _strategy_label = "v4 領先攻擊版" if strategy_version == "v4" else "v3 均線突破版"
         st.markdown(f"""
         #### 篩選條件（{_strategy_label}）
@@ -939,6 +941,7 @@ with tab_scan:
         | 股價 < MA20 + 3.5 × ATR(14) | 必要 | +10 | 動態門檻排除過熱股，較固定乖離率更合理 |
         | 相對強度 RS > 80 | 必要 | +10 | 個股明顯領先大盤，確認為真正強勢股 |
         | 突破 60 日收盤新高 | 必要 | +10 | 確認為真實突破，而非盤整區間反彈 |
+        | 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
         | 布林頻寬縮減（vs 20日前） | 加分 | +10 | 盤整極致後的變盤第一天 |
         | 投信第一天買超 | 加分 | +10 | 法人資金剛開始表態的訊號 |
         | 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
@@ -975,7 +978,10 @@ with tab_funnel:
             ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
             ("均線糾結 < 3%",     lambda s: s.ma_triple_breakout and s.ma_squeeze),
             ("量能 > 均量 1.5 倍", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion),
-            ("股價 < MA20+3.5ATR", lambda s: s.passes_basic()),
+            ("股價 < MA20+3.5ATR", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok),
+            ("RS > 80",            lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok and s.rs_strong),
+            ("突破 60 日新高",      lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok and s.rs_strong and s.breakout_60d),
+            ("主力連 3 日買超",     lambda s: s.passes_basic()),
         ]
         for label, fn in MANDATORY:
             cnt = sum(1 for v in cond_stocks if fn(v["sig"]))
@@ -1075,6 +1081,9 @@ with tab_funnel:
             ("均線糾結 < 3%",     lambda s: s.ma_squeeze),
             ("量能 > 均量 1.5 倍", lambda s: s.volume_explosion),
             ("股價 < MA20+3.5ATR", lambda s: s.atr_ok),
+            ("RS > 80",            lambda s: s.rs_strong),
+            ("突破 60 日新高",      lambda s: s.breakout_60d),
+            ("主力連 3 日買超",     lambda s: s.main_force_buy_3d),
         ]
         near_miss = []
         for sid, v in analysis.items():

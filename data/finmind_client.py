@@ -349,6 +349,7 @@ def summarize_institutional_signal(
             "aggregate_pass": False,
             "foreign_trust_pass": False,
             "aggregate_sum": 0.0,
+            "main_force_buy_3d": False,
             "daily_total_net": pd.Series(dtype=float),
             "recent_inst_net": pd.DataFrame(),
         }
@@ -377,6 +378,7 @@ def summarize_institutional_signal(
             "aggregate_pass": False,
             "foreign_trust_pass": False,
             "aggregate_sum": 0.0,
+            "main_force_buy_3d": False,
             "daily_total_net": pd.Series(dtype=float),
             "recent_inst_net": pd.DataFrame(),
         }
@@ -410,6 +412,9 @@ def summarize_institutional_signal(
     else:
         aggregate_pass = len(recent_total) >= agg_days and aggregate_sum > 0
 
+    main_force_recent = daily_total_net.tail(3)
+    main_force_buy_3d = len(main_force_recent) >= 3 and (main_force_recent > 0).all()
+
     # 土洋合買：外資與投信最近 strict_days 皆為淨買超。
     foreign_trust_pass = True
     for inst in ["外資", "投信"]:
@@ -426,8 +431,9 @@ def summarize_institutional_signal(
         "aggregate_pass": aggregate_pass,
         "foreign_trust_pass": foreign_trust_pass,
         "aggregate_sum": round(aggregate_sum, 2),
+        "main_force_buy_3d": main_force_buy_3d,
         "daily_total_net": daily_total_net,
-        "recent_inst_net": daily_inst_net.tail(max(strict_days, agg_days)),
+        "recent_inst_net": daily_inst_net.tail(max(strict_days, agg_days, 3)),
     }
 
 

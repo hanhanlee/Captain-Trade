@@ -15,6 +15,7 @@ from plotly.subplots import make_subplots
 
 from db.database import init_db
 from db.price_cache import load_prices
+from db.settings import get_scanner_preset
 from modules.scanner import compute_indicators, analyze_stock
 from modules.indicators import weekly_ma_trend, sma
 
@@ -35,16 +36,91 @@ def _load_df(stock_id: str) -> pd.DataFrame | None:
     return compute_indicators(df)
 
 
-def _load_inst(stock_id: str) -> dict:
+def _load_inst(
+    stock_id: str,
+    *,
+    selected_institutions: list | None = None,
+    strict_days: int = 3,
+    agg_mode: str = "rolling_sum",
+    agg_days: int = 5,
+) -> dict:
     """載入三大法人資料並彙整；失敗回傳空 dict"""
     try:
         from data.finmind_client import get_institutional_investors, summarize_institutional_signal
         idf = get_institutional_investors(stock_id, days=10)
         if idf.empty:
             return {}
-        return summarize_institutional_signal(idf, strict_days=2, agg_days=3)
+        return summarize_institutional_signal(
+            idf,
+            selected_institutions=selected_institutions,
+            strict_days=int(strict_days or 3),
+            agg_mode=agg_mode,
+            agg_days=int(agg_days or 5),
+        )
     except Exception:
         return {}
+
+
+def _to_bool(value, default=False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _get_daily_volume_rank(stock_id: str, trade_date) -> tuple[int | None, int, float | None]:
+    """回傳指定交易日成交量排名：(rank, total, volume)。rank 為 1-based。"""
+    try:
+        from db.database import get_session
+        from sqlalchemy import text
+
+        d = pd.Timestamp(trade_date).date().isoformat()
+        with get_session() as sess:
+            rows = sess.execute(
+                text("""
+                    SELECT stock_id, volume
+                    FROM price_cache
+                    WHERE date = :d AND volume IS NOT NULL AND volume > 0
+                    ORDER BY volume DESC
+                """),
+                {"d": d},
+            ).fetchall()
+        total = len(rows)
+        for idx, row in enumerate(rows, start=1):
+            if row[0] == stock_id:
+                return idx, total, float(row[1])
+        return None, total, None
+    except Exception:
+        return None, 0, None
+
+
+def _heat_room(df: pd.DataFrame, atr_mult: float) -> dict:
+    """計算距離 ATR 過熱門檻的百分比與金額。"""
+    latest = df.iloc[-1]
+    close = float(latest.get("close", 0) or 0)
+    ma20 = latest.get("ma20", float("nan"))
+    atr14 = latest.get("atr14", float("nan"))
+    if close <= 0 or pd.isna(ma20) or pd.isna(atr14) or atr14 <= 0 or atr_mult <= 0:
+        return {
+            "available": False,
+            "threshold": None,
+            "room_abs": None,
+            "room_pct": None,
+            "overheated": False,
+        }
+
+    threshold = float(ma20) + float(atr_mult) * float(atr14)
+    room_abs = threshold - close
+    return {
+        "available": True,
+        "threshold": threshold,
+        "room_abs": room_abs,
+        "room_pct": room_abs / close * 100,
+        "overheated": room_abs < 0,
+    }
 
 
 def _badge(passed: bool) -> str:
@@ -154,6 +230,12 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
             ),
             "rule": "今日收盤 > 過去 60 個交易日最高收盤",
         },
+        {
+            "name": "主力連續買超 3 天以上",
+            "pass": sig.main_force_buy_3d,
+            "detail": "三大法人合計淨買超最近 3 個交易日皆為正（需載入法人資料）",
+            "rule": "三大法人合計買賣超 > 0，且連續至少 3 個交易日",
+        },
     ]
 
     for c in conditions_req:
@@ -255,7 +337,7 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
         f"background:{score_color}22;border:1px solid {score_color}'>"
         f"<span style='font-size:1.1rem'>{verdict}</span>&nbsp;&nbsp;"
         f"<span style='font-size:1.6rem;font-weight:bold;color:{score_color}'>{total} 分</span>"
-        f"<span style='color:#aaa;font-size:0.85rem'> / 130 滿分</span>"
+        f"<span style='color:#aaa;font-size:0.85rem'> / 145 滿分</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -360,6 +442,12 @@ def render_scorecard_v3(sig, df: pd.DataFrame):
             "pass": _macd_or_rsi,
             "detail": "  \n".join(_macd_or_rsi_detail) if _macd_or_rsi_detail else "資料不足",
             "rule": "MACD 黃金交叉（DIF由下往上穿越DEA 或 DIF>DEA>0）OR RSI在50–70健康區",
+        },
+        {
+            "name": "主力連續買超 3 天以上",
+            "pass": sig.main_force_buy_3d,
+            "detail": "三大法人合計淨買超最近 3 個交易日皆為正（需載入法人資料）",
+            "rule": "三大法人合計買賣超 > 0，且連續至少 3 個交易日",
         },
     ]
 
@@ -480,7 +568,7 @@ def render_scorecard_v3(sig, df: pd.DataFrame):
         f"background:{score_color}22;border:1px solid {score_color}'>"
         f"<span style='font-size:1.1rem'>{verdict}</span>&nbsp;&nbsp;"
         f"<span style='font-size:1.6rem;font-weight:bold;color:{score_color}'>{total} 分</span>"
-        f"<span style='color:#aaa;font-size:0.85rem'> / 138 滿分</span>"
+        f"<span style='color:#aaa;font-size:0.85rem'> / 148 滿分</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -619,7 +707,157 @@ def render_weekly_chart(stock_id: str, df: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True)
 
 
+def render_custom_preset_checks(
+    *,
+    stock_id: str,
+    df: pd.DataFrame,
+    sig,
+    preset: dict,
+    volume_rank: tuple[int | None, int, float | None],
+    margin_trend: str,
+):
+    """依目前儲存的自訂模式，列出單股是否符合進階條件。"""
+    if not preset:
+        st.info("尚未儲存自訂模式；目前僅顯示策略必要條件。")
+        return
+
+    latest = df.iloc[-1]
+    close = float(latest.get("close", 0) or 0)
+    rank, total, _ = volume_rank
+    min_price = float(preset.get("sb_min_price") or 0)
+    min_rs = float(preset.get("sb_min_rs") or 0)
+    require_weekly = _to_bool(preset.get("sb_require_weekly"), False)
+    include_inst = _to_bool(preset.get("sb_include_inst"), False)
+    include_margin = _to_bool(preset.get("sb_include_margin"), False)
+    use_fundamental = _to_bool(preset.get("sb_use_fundamental"), False)
+    raw_overheat_mult = preset.get("sb_overheat_atr_mult")
+    overheat_mult = 3.5 if raw_overheat_mult in (None, "") else float(raw_overheat_mult)
+    overheat_action = str(preset.get("sb_overheat_action_label") or "直接剔除")
+    vol_mode = str(preset.get("sb_vol_filter_mode") or "不過濾")
+    top_volume_n = int(preset.get("sb_top_volume_n") or 0)
+    min_avg_volume = int(preset.get("sb_min_avg_volume") or 0)
+    avg_vol_20 = (
+        float(df["Trading_Volume"].tail(20).mean()) / 1000
+        if "Trading_Volume" in df.columns and len(df) >= 20 else None
+    )
+    heat = _heat_room(df, overheat_mult)
+
+    rows = []
+    if min_price > 0:
+        rows.append({
+            "自訂條件": f"最低股價 >= {min_price:.0f} 元",
+            "結果": "通過" if close >= min_price else "未通過",
+            "目前數值": f"{close:.1f} 元",
+        })
+
+    if "前日量前" in vol_mode and top_volume_n > 0:
+        passed = rank is not None and rank <= top_volume_n
+        rows.append({
+            "自訂條件": f"日成交量排名前 {top_volume_n} 名",
+            "結果": "通過" if passed else "未通過",
+            "目前數值": f"第 {rank}/{total} 名" if rank else "無排名資料",
+        })
+    elif "日均量" in vol_mode and min_avg_volume > 0:
+        passed = avg_vol_20 is not None and avg_vol_20 >= min_avg_volume
+        rows.append({
+            "自訂條件": f"20 日均量 >= {min_avg_volume:,} 張",
+            "結果": "通過" if passed else "未通過",
+            "目前數值": f"{avg_vol_20:,.0f} 張" if avg_vol_20 is not None else "資料不足",
+        })
+
+    if require_weekly:
+        rows.append({
+            "自訂條件": "週線多頭",
+            "結果": "通過" if sig.weekly_trend_up else "未通過",
+            "目前數值": "週K收盤 > 週MA10 且週MA10向上" if sig.weekly_trend_up else "未符合",
+        })
+
+    if min_rs > 0:
+        rows.append({
+            "自訂條件": f"最低 RS >= {min_rs:.0f}",
+            "結果": "通過" if sig.rs_score >= min_rs else "未通過",
+            "目前數值": f"{sig.rs_score:.1f}",
+        })
+
+    if include_inst:
+        inst_mode = str(preset.get("sb_inst_mode") or "個別法人皆須買超")
+        if inst_mode == "個別法人皆須買超":
+            selected = preset.get("sb_inst_selection") or ["外資", "投信", "自營商"]
+            strict_days = int(preset.get("sb_strict_days") or 3)
+            passed = sig.institutional_buy
+            label = f"{'、'.join(selected)}各自連續 {strict_days} 日買超"
+        else:
+            agg_label = str(preset.get("sb_agg_mode_label") or "近 N 日累計 > 0")
+            agg_days = int(preset.get("sb_agg_days") or 5)
+            passed = sig.inst_total_buy
+            label = f"三大法人{agg_label}（N={agg_days}）"
+        rows.append({
+            "自訂條件": label,
+            "結果": "通過" if passed else "未通過",
+            "目前數值": "已載入法人資料" if passed else "未符合或法人資料不足",
+        })
+
+    if overheat_mult > 0:
+        if heat["available"]:
+            room_abs = heat["room_abs"]
+            room_pct = heat["room_pct"]
+            status = "已超過" if heat["overheated"] else "未過熱"
+            rows.append({
+                "自訂條件": f"ATR 過熱防護：MA20 + {overheat_mult:g} ATR",
+                "結果": "未通過" if heat["overheated"] and overheat_action.startswith("直接剔除") else "通過",
+                "目前數值": (
+                    f"{status}，距門檻 {room_pct:+.2f}% / {room_abs:+.2f} 元；"
+                    f"門檻 {heat['threshold']:.2f} 元"
+                ),
+            })
+        else:
+            rows.append({
+                "自訂條件": f"ATR 過熱防護：MA20 + {overheat_mult:g} ATR",
+                "結果": "資料不足",
+                "目前數值": "缺少 ATR 或 MA20",
+            })
+    else:
+        rows.append({
+            "自訂條件": "ATR 過熱防護",
+            "結果": "停用",
+            "目前數值": "自訂模式設定為 0",
+        })
+
+    if include_margin:
+        rows.append({
+            "自訂條件": "融資減少 / 籌碼集中",
+            "結果": "通過" if margin_trend == "down" else "未通過",
+            "目前數值": "融資餘額下降" if margin_trend == "down" else "融資未下降或無資料",
+        })
+
+    if use_fundamental:
+        rows.append({
+            "自訂條件": "基本面過濾",
+            "結果": "未檢查",
+            "目前數值": "個股分析頁暫不呼叫財報 API；掃描頁仍會套用此條件",
+        })
+
+    if _to_bool(preset.get("sb_use_sector_filter"), False):
+        rows.append({
+            "自訂條件": f"產業近 5 日漲幅前 {int(preset.get('sb_top_sector_n') or 0)} 名",
+            "結果": "未檢查",
+            "目前數值": "單股分析不重算全市場產業排行",
+        })
+
+    if _to_bool(preset.get("sb_use_hp_density"), False) or _to_bool(preset.get("sb_use_turnover_ratio"), False):
+        rows.append({
+            "自訂條件": "族群集體突破 / 資金流向",
+            "結果": "未檢查",
+            "目前數值": "需全市場資料，掃描頁會套用",
+        })
+
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
 # ── 側邊欄 ───────────────────────────────────────────────────────
+_custom_preset = get_scanner_preset()
+
 with st.sidebar:
     st.header("⚙️ 查詢設定")
 
@@ -643,24 +881,27 @@ with st.sidebar:
 
     load_inst = st.checkbox(
         "載入法人買賣超",
-        value=False,
-        help="需消耗 API 額度，可查詢投信第一天買超條件",
+        value=True,
+        help="v3/v4 皆需判斷主力連續 3 日買超；取消勾選時此必要條件會顯示未通過",
     )
+
+    if _custom_preset:
+        st.caption("已套用目前儲存的自訂模式條件檢查")
 
     strategy_version = st.radio(
         "策略版本",
         options=["v4 領先攻擊版", "v3 均線突破版"],
-        index=0,
+        index=1 if str(_custom_preset.get("sb_strategy_version", "")).startswith("v3") else 0,
         help=(
-            "**v4 領先攻擊版**：6項嚴格必要條件（三線齊穿首日 + 均線糾結 + 量爆發 + ATR過熱保護 + RS>80 + 60日新高）  \n"
-            "**v3 均線突破版**：站上MA20 + MA20向上 + 量增 + 不低於布林下軌 + MACD/RSI，條件較寬鬆"
+            "**v4 領先攻擊版**：7項嚴格必要條件（三線齊穿首日 + 均線糾結 + 量爆發 + ATR過熱保護 + RS>80 + 60日新高 + 主力連3日買超）  \n"
+            "**v3 均線突破版**：站上MA20 + MA20向上 + 量增 + 不低於布林下軌 + MACD/RSI + 主力連3日買超"
         ),
     )
 
     _ma_mode_label = st.radio(
         "三線齊穿判斷模式（v4 專用）",
         options=["嚴謹型（昨日三線全在線下）", "寬鬆型（昨日任一線在線下）"],
-        index=0,
+        index=1 if str(_custom_preset.get("sb_ma_mode", "")).startswith("寬鬆") else 0,
         help="嚴謹型：昨收 < min(MA5,MA10,MA20)；寬鬆型：昨收 < max(MA5,MA10,MA20)",
         disabled=(strategy_version == "v3 均線突破版"),
     )
@@ -737,8 +978,19 @@ if load_inst:
         st.info("歷史模式已自動忽略法人買賣超，評分卡只使用價格衍生條件。")
         load_inst = False
     else:
+        _preset_inst_selection = _custom_preset.get("sb_inst_selection") or None
+        _preset_strict_days = int(_custom_preset.get("sb_strict_days") or 3)
+        _preset_agg_mode_label = str(_custom_preset.get("sb_agg_mode_label") or "")
+        _preset_agg_mode = "rolling_sum" if _preset_agg_mode_label != "連續 N 日每日 > 0" else "consecutive"
+        _preset_agg_days = int(_custom_preset.get("sb_agg_days") or 5)
         with st.spinner("載入法人資料..."):
-            inst_buying = _load_inst(target_id)
+            inst_buying = _load_inst(
+                target_id,
+                selected_institutions=_preset_inst_selection,
+                strict_days=_preset_strict_days,
+                agg_mode=_preset_agg_mode,
+                agg_days=_preset_agg_days,
+            )
 
 # 融資資料（歷史模式下 API 只回傳近期資料，跳過以免誤判）
 _margin_trend, _margin_latest, _margin_prev = "flat", 0, 0
@@ -754,6 +1006,12 @@ if not _is_hist:
 sig = analyze_stock(df, inst_buying=inst_buying, precomputed=True,
                     margin_trend=_margin_trend,
                     ma_breakout_mode=_ma_breakout_mode)
+_volume_rank = _get_daily_volume_rank(target_id, df.iloc[-1]["date"])
+_raw_custom_overheat_mult = _custom_preset.get("sb_overheat_atr_mult")
+_custom_overheat_mult = (
+    3.5 if _raw_custom_overheat_mult in (None, "") else float(_raw_custom_overheat_mult)
+)
+_heat = _heat_room(df, _custom_overheat_mult)
 
 # ── 標頭 ─────────────────────────────────────────────────────────
 latest  = df.iloc[-1]
@@ -783,6 +1041,26 @@ if "Trading_Volume" in df.columns:
 m4.metric("MA20 乖離", f"{latest.get('ma20_bias_ratio', 0):.2f}%")
 m5.metric("RSI(14)", f"{latest.get('rsi14', 0):.1f}")
 
+rank, total_ranked, _rank_vol = _volume_rank
+v1, v2 = st.columns(2)
+v1.metric(
+    "日成交量排行",
+    f"第 {rank} / {total_ranked} 名" if rank else "無資料",
+    help="以分析基準日全市場成交量由大到小排名",
+)
+if _heat["available"]:
+    _room_abs = _heat["room_abs"]
+    _room_pct = _heat["room_pct"]
+    v2.metric(
+        f"ATR 過熱距離（{_custom_overheat_mult:g}x）",
+        f"{_room_pct:+.2f}%",
+        delta=f"{_room_abs:+.2f} 元",
+        delta_color="inverse" if _heat["overheated"] else "normal",
+        help=f"過熱門檻：{_heat['threshold']:.2f} 元；負值代表已超過門檻",
+    )
+else:
+    v2.metric("ATR 過熱距離", "資料不足")
+
 st.markdown("---")
 
 # ── 兩欄佈局：左評分卡 / 右K線 ───────────────────────────────────
@@ -799,6 +1077,18 @@ with col_score:
 with col_chart:
     st.subheader("📈 日K線圖")
     render_daily_chart(target_id, df.tail(120))
+
+st.markdown("---")
+
+st.subheader("🧩 自訂模式條件檢查")
+render_custom_preset_checks(
+    stock_id=target_id,
+    df=df,
+    sig=sig,
+    preset=_custom_preset,
+    volume_rank=_volume_rank,
+    margin_trend=_margin_trend,
+)
 
 st.markdown("---")
 
