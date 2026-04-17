@@ -34,9 +34,12 @@ def get_cached_dates(stock_id: str) -> tuple:
         return result[0], result[1]
 
 
-def save_prices(stock_id: str, df: pd.DataFrame) -> int:
+def save_prices(stock_id: str, df: pd.DataFrame, replace: bool = True) -> int:
     """
-    批次寫入日K資料，使用 INSERT OR REPLACE 確保新資料覆蓋舊的錯誤資料。
+    批次寫入日K資料。
+
+    replace=True（預設）: INSERT OR REPLACE — FinMind 使用，覆蓋舊資料確保資料正確性
+    replace=False:        INSERT OR IGNORE  — Yahoo Bridge 使用，不覆蓋已有的 FinMind 資料
 
     df 欄位：date, open, max(=high), min(=low), close, Trading_Volume
     """
@@ -60,9 +63,9 @@ def save_prices(stock_id: str, df: pd.DataFrame) -> int:
     if not rows:
         return 0
 
-    # INSERT OR REPLACE：(stock_id, date) 衝突時整列覆蓋，修復舊錯誤資料
-    sql = text("""
-        INSERT OR REPLACE INTO price_cache
+    keyword = "REPLACE" if replace else "IGNORE"
+    sql = text(f"""
+        INSERT OR {keyword} INTO price_cache
             (stock_id, date, open, high, low, close, volume, updated_at)
         VALUES
             (:stock_id, :date, :open, :high, :low, :close, :volume, :ts)

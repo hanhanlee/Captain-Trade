@@ -12,12 +12,15 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, date, timedelta
 
-from db.database import init_db, vacuum_db
+from db.database import init_db, vacuum_db, get_session
 from db.price_cache import (get_cache_summary, delete_old_prices, get_all_cached_stocks,
-                            diagnose_cache, get_failed_today_detail, set_fetch_status)
-from db.settings import is_market_closed, set_market_closed
+                            diagnose_cache, get_failed_today_detail, set_fetch_status,
+                            get_delisted_stocks, get_known_stock_ids)
+from db.settings import is_market_closed, set_market_closed, get_force_yahoo, set_force_yahoo
 from db.inst_cache import get_inst_cache_stats
 from db.fundamental_cache import get_fundamental_stats
+from db.margin_cache import get_margin_stats as get_margin_cache_stats
+from sqlalchemy import text as _sqla_text
 
 init_db()
 
@@ -63,6 +66,29 @@ else:
         "**正常模式** — 法人資料快取 24 小時後自動更新。  \n"
         "若目前為連假或停市，建議開啟「休市模式」避免浪費 API 額度。"
     )
+
+st.markdown("---")
+
+# ── 強制 Yahoo Finance 模式 ───────────────────────────────────
+_force_yahoo = get_force_yahoo()
+col_fy, col_fy_info = st.columns([2, 5])
+new_fy = col_fy.toggle(
+    "🔀 強制 Yahoo Finance",
+    value=_force_yahoo,
+    help="FinMind 異常時手動切換至 Yahoo Finance。選股雷達、持股監控皆生效；三大法人條件自動停用。",
+)
+if new_fy != _force_yahoo:
+    set_force_yahoo(new_fy)
+    st.rerun()
+
+if new_fy:
+    col_fy_info.warning(
+        "**Yahoo Finance 模式啟用中** — 選股掃描與持股監控改用 Yahoo Finance 取價。  \n"
+        "⚠️ 三大法人條件自動停用；價格資料可能有 15 分鐘延遲。  \n"
+        "FinMind 恢復正常後請關閉此開關。"
+    )
+else:
+    col_fy_info.info("**正常模式** — 使用 FinMind 取價（本機快取優先）。")
 
 st.markdown("---")
 
@@ -119,7 +145,39 @@ else:
     elif s["paused_for_market"]:
         st.warning("🟡 交易時間降速模式（09:00–自適應盤後切換前），每小時上限 100 次，保留額度給手動操作")
     else:
-        st.success("🟢 工作器運行中（盤後/非交易時間，每小時上限 600 次）")
+        _ltd = s.get("latest_trading_day")
+        _is_waiting_finmind = (
+            _ltd is not None
+            and _ltd < date.today()
+            and datetime.now().hour >= 15
+        )
+        _yahoo_done  = s.get("yahoo_bridge_done", False)
+        _yahoo_count = s.get("yahoo_bridge_count", 0)
+        _current_stock = s.get("current_stock", "")
+
+        if s.get("yahoo_bridge_in_progress"):
+            _yb_bd = s.get("yahoo_bridge_batch_done", 0)
+            _yb_bt = s.get("yahoo_bridge_batch_total", 0)
+            _batch_str = f"（批次 {_yb_bd}/{_yb_bt}）" if _yb_bt > 0 else ""
+            st.info(f"🔵 **Yahoo Bridge 進行中** {_batch_str} — 從 Yahoo Finance 批次補充今日收盤資料...")
+        elif _yahoo_done and _is_waiting_finmind:
+            st.info(
+                f"🔵 **Yahoo Bridge 已完成**（已補充 {_yahoo_count} 檔）— 等待 FinMind 更新今日資料  \n"
+                f"核心資料已由 Yahoo 補充（基準日：{_ltd}），附加資料（法人/融資）待 FinMind 上線後補充。"
+            )
+        elif _is_waiting_finmind:
+            st.info(
+                f"🔵 **等待 FinMind 更新今日資料中**（基準日仍為 {_ltd}）  \n"
+                "FinMind 通常於 15:30–19:00 發布當日資料，Worker 每 30 分鐘自動重查，無需手動操作。"
+            )
+        elif s.get("supplementary_completed_at"):
+            _sup_at = s["supplementary_completed_at"]
+            st.success(
+                f"🟢 **今日資料全部更新完成**（{_sup_at.strftime('%H:%M')}）"
+                " — 核心 + 法人 + 融資資料皆已就緒"
+            )
+        else:
+            st.success("🟢 工作器運行中（盤後/非交易時間，每小時上限 600 次）")
 
     # ── 指標列 ────────────────────────────────────────────────
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
@@ -204,6 +262,155 @@ else:
         st.caption(f"最近一次抓取：{s['last_fetch_at'].strftime('%H:%M:%S')}（{elapsed_str}）")
     elif s.get("backtest_rebuild_mode"):
         st.caption("回測重建已啟動，等待第一筆資料抓取中。")
+
+    # ── 今日資料更新進度（交易日才顯示）─────────────────────────
+    if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
+        st.markdown("##### 📊 今日資料更新進度")
+        today_str = date.today().strftime("%Y-%m-%d")
+
+        # 取得活躍股票總數（排除 delisted/no_update）
+        try:
+            _skip_ids    = set(get_delisted_stocks(include_legacy_no_update=True))
+            _known_ids   = get_known_stock_ids()
+            _active_total = max(len(set(_known_ids) - _skip_ids), 1)
+        except Exception:
+            _active_total = 950  # 保底估計
+
+        # 核心資料（price_cache 今日筆數）
+        try:
+            with get_session() as _sess:
+                _core_done = _sess.execute(
+                    _sqla_text("SELECT COUNT(DISTINCT stock_id) FROM price_cache WHERE date = :d"),
+                    {"d": today_str}
+                ).fetchone()[0]
+        except Exception:
+            _core_done = 0
+
+        # 法人資料（inst_cache 今日最新抓取筆數）
+        try:
+            with get_session() as _sess:
+                _inst_done = _sess.execute(
+                    _sqla_text("SELECT COUNT(DISTINCT stock_id) FROM inst_cache WHERE date = :d"),
+                    {"d": today_str}
+                ).fetchone()[0]
+        except Exception:
+            _inst_done = 0
+        _inst_no_upd = s.get("inst_no_update_count", 0)
+        _inst_total  = max(_active_total - _inst_no_upd, 1)
+
+        # 融資資料（margin_cache 今日筆數）
+        try:
+            _margin_stats_today = get_margin_cache_stats(date.today())
+            _margin_done = _margin_stats_today["done_today"]
+        except Exception:
+            _margin_done = 0
+        _margin_no_upd = s.get("margin_no_update_count", 0)
+        _margin_total  = max(_active_total - _margin_no_upd, 1)
+
+        # 進度條輔助函式
+        def _progress_bar(label: str, done: int, total: int, note: str = ""):
+            pct = min(done / total, 1.0) if total > 0 else 0.0
+            if pct >= 1.0:
+                color_label = "complete"
+            elif pct >= 0.9:
+                color_label = "normal"   # Streamlit green
+            else:
+                color_label = "normal"   # will add manual indicator
+
+            pct_str = f"{pct*100:.0f}%"
+            if pct >= 1.0:
+                text = f"{label}：{pct_str}（{done}/{total} 檔）✅"
+            elif note:
+                text = f"{label}：{pct_str}（{done}/{total} 檔）　{note}"
+            else:
+                text = f"{label}：{pct_str}（{done}/{total} 檔）"
+            st.progress(pct, text=text)
+
+        _core_pct = _core_done / _active_total if _active_total > 0 else 0
+        _finmind_updated = s.get("latest_trading_day") == date.today()
+
+        _progress_bar(
+            "核心資料（OHLCV）",
+            _core_done, _active_total,
+            note="Yahoo Bridge 已補充" if s.get("yahoo_bridge_done") and not _finmind_updated else ""
+        )
+        _is_waiting_finmind_now = (
+            not _finmind_updated
+            and datetime.now().hour >= 15
+        )
+        _supp_note = (
+            "⏳ 等待 FinMind 盤後更新（通常 17–19 時）" if _is_waiting_finmind_now
+            else ("等待核心資料完成" if _core_pct < 0.5 else "")
+        )
+        _progress_bar("法人資料",     _inst_done,   _inst_total,   note=_supp_note)
+        _progress_bar("融資融券資料", _margin_done, _margin_total, note=_supp_note)
+
+        # ── Yahoo Bridge 詳細進度 ─────────────────────────────────
+        _yb_in_prog   = s.get("yahoo_bridge_in_progress", False)
+        _yb_done      = s.get("yahoo_bridge_done", False)
+        _yb_count     = s.get("yahoo_bridge_count", 0)
+        _yb_total     = s.get("yahoo_bridge_total", 0)
+        _yb_b_done    = s.get("yahoo_bridge_batch_done", 0)
+        _yb_b_total   = s.get("yahoo_bridge_batch_total", 0)
+        _yb_failed    = s.get("yahoo_bridge_failed_ids", [])
+
+        if _yb_in_prog:
+            st.markdown("##### 🌐 Yahoo Bridge 抓取中")
+            _yb_pct = (_yb_b_done / _yb_b_total) if _yb_b_total > 0 else 0.0
+            st.progress(
+                min(_yb_pct, 1.0),
+                text=(
+                    f"批次進度：{_yb_b_done}/{_yb_b_total} 批完成"
+                    f"（每批 100 檔，共 {_yb_total} 檔待抓）"
+                ),
+            )
+        elif _yb_done and (_yb_total > 0 or _yb_failed):
+            st.markdown("##### 🌐 Yahoo Bridge 結果")
+            _yf_ok_cnt   = _yb_count
+            _yf_fail_cnt = len(_yb_failed)
+            _yb_col1, _yb_col2, _yb_col3 = st.columns([2, 2, 3])
+            _yb_col1.metric("✅ 已補充", f"{_yf_ok_cnt} 檔")
+            _yb_col2.metric("⚠️ 無 Yahoo 資料", f"{_yf_fail_cnt} 檔",
+                            help="這些股票在 Yahoo Finance 查無當日資料，將待 FinMind 更新後補充")
+            if _yf_fail_cnt > 0:
+                with st.expander(f"查看 {_yf_fail_cnt} 檔無資料股票", expanded=False):
+                    st.caption(
+                        "這些股票今日在 Yahoo Finance 無收盤資料（可能為停牌、剛上市、或資料延遲）。  \n"
+                        "FinMind 盤後更新後會自動補入；若急需可點「重新抓取」再試一次。"
+                    )
+                    chunks = [_yb_failed[i:i+15] for i in range(0, len(_yb_failed), 15)]
+                    for chunk in chunks:
+                        st.code("  ".join(chunk))
+
+                _btn_retry, _btn_skip, _ = st.columns([1.5, 1.5, 5])
+                if _btn_retry.button("🔄 重新抓取", key="yb_retry",
+                                     help="重置 Yahoo Bridge，worker 下一輪將再次嘗試（已有資料的會自動跳過）"):
+                    if hasattr(worker, "reset_yahoo_bridge"):
+                        worker.reset_yahoo_bridge()
+                    st.rerun()
+                if _btn_skip.button("✓ 略過", key="yb_skip",
+                                    help="清除失敗清單，這些股票待 FinMind 盤後更新後自動補入"):
+                    worker.yahoo_bridge_failed_ids = []
+                    st.rerun()
+
+        # 排除清單（附加資料有 no_update 才顯示）
+        if _inst_no_upd > 0 or _margin_no_upd > 0:
+            with st.expander(
+                f"⚠️ 附加資料排除清單（法人 {_inst_no_upd} 檔 / 融資 {_margin_no_upd} 檔）",
+                expanded=False
+            ):
+                st.caption(
+                    "以下股票 FinMind 無對應附加資料（通常為 ETF、權證、特殊股票），"
+                    "已從計算分母中排除，不影響完成率。"
+                )
+                if _inst_no_upd > 0 and worker is not None:
+                    inst_list = sorted(worker._inst_no_update)
+                    st.markdown(f"**法人無資料（{len(inst_list)} 檔）：**")
+                    st.code("  ".join(inst_list[:100]) + ("  ..." if len(inst_list) > 100 else ""))
+                if _margin_no_upd > 0 and worker is not None:
+                    margin_list = sorted(worker._margin_no_update)
+                    st.markdown(f"**融資無資料（{len(margin_list)} 檔）：**")
+                    st.code("  ".join(margin_list[:100]) + ("  ..." if len(margin_list) > 100 else ""))
 
     # ── 控制按鈕 ──────────────────────────────────────────────
     is_paused = s.get("pause_remaining_sec", 0) > 0

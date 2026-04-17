@@ -72,3 +72,13 @@ def get_scanner_preset() -> dict:
 def set_scanner_preset(preset: dict) -> None:
     """儲存使用者自訂掃描預設"""
     set_setting("scanner_custom_preset", json.dumps(preset, ensure_ascii=False))
+
+
+def get_force_yahoo() -> bool:
+    """回傳是否強制使用 Yahoo Finance 作為資料來源"""
+    return get_setting("force_yahoo_finance", "false").lower() == "true"
+
+
+def set_force_yahoo(enabled: bool) -> None:
+    """設定是否強制使用 Yahoo Finance（FinMind 異常時手動切換）"""
+    set_setting("force_yahoo_finance", "true" if enabled else "false")

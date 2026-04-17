@@ -475,7 +475,7 @@ def compute_margin_trend(margin_df: pd.DataFrame) -> tuple[str, int, int]:
 
     回傳值中 latest_balance / prev_balance 供 UI 顯示用（張數）。
     """
-    col = "MarginPurchaseBalance"
+    col = "MarginPurchaseTodayBalance"
     if margin_df.empty or col not in margin_df.columns:
         return "flat", 0, 0
     df = margin_df.sort_values("date").dropna(subset=[col])

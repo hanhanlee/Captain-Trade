@@ -85,6 +85,28 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 line_subscribers 表")
 
+        # margin_cache 表（舊 DB 補建）
+        if not _table_exists(conn, "margin_cache"):
+            conn.execute(text("""
+                CREATE TABLE margin_cache (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stock_id       TEXT NOT NULL,
+                    date           TEXT NOT NULL,
+                    margin_buy     INTEGER,
+                    margin_sell    INTEGER,
+                    margin_balance INTEGER,
+                    short_buy      INTEGER,
+                    short_sell     INTEGER,
+                    short_balance  INTEGER,
+                    fetch_at       TEXT,
+                    CONSTRAINT uq_margin_stock_date UNIQUE (stock_id, date)
+                )
+            """))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_margin_stock_date ON margin_cache (stock_id, date)"
+            ))
+            logger.info("migration: 建立 margin_cache 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

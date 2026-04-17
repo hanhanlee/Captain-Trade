@@ -148,6 +148,26 @@ class PriceFetchStatus(Base):
     updated_at      = Column(DateTime, default=datetime.now)
 
 
+class MarginCache(Base):
+    """融資融券本機快取（累積式，保留最近 400 天）"""
+    __tablename__ = "margin_cache"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "date", name="uq_margin_stock_date"),
+        Index("idx_margin_stock_date", "stock_id", "date"),
+    )
+
+    id             = Column(Integer, primary_key=True)
+    stock_id       = Column(String(10), nullable=False)
+    date           = Column(String(10), nullable=False)   # YYYY-MM-DD
+    margin_buy     = Column(Integer)   # MarginPurchaseBuy（融資買進）
+    margin_sell    = Column(Integer)   # MarginPurchaseSell（融資賣出）
+    margin_balance = Column(Integer)   # MarginPurchaseTodayBalance（融資餘額）
+    short_buy      = Column(Integer)   # ShortSaleBuy（融券買進）
+    short_sell     = Column(Integer)   # ShortSaleSell（融券賣出）
+    short_balance  = Column(Integer)   # ShortSaleTodayBalance（融券餘額）
+    fetch_at       = Column(String(30))  # ISO timestamp
+
+
 class InstCache(Base):
     """三大法人買賣超本機快取（每日一次，避免重複 API 請求）"""
     __tablename__ = "inst_cache"

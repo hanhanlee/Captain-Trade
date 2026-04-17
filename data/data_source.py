@@ -107,8 +107,12 @@ class DataSourceManager:
     """
 
     def __init__(self):
-        self.fallback_mode: bool = False
-        self._fallback_triggered_at: datetime | None = None
+        try:
+            from db.settings import get_force_yahoo
+            self.fallback_mode: bool = get_force_yahoo()
+        except Exception:
+            self.fallback_mode: bool = False
+        self._fallback_triggered_at: datetime | None = datetime.now() if self.fallback_mode else None
 
     @property
     def institutional_available(self) -> bool:

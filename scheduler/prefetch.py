@@ -104,6 +104,23 @@ class PrefetchWorker:
         # 自適應開始時間：收盤後首筆成功更新的學習記錄
         self._today_first_update_recorded: bool = False   # 當天已記錄過則不重複寫
         self._today_record_date: date | None = None       # 用於每日重置上方旗標
+        # Yahoo Bridge：13:45 後補充今日收盤資料
+        self._yahoo_bridge_date: date | None = None       # 已執行 Yahoo Bridge 的日期
+        self.yahoo_bridge_count: int = 0                  # 今日 Yahoo Bridge 已補充股票數
+        self.yahoo_bridge_total: int = 0                  # 待抓總檔數
+        self.yahoo_bridge_batch_done: int = 0             # 已完成批次數
+        self.yahoo_bridge_batch_total: int = 0            # 總批次數
+        self.yahoo_bridge_failed_ids: list = []           # 無 Yahoo 資料的股票清單
+        self.yahoo_bridge_in_progress: bool = False       # 是否正在執行
+        # Supplementary 附加資料（法人 + 融資）
+        self.inst_supplementary_total: int = 0
+        self.inst_supplementary_done: int = 0
+        self.margin_supplementary_total: int = 0
+        self.margin_supplementary_done: int = 0
+        self.supplementary_completed_at: datetime | None = None
+        self._supplementary_date: date | None = None      # 已執行 Supplementary 的日期
+        self._inst_no_update: set = set()                 # 本次啟動中法人無資料的股票
+        self._margin_no_update: set = set()               # 本次啟動中融資無資料的股票
 
     # ── 公開控制 ───────────────────────────────────────────────
 
@@ -526,6 +543,318 @@ class PrefetchWorker:
             logger.warning(f"取得待抓清單失敗：{e}")
             return [], []
 
+    def _should_run_yahoo_bridge(self) -> bool:
+        """判斷是否需要執行 Yahoo Bridge 補充今日收盤資料"""
+        now = datetime.now()
+        today = now.date()
+
+        # 已在今日執行過
+        if self._yahoo_bridge_date == today:
+            return False
+
+        # 13:45 之前不執行（收盤 13:30 + 15 分鐘 yfinance 延遲緩衝）
+        from datetime import time as _time
+        if now.time() < _time(13, 45):
+            return False
+
+        # 週末不執行
+        if today.weekday() >= 5:
+            return False
+
+        # 手動休市模式不執行
+        if self._is_market_holiday():
+            return False
+
+        return True
+
+    def reset_yahoo_bridge(self):
+        """重置 Yahoo Bridge，讓 worker 下一輪重新執行（已快取的會自動跳過）"""
+        self._yahoo_bridge_date = None
+        self.yahoo_bridge_failed_ids = []
+        self.yahoo_bridge_total = 0
+        self.yahoo_bridge_batch_done = 0
+        self.yahoo_bridge_batch_total = 0
+        self.yahoo_bridge_in_progress = False
+        self._wake_event.set()
+        logger.info("Yahoo Bridge 已重置，下一輪將重新執行")
+
+    def _run_yahoo_bridge_phase(self):
+        """
+        Yahoo Bridge 階段：13:45 之後批次從 Yahoo Finance 補充今日收盤資料。
+        使用 INSERT OR IGNORE，確保後續 FinMind 資料可覆蓋，不影響法人/融資欄位。
+        """
+        today = date.today()
+        self._yahoo_bridge_date = today  # 先標記，避免重複執行（即使中途失敗）
+        self.yahoo_bridge_in_progress = True
+        self.yahoo_bridge_failed_ids = []
+
+        try:
+            import yfinance as yf
+            from data.finmind_client import get_stock_list
+            from db.price_cache import get_delisted_stocks, save_prices
+            from data.yahoo_client import (
+                _to_yf_ticker, _parse_batch_result,
+                BATCH_SIZE, BATCH_SLEEP_SEC, get_today_cached_stock_ids,
+            )
+
+            all_stocks_df = get_stock_list()
+            if all_stocks_df.empty:
+                return
+
+            all_ids = set(all_stocks_df["stock_id"].tolist())
+            skip = set(get_delisted_stocks(include_legacy_no_update=True))
+            active_ids = sorted(all_ids - skip)
+
+            already_cached = get_today_cached_stock_ids(today)
+            to_fetch = [sid for sid in active_ids if sid not in already_cached]
+
+            if not to_fetch:
+                logger.info("Yahoo Bridge：今日資料已全數在快取，略過")
+                return
+
+            batches = [to_fetch[i:i + BATCH_SIZE] for i in range(0, len(to_fetch), BATCH_SIZE)]
+            self.yahoo_bridge_total = len(to_fetch)
+            self.yahoo_bridge_batch_total = len(batches)
+            self.yahoo_bridge_batch_done = 0
+
+            logger.info(
+                f"Yahoo Bridge 開始：{len(to_fetch)} 檔，分 {len(batches)} 批"
+                f"（已快取 {len(already_cached)} 檔，跳過 {len(skip)} 檔）"
+            )
+
+            # 判斷上櫃股票（.TWO 後綴）
+            otc_ids: set | None = None
+            try:
+                for col in ("type", "market", "市場別"):
+                    if col in all_stocks_df.columns:
+                        otc_ids = set(
+                            all_stocks_df[all_stocks_df[col].str.contains("上櫃", na=False)]["stock_id"].tolist()
+                        )
+                        break
+            except Exception:
+                pass
+
+            result_all: dict = {}
+            for batch_idx, batch in enumerate(batches):
+                if self._stop_event.is_set():
+                    break
+
+                self.current_stock = (
+                    f"[Yahoo] 批次 {batch_idx + 1}/{len(batches)}"
+                )
+                tw_map = {_to_yf_ticker(sid, otc_ids): sid for sid in batch}
+                tickers = list(tw_map.keys())
+
+                try:
+                    raw = yf.download(
+                        tickers, period="2d", auto_adjust=True,
+                        progress=False, threads=True,
+                    )
+                    batch_result = _parse_batch_result(raw, batch, today, tw_map)
+                    result_all.update(batch_result)
+                    ok = len(batch_result)
+                    logger.info(
+                        f"Yahoo Bridge 批次 {batch_idx+1}/{len(batches)}："
+                        f"{ok}/{len(batch)} 檔成功"
+                    )
+                except Exception as e:
+                    logger.warning(f"Yahoo Bridge 批次 {batch_idx+1} 失敗：{e}")
+
+                self.yahoo_bridge_batch_done = batch_idx + 1
+
+                if batch_idx < len(batches) - 1:
+                    self._wait_with_wake(BATCH_SLEEP_SEC)
+
+            # 儲存，使用 INSERT OR IGNORE（不覆蓋已有資料）
+            count = 0
+            for sid, df_row in result_all.items():
+                try:
+                    save_prices(sid, df_row, replace=False)
+                    count += 1
+                except Exception as e:
+                    logger.debug(f"Yahoo Bridge 儲存 {sid} 失敗：{e}")
+
+            self.yahoo_bridge_failed_ids = [
+                sid for sid in to_fetch if sid not in result_all
+            ]
+            self.yahoo_bridge_count = count
+            self.current_stock = ""
+            logger.info(
+                f"Yahoo Bridge 完成：{count}/{len(to_fetch)} 檔已補充，"
+                f"{len(self.yahoo_bridge_failed_ids)} 檔無資料"
+            )
+
+        except Exception as e:
+            self.current_stock = ""
+            logger.warning(f"Yahoo Bridge 執行失敗：{e}")
+        finally:
+            self.yahoo_bridge_in_progress = False
+
+    def _should_run_supplementary(self) -> bool:
+        """判斷是否需要執行 Supplementary 附加資料抓取（法人 + 融資）"""
+        today = date.today()
+        if self._supplementary_date == today:
+            return False
+        # 只在 FinMind 已更新今日資料後才執行（確保附加資料與核心資料同日）
+        try:
+            ltd = _latest_trading_day()
+            if ltd < today:
+                return False  # FinMind 尚未更新今日資料
+        except Exception:
+            return False
+        # 週末不執行
+        if today.weekday() >= 5:
+            return False
+        return True
+
+    def _fetch_inst_today(self, stock_id: str) -> str:
+        """
+        抓取並快取單檔今日法人資料。
+        回傳：'ok' / 'cached' / 'no_update' / 'rate_limit' / 'error'
+        """
+        try:
+            from db.inst_cache import is_inst_fresh, save_institutional
+            from data.finmind_client import get_institutional
+
+            if is_inst_fresh(stock_id):
+                return "cached"
+
+            df = get_institutional(stock_id, days=3)
+            if df.empty:
+                return "no_update"
+
+            save_institutional(stock_id, df)
+            return "ok"
+        except Exception as e:
+            if _is_429(e):
+                return "rate_limit"
+            logger.debug(f"法人資料 {stock_id} 失敗：{e}")
+            return "error"
+
+    def _fetch_margin_today(self, stock_id: str) -> str:
+        """
+        抓取並快取單檔今日融資融券資料。
+        回傳：'ok' / 'cached' / 'no_update' / 'rate_limit' / 'error'
+        """
+        try:
+            from db.margin_cache import get_margin, save_margin
+            from data.finmind_client import get_margin_trading
+
+            today = date.today()
+            today_str = today.strftime("%Y-%m-%d")
+
+            # 已有今日資料
+            existing = get_margin(stock_id, days=1)
+            if not existing.empty:
+                latest = existing["date"].max()
+                if hasattr(latest, "date"):
+                    latest = latest.date()
+                if str(latest)[:10] >= today_str:
+                    return "cached"
+
+            df = get_margin_trading(stock_id, days=3)
+            if df.empty:
+                return "no_update"
+
+            save_margin(stock_id, df)
+            return "ok"
+        except Exception as e:
+            if _is_429(e):
+                return "rate_limit"
+            logger.debug(f"融資資料 {stock_id} 失敗：{e}")
+            return "error"
+
+    def _run_supplementary_phase(self, active_ids: list[str]):
+        """
+        Supplementary 附加資料抓取（法人 + 融資融券）。
+        在核心價格資料完成後執行，動態分母排除 no_update 的股票。
+        """
+        today = date.today()
+        self._supplementary_date = today
+
+        inst_queue  = [sid for sid in active_ids if sid not in self._inst_no_update]
+        margin_queue = [sid for sid in active_ids if sid not in self._margin_no_update]
+
+        self.inst_supplementary_total   = len(inst_queue)
+        self.margin_supplementary_total = len(margin_queue)
+        self.inst_supplementary_done    = 0
+        self.margin_supplementary_done  = 0
+
+        logger.info(
+            f"Supplementary 開始：法人 {len(inst_queue)} 檔 / 融資 {len(margin_queue)} 檔"
+        )
+
+        # ── 法人資料 ──────────────────────────────────────────────
+        hit_rate_limit = False
+        for stock_id in inst_queue:
+            if self._stop_event.is_set():
+                return
+            if self._hour_count() >= self._current_hourly_limit():
+                break
+
+            self.current_stock = f"[法人] {stock_id}"
+            result = self._fetch_inst_today(stock_id)
+
+            if result in ("ok", "cached"):
+                self._record_request()
+                self.last_fetch_at = datetime.now()
+                self.inst_supplementary_done += 1
+                # 動態縮小分母
+                if result == "ok":
+                    self._wait_with_wake(FETCH_INTERVAL_SEC)
+            elif result == "no_update":
+                self._inst_no_update.add(stock_id)
+                self.inst_supplementary_total = max(0, self.inst_supplementary_total - 1)
+            elif result == "rate_limit":
+                hit_rate_limit = True
+                break
+            # 'error': 繼續下一檔
+
+        if hit_rate_limit and not self._stop_event.is_set():
+            self.current_stock = ""
+            self._pause_for_rate_limit()
+            return
+
+        # ── 融資融券資料 ──────────────────────────────────────────
+        hit_rate_limit = False
+        for stock_id in margin_queue:
+            if self._stop_event.is_set():
+                return
+            if self._hour_count() >= self._current_hourly_limit():
+                break
+
+            self.current_stock = f"[融資] {stock_id}"
+            result = self._fetch_margin_today(stock_id)
+
+            if result in ("ok", "cached"):
+                self._record_request()
+                self.last_fetch_at = datetime.now()
+                self.margin_supplementary_done += 1
+                if result == "ok":
+                    self._wait_with_wake(FETCH_INTERVAL_SEC)
+            elif result == "no_update":
+                self._margin_no_update.add(stock_id)
+                self.margin_supplementary_total = max(0, self.margin_supplementary_total - 1)
+            elif result == "rate_limit":
+                hit_rate_limit = True
+                break
+
+        self.current_stock = ""
+
+        if hit_rate_limit and not self._stop_event.is_set():
+            self._pause_for_rate_limit()
+            return
+
+        # 兩者均完成
+        inst_done   = self.inst_supplementary_done   >= self.inst_supplementary_total   > 0
+        margin_done = self.margin_supplementary_done >= self.margin_supplementary_total > 0
+        if inst_done and margin_done:
+            self.supplementary_completed_at = datetime.now()
+            logger.info(
+                f"Supplementary 完成：法人 {self.inst_supplementary_done}/{self.inst_supplementary_total}，"
+                f"融資 {self.margin_supplementary_done}/{self.margin_supplementary_total}"
+            )
+
     # 回傳值：
     #   'normal'     — 成功抓取並更新快取
     #   'cached'     — 快取仍新鮮，跳過
@@ -637,6 +966,11 @@ class PrefetchWorker:
                     self._wait_with_wake(5)
                 continue
 
+            # ── Yahoo Bridge：13:45 後補充今日收盤資料（每日一次）─────
+            if self._should_run_yahoo_bridge():
+                self._run_yahoo_bridge_phase()
+                continue
+
             # ── 一般模式：抓取近期價格資料 ─────────────────────────
             # 取得待抓清單（needs_update 用於顯示，full_queue 用於實際抓取）
             needs_update, full_queue = self._get_stale_stocks()
@@ -653,7 +987,25 @@ class PrefetchWorker:
                 logger.info("全速重建完成，自動退出重建模式，恢復正常限速")
 
             if not full_queue:
-                # 價格快取皆為最新：① 嘗試死股回收 ② 填充基本面 ③ idle
+                # 價格快取皆為最新：① Supplementary ② 死股回收 ③ 填充基本面 ④ idle
+
+                # Supplementary：FinMind 已更新今日資料後抓取法人 + 融資
+                if self._should_run_supplementary():
+                    try:
+                        from data.finmind_client import get_stock_list
+                        from db.price_cache import get_delisted_stocks
+                        all_stocks_df = get_stock_list()
+                        skip = set(get_delisted_stocks(include_legacy_no_update=True))
+                        active_ids = sorted(
+                            set(all_stocks_df["stock_id"].tolist()) - skip
+                        )
+                    except Exception as e:
+                        logger.warning(f"Supplementary 取得股票清單失敗：{e}")
+                        active_ids = []
+                    if active_ids:
+                        self._run_supplementary_phase(active_ids)
+                    continue
+
                 self._try_recover_dead_stocks()
 
                 fund_ids = self._get_funds_needing_fetch()
@@ -757,6 +1109,11 @@ class PrefetchWorker:
         if self.paused_until and self.paused_until > now:
             pause_remaining_sec = int((self.paused_until - now).total_seconds())
 
+        try:
+            latest_td = _latest_trading_day()
+        except Exception:
+            latest_td = None
+
         return {
             "running":              self.running and bool(self._thread and self._thread.is_alive()),
             "hour_fetched":         used,
@@ -779,6 +1136,21 @@ class PrefetchWorker:
             "backtest_queue_size":         self.backtest_queue_size,
             "backtest_initial_queue_size": self.backtest_initial_queue_size,
             "skip_count":                  len(self._skip_stocks),
+            "latest_trading_day":          latest_td,
+            "yahoo_bridge_done":           self._yahoo_bridge_date == date.today(),
+            "yahoo_bridge_count":          self.yahoo_bridge_count,
+            "yahoo_bridge_total":          self.yahoo_bridge_total,
+            "yahoo_bridge_batch_done":     self.yahoo_bridge_batch_done,
+            "yahoo_bridge_batch_total":    self.yahoo_bridge_batch_total,
+            "yahoo_bridge_failed_ids":     list(self.yahoo_bridge_failed_ids),
+            "yahoo_bridge_in_progress":    self.yahoo_bridge_in_progress,
+            "inst_no_update_count":        len(self._inst_no_update),
+            "margin_no_update_count":      len(self._margin_no_update),
+            "inst_supplementary_total":    self.inst_supplementary_total,
+            "inst_supplementary_done":     self.inst_supplementary_done,
+            "margin_supplementary_total":  self.margin_supplementary_total,
+            "margin_supplementary_done":   self.margin_supplementary_done,
+            "supplementary_completed_at":  self.supplementary_completed_at,
         }
 
 

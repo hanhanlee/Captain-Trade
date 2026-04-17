@@ -151,9 +151,9 @@ with st.sidebar:
         "sb_min_avg_volume", "sb_use_sector_filter", "sb_top_sector_n",
         "sb_use_hp_density", "sb_hp_density_lookback", "sb_hp_density_threshold_pct",
         "sb_use_turnover_ratio", "sb_turnover_top_n", "sb_require_weekly",
-        "sb_min_rs", "sb_max_bias_ratio", "sb_overheat_action_label",
+        "sb_min_rs", "sb_overheat_atr_mult", "sb_overheat_action_label",
         "sb_use_fundamental", "sb_req_eps", "sb_req_cf", "sb_min_roe", "sb_max_debt",
-        "sb_ma_mode",
+        "sb_ma_mode", "sb_strategy_version",
     ]
     _BASE = {
         "sb_min_price": 10.0, "sb_inst_mode": "個別法人皆須買超",
@@ -162,12 +162,13 @@ with st.sidebar:
         "sb_require_inst": False, "sb_top_sector_n": 3,
         "sb_hp_density_lookback": 20, "sb_hp_density_threshold_pct": 30,
         "sb_turnover_top_n": 5, "sb_require_weekly": False, "sb_min_rs": 0,
-        "sb_max_bias_ratio": 15.0,
+        "sb_overheat_atr_mult": 3.5,
         "sb_overheat_action_label": "直接剔除（不入選候選清單）",
         "sb_use_fundamental": False, "sb_req_eps": True, "sb_req_cf": True,
         "sb_min_roe": 0, "sb_max_debt": 0,
         "sb_ma_mode": "嚴謹型（三線全穿）",
         "sb_vol_filter_mode": "前日量前 N 名（推薦）", "sb_min_avg_volume": 0,
+        "sb_strategy_version": "v4 領先攻擊版（精準）",
     }
     _PRESETS = {
         "極速": {**_BASE,
@@ -222,16 +223,31 @@ with st.sidebar:
     scan_mode = st.radio("掃描範圍",
                           ["快速測試（20 檔）", "小型掃描（100 檔）", "全市場掃描（需時較長）"],
                           key="sb_scan_range")
-    ma_breakout_mode_label = st.radio(
-        "🔀 三線齊穿模式",
-        options=["嚴謹型（三線全穿）", "寬鬆型（任一線即可）"],
-        key="sb_ma_mode",
+
+    strategy_version_label = st.radio(
+        "🧠 選股策略版本",
+        options=["v4 領先攻擊版（精準）", "v3 均線突破版（寬鬆）"],
+        key="sb_strategy_version",
         help=(
-            "嚴謹：昨收 < min(MA5, MA10, MA20)，三線全穿才算首日突破，訊號精準。\n"
-            "寬鬆：昨收 < max(MA5, MA10, MA20)，突破任一均線即納入，標的較多。"
+            "v4 領先攻擊版：捕捉「均線糾結後第一天突破」，訊號精準但標的較少。\n"
+            "v3 均線突破版：站上MA20 + 量增 + MACD/RSI 確認，條件寬鬆標的較多。"
         ),
     )
-    ma_breakout_mode = "strict" if ma_breakout_mode_label.startswith("嚴謹") else "loose"
+    strategy_version = "v3" if strategy_version_label.startswith("v3") else "v4"
+
+    if strategy_version == "v4":
+        ma_breakout_mode_label = st.radio(
+            "🔀 三線齊穿模式",
+            options=["嚴謹型（三線全穿）", "寬鬆型（任一線即可）"],
+            key="sb_ma_mode",
+            help=(
+                "嚴謹：昨收 < min(MA5, MA10, MA20)，三線全穿才算首日突破，訊號精準。\n"
+                "寬鬆：昨收 < max(MA5, MA10, MA20)，突破任一均線即納入，標的較多。"
+            ),
+        )
+        ma_breakout_mode = "strict" if ma_breakout_mode_label.startswith("嚴謹") else "loose"
+    else:
+        ma_breakout_mode = "strict"  # v3 不使用此參數，給預設值即可
 
     # ── 法人 & 融資條件 ────────────────────────────────────────
     _inst_exp = (
@@ -360,7 +376,7 @@ with st.sidebar:
     _adv_exp = (
         st.session_state.get("sb_require_weekly", False)
         or st.session_state.get("sb_min_rs", 0) > 0
-        or st.session_state.get("sb_max_bias_ratio", 15.0) != 15.0
+        or st.session_state.get("sb_overheat_atr_mult", 3.5) != 3.5
     )
     with st.expander("🔬 進階選項", expanded=_adv_exp):
         require_weekly = st.checkbox("必須週線多頭（更嚴格，結果更少）", value=False,
@@ -368,10 +384,11 @@ with st.sidebar:
         min_rs = st.slider("最低相對強度 RS 分數", 0, 80, 0, 5, key="sb_min_rs",
                            help="0 = 不限制；60 以上 = 強勢股")
         st.markdown("**🌡️ 過熱股防護**")
-        max_bias_ratio = st.slider(
-            "最大容許乖離率 (%)", min_value=5.0, max_value=30.0, value=15.0, step=0.5,
-            key="sb_max_bias_ratio",
-            help="月線乖離率 = (收盤價 - MA20) / MA20 × 100%。超過門檻代表短線漲幅過大。",
+        overheat_atr_mult = st.slider(
+            "過熱 ATR 倍數", min_value=0.0, max_value=6.0, value=3.5, step=0.5,
+            key="sb_overheat_atr_mult",
+            help="收盤 > MA20 + N × ATR14 時視為過熱。0 = 停用 ATR 防護。"
+                 "半導體等熱門電子股噴發期可調高至 4.5~5.0。",
         )
         overheat_action_label = st.radio(
             "超過門檻時的處置",
@@ -442,6 +459,42 @@ tab_scan, tab_funnel, tab_sector, tab_chart, tab_history = st.tabs(
 
 # ══ Tab：掃描結果 ════════════════════════════════════════════
 with tab_scan:
+    # ── 今日資料就緒提示（歷史日期不顯示）─────────────────────────
+    _today_core_pct      = 1.0
+    _today_supp_ready    = True
+    if not _is_historical:
+        try:
+            from db.price_cache import get_delisted_stocks as _get_del, get_known_stock_ids as _get_known
+            from db.database import get_session as _get_sess
+            from sqlalchemy import text as _sql_text
+            _today_str = _date_cls.today().strftime("%Y-%m-%d")
+            with _get_sess() as _sess:
+                _core_done_n = _sess.execute(
+                    _sql_text("SELECT COUNT(DISTINCT stock_id) FROM price_cache WHERE date = :d"),
+                    {"d": _today_str}
+                ).fetchone()[0]
+                _inst_done_n = _sess.execute(
+                    _sql_text("SELECT COUNT(DISTINCT stock_id) FROM inst_cache WHERE date = :d"),
+                    {"d": _today_str}
+                ).fetchone()[0]
+            _skip_n    = set(_get_del(include_legacy_no_update=True))
+            _known_n   = _get_known()
+            _active_n  = max(len(set(_known_n) - _skip_n), 1)
+            _today_core_pct   = _core_done_n / _active_n
+            _today_supp_ready = (_inst_done_n / _active_n) >= 0.9
+        except Exception:
+            pass
+
+        if _today_core_pct < 1.0:
+            st.info(
+                f"今日價格資料仍在更新中（{_today_core_pct*100:.0f}%），"
+                "掃描結果可能不完整。建議等資料補齊後再掃描，或使用昨日資料。"
+            )
+        if not _today_supp_ready:
+            st.info(
+                "法人 / 融資資料尚未就緒，掃描時相關加分條件將自動停用。"
+            )
+
     clicked_scan = st.button("🚀 開始掃描", type="primary", use_container_width=True)
 
     if clicked_scan:
@@ -500,7 +553,8 @@ with tab_scan:
         _cache_only_mode = st.session_state.pop("scan_cache_only", False)
         _active_scan_date = st.session_state.get("scan_date", _date_cls.today())
         _is_hist_scan = _active_scan_date < _date_cls.today()
-        _disable_non_price_extras = _is_hist_scan
+        # 歷史日期 OR 今日附加資料未就緒 → 停用法人/融資加分條件
+        _disable_non_price_extras = _is_hist_scan or (not _is_hist_scan and not _today_supp_ready)
         # 建立資料來源管理器（每次掃描重新初始化，確保從 FinMind 優先）
         dsm = DataSourceManager()
 
@@ -667,9 +721,10 @@ with tab_scan:
                 hp_density_threshold=hp_density_threshold,
                 use_turnover_ratio=use_turnover_ratio,
                 turnover_top_n=turnover_top_n,
-                max_bias_ratio=float(max_bias_ratio),
+                overheat_atr_mult=float(overheat_atr_mult),
                 overheat_action=overheat_action,
                 ma_breakout_mode=ma_breakout_mode,
+                strategy_version=strategy_version,
                 debug=True,
             )
             st.session_state["debug_info"] = debug_info
@@ -753,10 +808,30 @@ with tab_scan:
             n_elite = (result_df["score"] > 100).sum()
             st.success(f"⭐ 其中 **{n_elite}** 檔為「精選強勢股」（分數 > 100，週線 + RS 雙重確認），列於下表最前方")
 
-        display_df = result_df.rename(columns={
+        display_df = result_df.copy()
+
+        # 合併「距過熱%」+ 「差幾元」為單一易讀欄位
+        def _fmt_heat(row):
+            pct = row.get("heat_room_pct")
+            abs_val = row.get("heat_room_abs")
+            if pct is None:
+                return "—"
+            if pct < 0:
+                if abs_val is not None:
+                    return f"⚠️ 已過熱 ({abs(abs_val):.1f}元)"
+                return "⚠️ 已過熱"
+            if abs_val is not None:
+                return f"{pct}% (差{abs_val:.1f}元)"
+            return f"{pct}%"
+
+        display_df["距過熱"] = display_df.apply(_fmt_heat, axis=1)
+        display_df = display_df.drop(columns=["heat_room_pct", "heat_room_abs"], errors="ignore")
+
+        display_df = display_df.rename(columns={
             "stock_id": "代碼", "stock_name": "名稱", "industry": "產業",
             "close": "收盤", "change_pct": "漲跌%", "volume_ratio": "量比",
-            "score": "強度分數", "rs_score": "RS分數", "bias_ratio": "乖離率(%)", "signals": "觸發條件",
+            "score": "強度分數", "rs_score": "RS分數", "bias_ratio": "乖離率(%)",
+            "volatility_pct": "日均振幅%", "signals": "觸發條件",
         })
         display_df.index = range(1, len(display_df) + 1)
 
@@ -852,22 +927,23 @@ with tab_scan:
             _inst_score = "+4 / +7"
             _inst_note = "合計買超 +4；若外資與投信同步買超再 +3"
         _inst_type = "**必要**（強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
+        _strategy_label = "v4 領先攻擊版" if strategy_version == "v4" else "v3 均線突破版"
         st.markdown(f"""
-        #### 篩選條件（v4 領先攻擊版）
+        #### 篩選條件（{_strategy_label}）
 
         | 條件 | 類型 | 分數 | 說明 |
         |------|------|------|------|
         | 第一天站上 5/10/20MA | 必要 | +35 | 今日三線齊穿，昨日全在線下 |
-        | 均線糾結度 < 3% | 必要 | +20 | MA5/10/20 距離極近，籌碼高度集中 |
-        | 量能爆發 > 前一日 1.5 倍 | 必要 | +15 | 當日量能突增，確認突破有效 |
-        | 股價乖離 MA20 < 5% | 必要 | +10 | 排除已追高的股票，控管風險 |
+        | 均線糾結度 < 3%（昨日）| 必要 | +20 | 突破前一天三線緊貼，確認盤整後突破 |
+        | 量能 > 前五日均量 × 1.5 倍 | 必要 | +15 | 突破時量能明顯超越近期均量，確認有效性 |
+        | 股價 < MA20 + 3.5 × ATR(14) | 必要 | +10 | 動態門檻排除過熱股，較固定乖離率更合理 |
+        | 相對強度 RS > 80 | 必要 | +10 | 個股明顯領先大盤，確認為真正強勢股 |
+        | 突破 60 日收盤新高 | 必要 | +10 | 確認為真實突破，而非盤整區間反彈 |
         | 布林頻寬縮減（vs 20日前） | 加分 | +10 | 盤整極致後的變盤第一天 |
         | 投信第一天買超 | 加分 | +10 | 法人資金剛開始表態的訊號 |
-        | 突破近 20 日收盤高點 | 加分 | +8 | 確認突破盤整平台 |
         | 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
         | {_inst_desc} | {_inst_type} | {_inst_score} | {_inst_note} |
         | 融資減少 / 籌碼集中 | 加分 | +5 | 散戶下車、主力上車 |
-        | 相對強度 RS > 70 | 加分 | +7 | 同族群中最強的領頭羊 |
         """)
 
 
@@ -898,8 +974,8 @@ with tab_funnel:
         MANDATORY = [
             ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
             ("均線糾結 < 3%",     lambda s: s.ma_triple_breakout and s.ma_squeeze),
-            ("量能爆發 > 1.5 倍", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion),
-            ("乖離 MA20 < 5%",   lambda s: s.passes_basic()),
+            ("量能 > 均量 1.5 倍", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion),
+            ("股價 < MA20+3.5ATR", lambda s: s.passes_basic()),
         ]
         for label, fn in MANDATORY:
             cnt = sum(1 for v in cond_stocks if fn(v["sig"]))
@@ -997,8 +1073,8 @@ with tab_funnel:
         MANDATORY_CHECKS = [
             ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
             ("均線糾結 < 3%",     lambda s: s.ma_squeeze),
-            ("量能爆發 > 1.5 倍", lambda s: s.volume_explosion),
-            ("乖離 MA20 < 5%",   lambda s: s.ma20_bias_ok),
+            ("量能 > 均量 1.5 倍", lambda s: s.volume_explosion),
+            ("股價 < MA20+3.5ATR", lambda s: s.atr_ok),
         ]
         near_miss = []
         for sid, v in analysis.items():

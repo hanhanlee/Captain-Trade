@@ -53,7 +53,8 @@ class BacktestConfig:
     # ── 進場過濾 ────────────────────────────────────────────────────
     enable_market_filter: bool = True
     market_ma_period: int = 20
-    max_bias_ratio: float = 10.0
+    max_bias_ratio: float = 10.0      # 已棄用（保留向後相容），優先由 overheat_atr_mult 決定
+    overheat_atr_mult: float = 3.5    # 收盤 > MA20 + N×ATR14 視為過熱（0 = 停用）
     min_score: float = 65.0
     warmup_days: int = 60
     exclude_leveraged_etf: bool = True
@@ -358,7 +359,11 @@ class Strategy:
             return False, "Score Too Low", score, signal.ma20_bias_ratio
 
         bias_ratio = signal.ma20_bias_ratio
-        if pd.notna(bias_ratio) and bias_ratio > self.config.max_bias_ratio:
+        # 過熱檢查：優先用 ATR 倍數，ATR 無效時 fallback 至 BIAS %
+        if self.config.overheat_atr_mult > 0 and signal.atr14 > 0:
+            if signal.atr_overheat:
+                return False, "[Skip] ATR Overheat", score, bias_ratio
+        elif pd.notna(bias_ratio) and bias_ratio > self.config.max_bias_ratio:
             return False, "[Skip] Bias Too High", score, bias_ratio
 
         if self.config.enable_market_filter:
@@ -663,7 +668,7 @@ def generate_text_report(result: BacktestResult, config: BacktestConfig) -> str:
     w(f"- 買進手續費：{_bfr*100:.4f}%\n")
     w(f"- 賣出手續費：{_sfr*100:.4f}%　交易稅：{_str*100:.2f}%\n")
     w(f"- 最低強度分數：{config.min_score}\n")
-    w(f"- 個股最大容許 BIAS：{config.max_bias_ratio}%\n")
+    w(f"- 過熱防護：ATR {config.overheat_atr_mult}x（0=停用）\n")
     w(f"- 大盤 MA{config.market_ma_period} 濾網：{'啟用' if config.enable_market_filter else '關閉'}\n")
     w(f"- ATR 動態移動停損：{'啟用' if config.enable_trailing_exit else '關閉'}"
       + (f"（期間={config.atr_period}，倍數={config.atr_multiplier}）" if config.enable_trailing_exit else "") + "\n")

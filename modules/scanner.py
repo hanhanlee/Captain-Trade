@@ -4,34 +4,39 @@
 
 基礎技術條件（必要，全部達到才入選）：
   1. 第一天站上 5/10/20MA（今日三線全穿，昨日全在線下） +35
-  2. 均線糾結度 < 3%（5/10/20MA 三線距離 ÷ MA20 < 3%）    +20
-  3. 量能爆發比 > 前一日 1.5 倍                            +15
-  4. 股價乖離 MA20 < 5%（排除已追高的股票）                +10
+  2. 均線糾結度 < 3%（昨日三線距離 ÷ MA20，確認盤整後突破）+20
+  3. 量能 > 前五日均量 × 1.5 倍（確認突破有足夠動能）    +15
+  4. 股價 < MA20 + 3.5 × ATR(14)（動態門檻排除過熱股）   +10
+  5. 相對強度 RS > 80（領先大盤，確認個股強勢）            +10
+  6. 突破近 60 日收盤高點（確認為真實突破，而非盤整反彈）  +10
 
 加分條件（滿足越多分數越高）：
-  5. 布林頻寬縮減（今日 bandwidth < 20 日前）              +10
-  6. 投信第一天買超（昨非正、今轉正）                       +10
-  7. 突破近 20 日收盤高點                                  +8
-  8. 週線 MA10 扣抵值低位（10週前收盤 < 當前週MA10）        +10
-  9. 融資減少 / 籌碼集中                                   +5
- 10. 相對強度 RS > 70                                      +7
+  7. 布林頻寬縮減（今日 bandwidth < 20 日前）              +10
+  8. 投信第一天買超（昨非正、今轉正）                       +10
+  9. 突破近 20 日收盤高點                                  +8
+ 10. 週線 MA10 扣抵值低位（10週前收盤 < 當前週MA10）        +10
+ 11. 融資減少 / 籌碼集中                                   +5
 
-滿分：必要 80 + 加分最多 50 = 130
+滿分：必要 100 + 加分最多 43 = 143
 """
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
-from .indicators import sma, rsi, macd, bollinger_bands, weekly_ma_trend, relative_strength_score
+from .indicators import sma, rsi, macd, bollinger_bands, weekly_ma_trend, relative_strength_score, atr
 
 
 @dataclass
 class ScanSignal:
     # ── v4 必要條件 ───────────────────────────────
     ma_triple_breakout: bool = False   # 第一天站上5/10/20MA（昨日全在線下）
-    ma_squeeze: bool = False           # 均線糾結度 < 3%
-    volume_explosion: bool = False     # 量能爆發比 > 前一日 1.5 倍
-    ma20_bias_ok: bool = False         # 股價乖離 MA20 < 5%
+    ma_squeeze: bool = False           # 均線糾結度 < 3%（檢查昨日，確認盤整後突破）
+    volume_explosion: bool = False     # 量能 > 前五日均量 × 1.5
+    atr_ok: bool = False               # 股價 < MA20 + 3.5 × ATR(14)（動態過熱門檻）
+    rs_strong: bool = False            # 相對強度 RS > 80（個股領先大盤）
+    breakout_60d: bool = False         # 突破近 60 日收盤高點
     ma20_bias_ratio: float = 0.0       # 月線乖離率數值（%）
+    atr_overheat: bool = False         # 過熱：收盤 > MA20 + 3.5 × ATR14
+    atr14: float = 0.0                 # ATR14 數值
     # ── v4 加分條件 ───────────────────────────────
     bb_bandwidth_shrink: bool = False  # 布林頻寬縮減（vs 20日前）
     trust_first_buy: bool = False      # 投信第一天買超（昨非正→今轉正）
@@ -56,12 +61,24 @@ class ScanSignal:
     breakout: bool = False
 
     def passes_basic(self) -> bool:
-        """v4 必要條件：四項全部達到才入選"""
+        """v4 必要條件：六項全部達到才入選"""
         return (
             self.ma_triple_breakout
             and self.ma_squeeze
             and self.volume_explosion
-            and self.ma20_bias_ok
+            and self.atr_ok
+            and self.rs_strong
+            and self.breakout_60d
+        )
+
+    def passes_basic_v3(self) -> bool:
+        """v3 必要條件：站上MA20 + MA20向上 + 量增 + 不低於布林下軌 + (MACD 或 RSI)"""
+        return (
+            self.above_ma20
+            and self.ma20_rising
+            and self.volume_surge
+            and self.above_bb_lower
+            and (self.macd_cross or self.rsi_healthy)
         )
 
     def score(self) -> float:
@@ -74,14 +91,28 @@ class ScanSignal:
             "ma_triple_breakout": 35,
             "ma_squeeze": 20,
             "volume_explosion": 15,
-            "ma20_bias_ok": 10,
+            "atr_ok": 10,
+            "rs_strong": 10,
+            "breakout_60d": 10,
             # 加分條件
             "bb_bandwidth_shrink": 10,
             "trust_first_buy": 10,
-            "breakout_20d": 8,
             "weekly_deduction_low": 10,
             "margin_clean": 5,
-            "rs_positive": 7,
+        }
+        return round(sum(v for k, v in weights.items() if getattr(self, k, False)), 1)
+
+    def score_v3(self) -> float:
+        """
+        v3 均線突破版計分
+        基礎滿分 100，進階條件可超過 100
+        """
+        weights = {
+            "above_ma20": 20, "ma20_rising": 15, "volume_surge": 20,
+            "macd_cross": 15, "rsi_healthy": 10, "above_bb_lower": 10,
+            "institutional_buy": 7, "margin_clean": 3,
+            "weekly_trend_up": 10, "rs_positive": 8,
+            "ma_aligned": 5, "vol_quality": 7, "breakout": 8,
         }
         return round(sum(v for k, v in weights.items() if getattr(self, k, False)), 1)
 
@@ -90,21 +121,27 @@ class ScanSignal:
             # v4 必要
             "ma_triple_breakout": "三線齊穿(首日)",
             "ma_squeeze": "均線糾結<3%",
-            "volume_explosion": "量能爆發>1.5倍",
-            "ma20_bias_ok": "乖離<5%",
+            "volume_explosion": "量能>均量1.5倍",
+            "atr_ok": "股價<MA20+3.5ATR",
+            "rs_strong": "RS>80強勢",
+            "breakout_60d": "突破60日新高",
             # v4 加分
             "bb_bandwidth_shrink": "布林頻寬縮減",
             "trust_first_buy": "投信首日買超",
-            "breakout_20d": "突破20日高點",
             "weekly_deduction_low": "週線扣抵低位",
             "margin_clean": "籌碼乾淨",
             "rs_positive": "相對強勢RS>70",
-            # v3 參考訊號
+            # v3 訊號
             "above_ma20": "站上MA20",
             "ma20_rising": "MA20向上",
+            "volume_surge": "量增(均量1.3x)",
             "macd_cross": "MACD黃金交叉",
             "rsi_healthy": "RSI健康",
+            "above_bb_lower": "布林正常",
+            "institutional_buy": "法人買超",
+            "weekly_trend_up": "週線多頭",
             "ma_aligned": "多頭排列",
+            "vol_quality": "量能優質",
             "breakout": "突破60日高點",
         }
         return [v for k, v in label_map.items() if getattr(self, k, False)]
@@ -139,6 +176,12 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     if vol_col:
         df["vol_ma5"] = df[vol_col].rolling(5).mean()
+
+    # ATR14：供過熱防護使用（需要 high/low 欄位，若無則跳過）
+    high_col = "max" if "max" in df.columns else ("high" if "high" in df.columns else None)
+    low_col  = "min" if "min" in df.columns else ("low"  if "low"  in df.columns else None)
+    if high_col and low_col:
+        df["atr14"] = atr(df, 14)
 
     return df
 
@@ -176,6 +219,15 @@ def analyze_stock(
     if pd.notna(latest.get("ma20_bias_ratio")):
         sig.ma20_bias_ratio = float(latest["ma20_bias_ratio"])
 
+    # ── ATR14（數值，供過熱防護使用）─────────────────────────────
+    if pd.notna(latest.get("atr14")) and latest["atr14"] > 0:
+        sig.atr14 = float(latest["atr14"])
+        # 過熱：收盤已高於 MA20 超過 3.5 倍 ATR（動態門檻，對熱門電子股更合理）
+        if pd.notna(latest.get("ma20")) and latest["ma20"] > 0:
+            sig.atr_overheat = bool(
+                latest["close"] > latest["ma20"] + 3.5 * sig.atr14
+            )
+
     # ──────────────────────────────────────────────────────────────
     # v4 必要條件
     # ──────────────────────────────────────────────────────────────
@@ -208,24 +260,25 @@ def analyze_stock(
         # 保留 v3 參考訊號
         sig.above_ma20 = bool(latest["close"] > latest["ma20"])
 
-    # 2. [v4] 均線糾結度 < 3%（5/10/20MA 三線最大偏差 ÷ MA20）
-    if ma5_ok and ma10_ok and ma20_ok and latest["ma20"] > 0:
-        ma_vals = [latest["ma5"], latest["ma10"], latest["ma20"]]
-        spread_pct = (max(ma_vals) - min(ma_vals)) / latest["ma20"] * 100
+    # 2. [v4] 均線糾結度 < 3%（檢查「昨日」三線距離，確認盤整後才突破）
+    #    用今日狀態會因突破當天的漲幅把均線撐開，反而把最強的突破股篩掉。
+    if ma5_ok and ma10_ok and ma20_ok and prev["ma20"] > 0:
+        ma_vals_prev = [prev["ma5"], prev["ma10"], prev["ma20"]]
+        spread_pct = (max(ma_vals_prev) - min(ma_vals_prev)) / prev["ma20"] * 100
         sig.ma_squeeze = bool(spread_pct < 3.0)
 
-    # 3. [v4] 量能爆發比：今日量 > 前一日量 × 1.5
+    # 3. [v4] 量能爆發比：今日量 > 前五日均量 × 1.5
     if vol_col:
-        today_vol = latest.get(vol_col)
-        prev_vol  = prev.get(vol_col)
-        if pd.notna(today_vol) and pd.notna(prev_vol) and prev_vol > 0:
-            sig.volume_explosion = bool(today_vol > prev_vol * 1.5)
+        today_vol   = latest.get(vol_col)
+        vol_ma5_val = latest.get("vol_ma5")
+        if pd.notna(today_vol) and pd.notna(vol_ma5_val) and vol_ma5_val > 0:
+            sig.volume_explosion = bool(today_vol > vol_ma5_val * 1.5)
         # 保留 v3 量增訊號（5日均量 × 1.3）
         if pd.notna(latest.get("vol_ma5")) and latest["vol_ma5"] > 0:
             sig.volume_surge = bool(latest[vol_col] > latest["vol_ma5"] * 1.3)
 
-    # 4. [v4] 股價乖離 MA20 < 5%
-    sig.ma20_bias_ok = bool(abs(sig.ma20_bias_ratio) < 5.0)
+    # 4. [v4] 股價 < MA20 + 3.5 × ATR(14)（動態過熱門檻，ATR 無資料時預設通過）
+    sig.atr_ok = True if sig.atr14 == 0 else bool(not sig.atr_overheat)
 
     # ──────────────────────────────────────────────────────────────
     # v4 加分條件
@@ -284,15 +337,33 @@ def analyze_stock(
     if margin_trend == "down":
         sig.margin_clean = True
 
-    # 10. [v4] 相對強度 RS > 70
+    # 10. [v4] 相對強度
+    #   必要條件：RS > 80（個股明顯領先大盤，確保選到真正強勢股）
+    #   加分條件：RS > 70（寬鬆版，保留供 triggered_labels 顯示）
     if len(df) >= 63:
         rs = relative_strength_score(df, lookback_days=63, market_returns=market_close)
         if rs:
             sig.rs_score = rs["rs_score"]
             if rs["outperforming"] and rs["rs_score"] > 70:
                 sig.rs_positive = True
+            if rs["outperforming"] and rs["rs_score"] > 80:
+                sig.rs_strong = True
 
-    # ── 保留 v3 參考訊號（不計分，僅顯示）──────────────────────
+    # ── 保留 v3 參考訊號（供 v3 策略計分 & 顯示）──────────────
+    # 不低於布林下軌
+    if pd.notna(latest.get("bb_lower")) and latest["close"] >= latest["bb_lower"]:
+        sig.above_bb_lower = True
+
+    # 量能品質：近 10 日上漲日成交量佔 ≥ 60%
+    if vol_col and len(df) >= 11:
+        recent = df.tail(11).copy()
+        recent["_up"] = recent["close"] >= recent["close"].shift(1)
+        recent = recent.dropna(subset=["_up"])
+        total_vol = recent[vol_col].sum()
+        up_vol = recent.loc[recent["_up"], vol_col].sum()
+        if total_vol > 0 and up_vol / total_vol >= 0.6:
+            sig.vol_quality = True
+
     # MA20 向上
     if len(df) >= 6:
         ma20_now  = df["ma20"].iloc[-1]
@@ -317,8 +388,17 @@ def analyze_stock(
         if latest["ma5"] > latest["ma10"] > latest["ma20"]:
             sig.ma_aligned = True
 
-    # 突破近 60 日高點（v3 版）
-    if len(df) >= 20:
+    # 突破近 60 日收盤高點
+    #   v4 必要條件：今日收盤 > 過去 60 個交易日最高收盤（不含今日）
+    #   v3 參考欄位（breakout）：同邏輯，-3 天緩衝版
+    if len(df) >= 62:
+        lb_60 = df["close"].iloc[-61:-1]   # 不含今日，往前 60 天
+        resistance_60d = lb_60.max()
+        if pd.notna(resistance_60d) and latest["close"] > resistance_60d:
+            sig.breakout_60d = True        # v4 必要條件
+            sig.breakout = True            # v3 參考（相容）
+    elif len(df) >= 20:
+        # 資料不足 60 天時，保留 v3 寬鬆版（-3 天緩衝）
         lb = df.iloc[-63:-3] if len(df) >= 66 else df.iloc[:-3]
         if not lb.empty:
             resistance_60d = lb["close"].max()
@@ -536,9 +616,11 @@ def run_scan(
     hp_density_threshold: float = 0.30,  # 族群創高比例門檻
     use_turnover_ratio: bool = False,  # 資金流向比重偵測
     turnover_top_n: int = 5,          # 資金前幾大族群
-    max_bias_ratio: float = 5.0,      # 最大容許月線乖離率（%），v4 收緊至 5%
+    max_bias_ratio: float = 5.0,      # 已棄用（保留向後相容），實際由 overheat_atr_mult 決定
+    overheat_atr_mult: float = 3.5,  # 收盤超過 MA20 + N×ATR14 視為過熱（0 = 停用 ATR 過熱防護）
     overheat_action: str = "drop",    # "drop" | "penalty"
     ma_breakout_mode: str = "strict", # "strict"：昨日三線全在線下；"loose"：昨日任一線在線下
+    strategy_version: str = "v4",    # "v4"：領先攻擊版；"v3"：均線突破版
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:
     """
@@ -702,11 +784,22 @@ def run_scan(
                 "sig": sig,
             }
 
-        if sig is None or not sig.passes_basic():
+        passes = sig.passes_basic_v3() if strategy_version == "v3" else sig.passes_basic()
+        if sig is None or not passes:
             continue
 
-        # 過熱股防護：月線乖離率超過門檻時，依設定直接剔除或扣分
-        is_overheated = pd.notna(sig.ma20_bias_ratio) and sig.ma20_bias_ratio > max_bias_ratio
+        # 過熱股防護（僅 v4 套用）
+        # 優先用 ATR 倍數判斷（對熱門電子股更有彈性），ATR 無效時 fallback 至 BIAS %
+        if strategy_version == "v4":
+            if overheat_atr_mult > 0 and sig.atr14 > 0:
+                is_overheated = sig.atr_overheat
+            else:
+                is_overheated = (
+                    pd.notna(sig.ma20_bias_ratio)
+                    and sig.ma20_bias_ratio > max_bias_ratio
+                )
+        else:
+            is_overheated = False
         if is_overheated and overheat_action == "drop":
             continue
 
@@ -718,7 +811,7 @@ def run_scan(
         vol_ma5 = df[vol_col].rolling(5).mean().iloc[-1] if vol_col else 0
         volume_ratio = round(vol_now / vol_ma5, 2) if vol_ma5 and vol_ma5 > 0 else 0
 
-        final_score = sig.score()
+        final_score = sig.score_v3() if strategy_version == "v3" else sig.score()
         if is_overheated and overheat_action == "penalty":
             final_score = max(final_score - 10, 0)
 
@@ -732,6 +825,22 @@ def run_scan(
             "score": round(final_score, 1),
             "rs_score": sig.rs_score,
             "bias_ratio": round(sig.ma20_bias_ratio, 2),
+            "volatility_pct": round(sig.atr14 / close * 100, 1) if close > 0 and sig.atr14 > 0 else 0.0,
+            "heat_room_pct": (
+                round(
+                    (close / (1 + sig.ma20_bias_ratio / 100) + overheat_atr_mult * sig.atr14 - close)
+                    / close * 100, 1
+                )
+                if sig.atr14 > 0 and close > 0 and overheat_atr_mult > 0
+                   and sig.ma20_bias_ratio != -100
+                else None
+            ),
+            "heat_room_abs": (
+                round(close / (1 + sig.ma20_bias_ratio / 100) + overheat_atr_mult * sig.atr14 - close, 1)
+                if sig.atr14 > 0 and close > 0 and overheat_atr_mult > 0
+                   and sig.ma20_bias_ratio != -100
+                else None
+            ),
             "overheated": is_overheated,
             "inst_pass": bool(
                 sig.institutional_buy or sig.inst_total_buy or sig.foreign_trust_buy

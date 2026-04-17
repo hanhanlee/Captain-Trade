@@ -130,7 +130,10 @@ with tab_backtest:
         st.markdown("#### 進場過濾器")
         min_score = st.slider("最低強度分數", 50.0, 100.0, 65.0, 1.0)
         enable_market_filter = st.checkbox("啟用大盤 MA20 濾網", value=True)
-        max_bias_ratio = st.slider("個股最大容許 BIAS (%)", 0.0, 20.0, 10.0, 0.5)
+        overheat_atr_mult = st.slider(
+            "過熱防護 ATR 倍數", 0.0, 6.0, 3.5, 0.5,
+            help="收盤 > MA20 + N×ATR14 時跳過進場。0 = 停用。熱門電子股可調高至 4.5~5.0。"
+        )
         _ma_mode_label = st.radio(
             "三線齊穿判斷模式",
             options=["嚴謹型（昨日三線全在線下）", "寬鬆型（昨日任一線在線下）"],
@@ -180,7 +183,7 @@ with tab_backtest:
             enable_indicator_exit=enable_indicator_exit,
             indicator_exit_mode=indicator_exit_mode,
             enable_market_filter=enable_market_filter,
-            max_bias_ratio=max_bias_ratio,
+            overheat_atr_mult=overheat_atr_mult,
             min_score=min_score,
             exclude_all_etf=exclude_all_etf,
             exclude_leveraged_etf=exclude_leveraged_etf,
@@ -274,7 +277,7 @@ with tab_result:
 | 最大持倉天數出場 | {'開啟' if config.enable_max_hold_exit else '關閉'} ({config.max_hold_days} 天) |
 | 技術指標停利法 | {'開啟' if config.enable_indicator_exit else '關閉'} ({indicator_label}) |
 | 大盤濾網 | {'開啟' if config.enable_market_filter else '關閉'} |
-| 個股最大 BIAS | {config.max_bias_ratio}% |
+| 過熱防護 ATR 倍數 | {getattr(config, 'overheat_atr_mult', 3.5)}x |
 | 排除所有 ETF | {'是' if getattr(config, 'exclude_all_etf', False) else '否'} |
 | 排除槓桿/期貨 ETF | {'是' if getattr(config, 'exclude_leveraged_etf', False) else '否'} |
 """

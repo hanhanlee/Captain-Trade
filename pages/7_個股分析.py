@@ -22,7 +22,7 @@ init_db()
 
 st.set_page_config(page_title="個股分析", page_icon="🔎", layout="wide")
 st.title("🔎 個股分析")
-st.caption("輸入股票代號，逐項檢視 v4 選股條件是否達標，掌握每個指標的實際數值")
+st.caption("輸入股票代號，逐項檢視選股條件是否達標，掌握每個指標的實際數值")
 
 
 # ── 工具函式 ─────────────────────────────────────────────────────
@@ -66,24 +66,30 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
     close = latest["close"]
     p_close = prev["close"]
 
-    # 均線糾結度
+    # 均線糾結度（用昨日數值，與 scanner 邏輯一致）
+    prev_ma5  = prev.get("ma5",  float("nan"))
+    prev_ma10 = prev.get("ma10", float("nan"))
+    prev_ma20 = prev.get("ma20", float("nan"))
     squeeze_pct = (
-        (max(ma5, ma10, ma20) - min(ma5, ma10, ma20)) / ma20 * 100
-        if ma20 > 0 else float("nan")
+        (max(prev_ma5, prev_ma10, prev_ma20) - min(prev_ma5, prev_ma10, prev_ma20)) / prev_ma20 * 100
+        if prev_ma20 > 0 else float("nan")
     )
     # 量能爆發比
     vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else None
-    vol_ratio = (
-        latest[vol_col] / prev[vol_col]
-        if vol_col and prev.get(vol_col, 0) > 0 else float("nan")
+    vol_ma5_val = latest.get("vol_ma5", float("nan"))
+    vol_ma5_ratio = (
+        latest[vol_col] / vol_ma5_val
+        if vol_col and not pd.isna(vol_ma5_val) and vol_ma5_val > 0 else float("nan")
     )
-    # 乖離率
-    bias = latest.get("ma20_bias_ratio", float("nan"))
+    # ATR 動態門檻
+    atr14_val = sig.atr14
+    atr_threshold = ma20 + 3.5 * atr14_val if atr14_val > 0 else float("nan")
     # 布林頻寬
     bw_now   = latest.get("bb_bandwidth", float("nan"))
     bw_20ago = df["bb_bandwidth"].iloc[-21] if len(df) >= 22 else float("nan")
-    # 20日高點
+    # 20日 / 60日高點
     resist_20d = df["close"].iloc[-21:-1].max() if len(df) >= 22 else float("nan")
+    resist_60d = df["close"].iloc[-61:-1].max() if len(df) >= 62 else float("nan")
     # RS 分數
     rs_score = sig.rs_score
 
@@ -106,28 +112,47 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
             ),
         },
         {
-            "name": "均線糾結度 < 3%",
+            "name": "均線糾結度 < 3%（昨日）",
             "pass": sig.ma_squeeze,
             "detail": (
-                f"三線最大偏差 ÷ MA20 = **{squeeze_pct:.2f}%**（需 < 3%）  \n"
-                f"MA5={ma5:.1f} / MA10={ma10:.1f} / MA20={ma20:.1f}"
+                f"昨日三線最大偏差 ÷ MA20 = **{squeeze_pct:.2f}%**（需 < 3%）  \n"
+                f"昨日 MA5={prev_ma5:.1f} / MA10={prev_ma10:.1f} / MA20={prev_ma20:.1f}"
             ),
-            "rule": "(max(MA5,10,20) − min(MA5,10,20)) / MA20 < 3%",
+            "rule": "昨日 (max(MA5,10,20) − min) / MA20 < 3%，確認盤整後突破",
         },
         {
-            "name": "量能爆發比 > 前一日 1.5 倍",
+            "name": "量能 > 前五日均量 × 1.5 倍",
             "pass": sig.volume_explosion,
             "detail": (
-                f"今日量 / 昨日量 = **{vol_ratio:.2f}x**（需 > 1.5x）"
-                if not pd.isna(vol_ratio) else "成交量資料不足"
+                f"今日量 / 五日均量 = **{vol_ma5_ratio:.2f}x**（需 > 1.5x）"
+                if not pd.isna(vol_ma5_ratio) else "成交量資料不足"
             ),
-            "rule": "今日成交量 > 昨日成交量 × 1.5",
+            "rule": "今日成交量 > 前五日均量 × 1.5，確認突破動能充足",
         },
         {
-            "name": "股價乖離 MA20 < 5%",
-            "pass": sig.ma20_bias_ok,
-            "detail": f"(收盤 − MA20) / MA20 = **{bias:.2f}%**（需 < 5%）",
-            "rule": "排除追高風險，控管買進成本",
+            "name": "股價 < MA20 + 3.5 × ATR(14)",
+            "pass": sig.atr_ok,
+            "detail": (
+                f"今收 **{close:.1f}**，過熱門檻 **{atr_threshold:.1f}**"
+                f"（日均振幅 {atr14_val/close*100:.1f}%，ATR={atr14_val:.2f}）"
+                if atr14_val > 0 else "ATR 資料不足（高低價缺失），條件預設通過"
+            ),
+            "rule": "動態門檻排除過熱股，比固定乖離率更適應不同波動度",
+        },
+        {
+            "name": "相對強度 RS > 80",
+            "pass": sig.rs_strong,
+            "detail": f"RS 分數 = **{rs_score:.1f}**（需 > 80，個股明顯領先大盤）",
+            "rule": "過去 63 交易日報酬率跑贏大盤，RS 分數 > 80",
+        },
+        {
+            "name": "突破 60 日收盤新高",
+            "pass": sig.breakout_60d,
+            "detail": (
+                f"今收 **{close:.1f}** vs 60日高點 **{resist_60d:.1f}**"
+                if not pd.isna(resist_60d) else "資料不足（需至少 62 根 K 線）"
+            ),
+            "rule": "今日收盤 > 過去 60 個交易日最高收盤",
         },
     ]
 
@@ -186,15 +211,6 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
             "detail": "昨日投信 ≤ 0，今日轉正（需載入法人資料）",
         },
         {
-            "name": "突破近 20 日收盤高點",
-            "pass": sig.breakout_20d,
-            "score": 8,
-            "detail": (
-                f"今收 **{close:.1f}** vs 20日高點 **{resist_20d:.1f}**"
-                if not pd.isna(resist_20d) else "資料不足"
-            ),
-        },
-        {
             "name": "週線 MA10 扣抵值低位",
             "pass": sig.weekly_deduction_low,
             "score": 10,
@@ -210,12 +226,6 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
                 if _margin_latest or _margin_prev
                 else "無融資資料（特別股或 FinMind 未收錄）"
             ),
-        },
-        {
-            "name": "相對強度 RS > 70",
-            "pass": sig.rs_positive,
-            "score": 7,
-            "detail": f"RS 分數 = **{rs_score:.1f}**（需 > 70）",
         },
     ]
 
@@ -246,6 +256,231 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
         f"<span style='font-size:1.1rem'>{verdict}</span>&nbsp;&nbsp;"
         f"<span style='font-size:1.6rem;font-weight:bold;color:{score_color}'>{total} 分</span>"
         f"<span style='color:#aaa;font-size:0.85rem'> / 130 滿分</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_scorecard_v3(sig, df: pd.DataFrame):
+    """v3 條件逐項評分卡"""
+    latest = df.iloc[-1]
+    prev   = df.iloc[-2] if len(df) >= 2 else latest
+
+    ma5   = latest.get("ma5",  float("nan"))
+    ma10  = latest.get("ma10", float("nan"))
+    ma20  = latest.get("ma20", float("nan"))
+    close = latest["close"]
+
+    # MA20 斜率（5日前比較）
+    ma20_5ago = df["ma20"].iloc[-6] if len(df) >= 6 else float("nan")
+
+    # 量比
+    vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else None
+    vol_ma5_val = latest.get("vol_ma5", float("nan"))
+    vol_ma5_ratio = (
+        latest[vol_col] / vol_ma5_val
+        if vol_col and not pd.isna(vol_ma5_val) and vol_ma5_val > 0 else float("nan")
+    )
+
+    # 布林下軌
+    bb_lower_val = latest.get("bb_lower", float("nan"))
+
+    # MACD
+    macd_val   = latest.get("macd", float("nan"))
+    signal_val = latest.get("macd_signal", float("nan"))
+    prev_macd  = prev.get("macd", float("nan"))
+    prev_sig   = prev.get("macd_signal", float("nan"))
+
+    # RSI
+    rsi_val = latest.get("rsi14", float("nan"))
+
+    # 60 日高點
+    resist_60d = df["close"].iloc[-61:-1].max() if len(df) >= 62 else float("nan")
+
+    # ── 必要條件 ────────────────────────────────────────────────
+    st.markdown("##### 必要條件（全部達到才入選）")
+
+    # OR 關係的 MACD/RSI 判斷
+    _macd_or_rsi = sig.macd_cross or sig.rsi_healthy
+    _macd_or_rsi_detail = []
+    if not pd.isna(macd_val) and not pd.isna(signal_val):
+        cross_str = "今 DIF>DEA" if macd_val > signal_val else "今 DIF<DEA"
+        prev_cross = "昨 DIF<DEA" if (not pd.isna(prev_macd) and not pd.isna(prev_sig)
+                                       and prev_macd <= prev_sig) else "昨 DIF>DEA"
+        _macd_or_rsi_detail.append(
+            f"MACD：{cross_str}，{prev_cross}，DIF={macd_val:.4f}"
+            + ("  ✅" if sig.macd_cross else "")
+        )
+    if not pd.isna(rsi_val):
+        _macd_or_rsi_detail.append(
+            f"RSI(14)={rsi_val:.1f}（健康區 50–70）"
+            + ("  ✅" if sig.rsi_healthy else "")
+        )
+
+    conditions_req = [
+        {
+            "name": "站上 MA20",
+            "pass": sig.above_ma20,
+            "detail": (
+                f"今收 **{close:.1f}** vs MA20 **{ma20:.1f}**"
+                if not pd.isna(ma20) else "MA20 資料不足"
+            ),
+            "rule": "今日收盤 > MA20（20日移動平均）",
+        },
+        {
+            "name": "MA20 向上（近 5 日斜率）",
+            "pass": sig.ma20_rising,
+            "detail": (
+                f"今日 MA20={ma20:.1f}，5日前 MA20={ma20_5ago:.1f}"
+                f"（{'↑ 上升' if not pd.isna(ma20) and not pd.isna(ma20_5ago) and ma20 > ma20_5ago else '↓ 下降或持平'}）"
+                if not pd.isna(ma20_5ago) else "資料不足"
+            ),
+            "rule": "MA20 近 5 日持續上揚，確認中期趨勢向上",
+        },
+        {
+            "name": "量增 > 前五日均量 × 1.3 倍",
+            "pass": sig.volume_surge,
+            "detail": (
+                f"今日量 / 五日均量 = **{vol_ma5_ratio:.2f}x**（需 > 1.3x）"
+                if not pd.isna(vol_ma5_ratio) else "成交量資料不足"
+            ),
+            "rule": "今日成交量 > 前五日均量 × 1.3，確認有量撐盤",
+        },
+        {
+            "name": "不低於布林下軌",
+            "pass": sig.above_bb_lower,
+            "detail": (
+                f"今收 **{close:.1f}** ≥ 布林下軌 **{bb_lower_val:.1f}**"
+                if not pd.isna(bb_lower_val) else "布林通道資料不足"
+            ),
+            "rule": "收盤 ≥ BB下軌，確認股價未跌穿通道底部",
+        },
+        {
+            "name": "MACD 黃金交叉  或  RSI 健康（50–70）",
+            "pass": _macd_or_rsi,
+            "detail": "  \n".join(_macd_or_rsi_detail) if _macd_or_rsi_detail else "資料不足",
+            "rule": "MACD 黃金交叉（DIF由下往上穿越DEA 或 DIF>DEA>0）OR RSI在50–70健康區",
+        },
+    ]
+
+    for c in conditions_req:
+        with st.container(border=True):
+            col_ic, col_info = st.columns([0.08, 0.92])
+            col_ic.markdown(
+                f"<div style='font-size:1.6rem;text-align:center'>{_badge(c['pass'])}</div>",
+                unsafe_allow_html=True,
+            )
+            col_info.markdown(
+                f"**{c['name']}**  \n"
+                f"<span style='font-size:0.82rem;color:#aaa'>{c['rule']}</span>",
+                unsafe_allow_html=True,
+            )
+            col_info.caption(c["detail"])
+
+    # ── 加分條件 ────────────────────────────────────────────────
+    st.markdown("##### 加分條件")
+
+    conditions_bonus = [
+        {
+            "name": "MACD 黃金交叉",
+            "pass": sig.macd_cross,
+            "score": 15,
+            "detail": (
+                f"DIF={macd_val:.4f}，DEA={signal_val:.4f}"
+                if not pd.isna(macd_val) and not pd.isna(signal_val) else "MACD 資料不足"
+            ),
+        },
+        {
+            "name": "RSI 健康區（50–70）",
+            "pass": sig.rsi_healthy,
+            "score": 10,
+            "detail": (
+                f"RSI(14) = **{rsi_val:.1f}**（需介於 50–70）"
+                if not pd.isna(rsi_val) else "RSI 資料不足"
+            ),
+        },
+        {
+            "name": "多頭排列（MA5 > MA10 > MA20）",
+            "pass": sig.ma_aligned,
+            "score": 5,
+            "detail": (
+                f"MA5={ma5:.1f} / MA10={ma10:.1f} / MA20={ma20:.1f}"
+                if not pd.isna(ma5) and not pd.isna(ma10) else "均線資料不足"
+            ),
+        },
+        {
+            "name": "量能優質（近10日上漲量占比≥60%）",
+            "pass": sig.vol_quality,
+            "score": 7,
+            "detail": "近 10 個交易日中，上漲日的成交量合計佔比 ≥ 60%",
+        },
+        {
+            "name": "突破近 60 日收盤新高",
+            "pass": sig.breakout,
+            "score": 8,
+            "detail": (
+                f"今收 **{close:.1f}** vs 60日高點 **{resist_60d:.1f}**"
+                if not pd.isna(resist_60d) else "資料不足（需至少 62 根 K 線）"
+            ),
+        },
+        {
+            "name": "週線多頭（週MA10向上且站上）",
+            "pass": sig.weekly_trend_up,
+            "score": 10,
+            "detail": "週K收盤 > 週MA10 且 週MA10 近期向上",
+        },
+        {
+            "name": "法人買超",
+            "pass": sig.institutional_buy,
+            "score": 7,
+            "detail": "近期三大法人合計買超（需載入法人資料）",
+        },
+        {
+            "name": "融資減少 / 籌碼集中",
+            "pass": sig.margin_clean,
+            "score": 3,
+            "detail": (
+                f"融資餘額 **{_margin_latest:,}** 張 ← 前日 **{_margin_prev:,}** 張"
+                f"（{'↓ 減少' if _margin_trend == 'down' else '↑ 增加' if _margin_trend == 'up' else '持平'}）"
+                if _margin_latest or _margin_prev
+                else "無融資資料"
+            ),
+        },
+        {
+            "name": "相對強度 RS > 70",
+            "pass": sig.rs_positive,
+            "score": 8,
+            "detail": f"RS 分數 = **{sig.rs_score:.1f}**（需 > 70，個股領先大盤）",
+        },
+    ]
+
+    cols_b = st.columns(2)
+    for i, c in enumerate(conditions_bonus):
+        with cols_b[i % 2].container(border=True):
+            col_ic, col_info = st.columns([0.1, 0.9])
+            score_color = "#f39c12" if c["pass"] else "#555"
+            col_ic.markdown(
+                f"<div style='font-size:1.3rem;text-align:center'>{_badge(c['pass'])}</div>",
+                unsafe_allow_html=True,
+            )
+            col_info.markdown(
+                f"**{c['name']}** "
+                f"<span style='color:{score_color};font-size:0.85rem'>+{c['score']}</span>",
+                unsafe_allow_html=True,
+            )
+            col_info.caption(c["detail"])
+
+    # ── 總分 ────────────────────────────────────────────────────
+    total = sig.score_v3()
+    passes = sig.passes_basic_v3()
+    score_color = "#27ae60" if passes and total >= 80 else ("#f39c12" if passes else "#e74c3c")
+    verdict = "✅ 符合入選條件" if passes else "❌ 不符合必要條件"
+    st.markdown(
+        f"<div style='text-align:center;padding:12px;border-radius:8px;"
+        f"background:{score_color}22;border:1px solid {score_color}'>"
+        f"<span style='font-size:1.1rem'>{verdict}</span>&nbsp;&nbsp;"
+        f"<span style='font-size:1.6rem;font-weight:bold;color:{score_color}'>{total} 分</span>"
+        f"<span style='color:#aaa;font-size:0.85rem'> / 138 滿分</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -412,11 +647,22 @@ with st.sidebar:
         help="需消耗 API 額度，可查詢投信第一天買超條件",
     )
 
+    strategy_version = st.radio(
+        "策略版本",
+        options=["v4 領先攻擊版", "v3 均線突破版"],
+        index=0,
+        help=(
+            "**v4 領先攻擊版**：6項嚴格必要條件（三線齊穿首日 + 均線糾結 + 量爆發 + ATR過熱保護 + RS>80 + 60日新高）  \n"
+            "**v3 均線突破版**：站上MA20 + MA20向上 + 量增 + 不低於布林下軌 + MACD/RSI，條件較寬鬆"
+        ),
+    )
+
     _ma_mode_label = st.radio(
-        "三線齊穿判斷模式",
+        "三線齊穿判斷模式（v4 專用）",
         options=["嚴謹型（昨日三線全在線下）", "寬鬆型（昨日任一線在線下）"],
         index=0,
         help="嚴謹型：昨收 < min(MA5,MA10,MA20)；寬鬆型：昨收 < max(MA5,MA10,MA20)",
+        disabled=(strategy_version == "v3 均線突破版"),
     )
     ma_breakout_mode = "strict" if _ma_mode_label.startswith("嚴謹") else "loose"
 
@@ -445,12 +691,14 @@ if analyze_btn:
     st.session_state["analysis_stock"] = stock_input
     st.session_state["analysis_date"] = analysis_date
     st.session_state["analysis_ma_mode"] = ma_breakout_mode
+    st.session_state["analysis_strategy"] = strategy_version
     st.session_state.pop("analysis_df", None)
 
-target_id        = st.session_state.get("analysis_stock", stock_input)
-_active_date     = st.session_state.get("analysis_date", _date_cls.today())
-_is_hist         = _active_date < _date_cls.today()
+target_id         = st.session_state.get("analysis_stock", stock_input)
+_active_date      = st.session_state.get("analysis_date", _date_cls.today())
+_is_hist          = _active_date < _date_cls.today()
 _ma_breakout_mode = st.session_state.get("analysis_ma_mode", ma_breakout_mode)
+_strategy         = st.session_state.get("analysis_strategy", strategy_version)
 
 # ── 載入資料 ─────────────────────────────────────────────────────
 with st.spinner(f"載入 {target_id} 資料中..."):
@@ -541,8 +789,12 @@ st.markdown("---")
 col_score, col_chart = st.columns([0.4, 0.6])
 
 with col_score:
-    st.subheader("📋 v4 條件評分卡")
-    render_scorecard(sig, df, ma_mode=_ma_breakout_mode)
+    if _strategy == "v3 均線突破版":
+        st.subheader("📋 v3 條件評分卡")
+        render_scorecard_v3(sig, df)
+    else:
+        st.subheader("📋 v4 條件評分卡")
+        render_scorecard(sig, df, ma_mode=_ma_breakout_mode)
 
 with col_chart:
     st.subheader("📈 日K線圖")
