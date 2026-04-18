@@ -732,6 +732,7 @@ with tab_scan:
             st.session_state["debug_info"] = debug_info
             st.session_state["sector_info"] = sector_info
             st.session_state["sector_breakout_enabled"] = (use_hp_density or use_turnover_ratio)
+            st.session_state["scan_strategy_version"] = strategy_version
 
         # 顯示產業輪動過濾結果
         if sector_info and top_sector_n > 0:
@@ -930,7 +931,8 @@ with tab_scan:
             _inst_note = "合計買超 +4；若外資與投信同步買超再 +3"
         _inst_type = "**必要**（額外強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
         _strategy_label = "v4 領先攻擊版" if strategy_version == "v4" else "v3 均線突破版"
-        st.markdown(f"""
+        if strategy_version == "v4":
+            st.markdown(f"""
         #### 篩選條件（{_strategy_label}）
 
         | 條件 | 類型 | 分數 | 說明 |
@@ -948,6 +950,27 @@ with tab_scan:
         | {_inst_desc} | {_inst_type} | {_inst_score} | {_inst_note} |
         | 融資減少 / 籌碼集中 | 加分 | +5 | 散戶下車、主力上車 |
         """)
+        else:
+            st.markdown(f"""
+        #### 篩選條件（{_strategy_label}）
+
+        | 條件 | 類型 | 分數 | 說明 |
+        |------|------|------|------|
+        | 站上 MA20 | 必要 | +20 | 今日收盤高於 20 日均線 |
+        | MA20 向上 | 必要 | +15 | 近 5 日 MA20 持續上升 |
+        | 量增（前五日均量 × 1.3）| 必要 | +20 | 成交量超越近期均量，確認有效性 |
+        | 布林正常（不低於下軌）| 必要 | +10 | 收盤不破布林下軌，避免弱勢股 |
+        | MACD 黃金交叉 | 必要（擇一）| +15 | DIF 上穿 DEA，或 MACD 在零軸上方 |
+        | RSI 健康區（50–70）| 必要（擇一）| +10 | RSI 在多頭健康區間，尚未超買 |
+        | 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
+        | {_inst_desc} | {_inst_type} | {_inst_score} | {_inst_note} |
+        | 週線多頭 | 加分 | +10 | 週MA10 向上且收盤站上 |
+        | 相對強勢 RS > 70 | 加分 | +8 | 個股表現領先大盤 |
+        | 多頭排列 MA5 > MA10 > MA20 | 加分 | +5 | 短中長均線同向向上 |
+        | 量能優質（上漲量佔比 ≥ 60%）| 加分 | +7 | 近 10 日漲日成交量比重高 |
+        | 突破 60 日收盤新高 | 加分 | +8 | 突破近期壓力區 |
+        | 融資減少 / 籌碼集中 | 加分 | +3 | 散戶下車、主力上車 |
+        """)
 
 
 # ══ Tab：篩選漏斗 ════════════════════════════════════════════
@@ -960,6 +983,7 @@ with tab_funnel:
     else:
         dbg = st.session_state["debug_info"]
         analysis: dict = dbg.get("stock_analysis", {})
+        _scan_sv = st.session_state.get("scan_strategy_version", "v4")
 
         # ── 建立漏斗資料 ────────────────────────────────────────
         # 前置過濾階段
@@ -974,15 +998,25 @@ with tab_funnel:
         funnel_rows.append({"stage": "進入條件計算", "count": n_cond})
 
         # 逐條件累積計數（每個條件都是在前一條件基礎上累積）
-        MANDATORY = [
-            ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
-            ("均線糾結 < 3%",     lambda s: s.ma_triple_breakout and s.ma_squeeze),
-            ("量能 > 均量 1.5 倍", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion),
-            ("股價 < MA20+3.5ATR", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok),
-            ("RS > 80",            lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok and s.rs_strong),
-            ("突破 60 日新高",      lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok and s.rs_strong and s.breakout_60d),
-            ("主力連 3 日買超",     lambda s: s.passes_basic()),
-        ]
+        if _scan_sv == "v3":
+            MANDATORY = [
+                ("站上 MA20",            lambda s: s.above_ma20),
+                ("MA20 向上",            lambda s: s.above_ma20 and s.ma20_rising),
+                ("量增（均量 1.3 倍）",   lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge),
+                ("布林正常",             lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge and s.above_bb_lower),
+                ("MACD 或 RSI",          lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge and s.above_bb_lower and (s.macd_cross or s.rsi_healthy)),
+                ("主力連 3 日買超",       lambda s: s.passes_basic_v3()),
+            ]
+        else:
+            MANDATORY = [
+                ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
+                ("均線糾結 < 3%",     lambda s: s.ma_triple_breakout and s.ma_squeeze),
+                ("量能 > 均量 1.5 倍", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion),
+                ("股價 < MA20+3.5ATR", lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok),
+                ("RS > 80",            lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok and s.rs_strong),
+                ("突破 60 日新高",      lambda s: s.ma_triple_breakout and s.ma_squeeze and s.volume_explosion and s.atr_ok and s.rs_strong and s.breakout_60d),
+                ("主力連 3 日買超",     lambda s: s.passes_basic()),
+            ]
         for label, fn in MANDATORY:
             cnt = sum(1 for v in cond_stocks if fn(v["sig"]))
             funnel_rows.append({"stage": label, "count": cnt})
@@ -1049,18 +1083,30 @@ with tab_funnel:
             prev_count = cnt
 
         # ── 加分條件命中率（在最終入選股中）────────────────────
-        final_sigs = [v["sig"] for v in cond_stocks if v["sig"] and v["sig"].passes_basic()]
+        if _scan_sv == "v3":
+            final_sigs = [v["sig"] for v in cond_stocks if v["sig"] and v["sig"].passes_basic_v3()]
+        else:
+            final_sigs = [v["sig"] for v in cond_stocks if v["sig"] and v["sig"].passes_basic()]
         if final_sigs:
             st.markdown("#### 加分條件命中率（最終入選股）")
-            ADDITIVE = [
-                ("法人買超", lambda s: s.institutional_buy),
-                ("籌碼乾淨",    lambda s: s.margin_clean),
-                ("週線多頭",    lambda s: s.weekly_trend_up),
-                ("相對強勢",    lambda s: s.rs_positive),
-                ("多頭排列",    lambda s: s.ma_aligned),
-                ("量能優質",    lambda s: s.vol_quality),
-                ("突破盤整",    lambda s: s.breakout),
-            ]
+            if _scan_sv == "v3":
+                ADDITIVE = [
+                    ("法人買超",            lambda s: s.institutional_buy),
+                    ("週線多頭",            lambda s: s.weekly_trend_up),
+                    ("相對強勢 RS > 70",    lambda s: s.rs_positive),
+                    ("多頭排列",            lambda s: s.ma_aligned),
+                    ("量能優質",            lambda s: s.vol_quality),
+                    ("突破 60 日新高",      lambda s: s.breakout),
+                    ("籌碼乾淨",            lambda s: s.margin_clean),
+                ]
+            else:
+                ADDITIVE = [
+                    ("布林頻寬縮減",        lambda s: s.bb_bandwidth_shrink),
+                    ("投信首日買超",        lambda s: s.trust_first_buy),
+                    ("週線扣抵低位",        lambda s: s.weekly_deduction_low),
+                    ("相對強勢 RS > 70",    lambda s: s.rs_positive),
+                    ("籌碼乾淨",            lambda s: s.margin_clean),
+                ]
             add_rows = []
             n_final = len(final_sigs)
             for label, fn in ADDITIVE:
@@ -1076,21 +1122,31 @@ with tab_funnel:
         st.markdown("#### 差一條件入選的股票")
         st.caption("只差一個必要條件就會入選，可作為條件調整的參考")
 
-        MANDATORY_CHECKS = [
-            ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
-            ("均線糾結 < 3%",     lambda s: s.ma_squeeze),
-            ("量能 > 均量 1.5 倍", lambda s: s.volume_explosion),
-            ("股價 < MA20+3.5ATR", lambda s: s.atr_ok),
-            ("RS > 80",            lambda s: s.rs_strong),
-            ("突破 60 日新高",      lambda s: s.breakout_60d),
-            ("主力連 3 日買超",     lambda s: s.main_force_buy_3d),
-        ]
+        if _scan_sv == "v3":
+            MANDATORY_CHECKS = [
+                ("站上 MA20",          lambda s: s.above_ma20),
+                ("MA20 向上",          lambda s: s.ma20_rising),
+                ("量增（均量 1.3 倍）", lambda s: s.volume_surge),
+                ("布林正常",           lambda s: s.above_bb_lower),
+                ("MACD 或 RSI",        lambda s: s.macd_cross or s.rsi_healthy),
+                ("主力連 3 日買超",     lambda s: s.main_force_buy_3d),
+            ]
+        else:
+            MANDATORY_CHECKS = [
+                ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
+                ("均線糾結 < 3%",     lambda s: s.ma_squeeze),
+                ("量能 > 均量 1.5 倍", lambda s: s.volume_explosion),
+                ("股價 < MA20+3.5ATR", lambda s: s.atr_ok),
+                ("RS > 80",            lambda s: s.rs_strong),
+                ("突破 60 日新高",      lambda s: s.breakout_60d),
+                ("主力連 3 日買超",     lambda s: s.main_force_buy_3d),
+            ]
         near_miss = []
         for sid, v in analysis.items():
             if v["exclude_pre"] is not None or v["sig"] is None:
                 continue
             sig = v["sig"]
-            if sig.passes_basic():
+            if (sig.passes_basic_v3() if _scan_sv == "v3" else sig.passes_basic()):
                 continue  # 已入選
             failed = [lbl for lbl, fn in MANDATORY_CHECKS if not fn(sig)]
             if len(failed) == 1:

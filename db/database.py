@@ -107,6 +107,25 @@ def _migrate_schema():
             ))
             logger.info("migration: 建立 margin_cache 表")
 
+        if not _table_exists(conn, "broker_main_force_cache"):
+            conn.execute(text("""
+                CREATE TABLE broker_main_force_cache (
+                    stock_id     TEXT NOT NULL,
+                    date         TEXT NOT NULL,
+                    buy_top15    REAL DEFAULT 0,
+                    sell_top15   REAL DEFAULT 0,
+                    net          REAL DEFAULT 0,
+                    broker_count INTEGER DEFAULT 0,
+                    fetched_at   TEXT,
+                    PRIMARY KEY (stock_id, date)
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_broker_main_force_stock_date
+                ON broker_main_force_cache (stock_id, date)
+            """))
+            logger.info("migration: 建立 broker_main_force_cache 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

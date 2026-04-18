@@ -1,0 +1,17 @@
+[services]
+streamlit_port = 8501
+auth_port      = 8080
+funnel_https_port = 443
+
+[paths]
+# 相對於 project root
+caddy_exe   = "tools/caddy/caddy.exe"
+app_py      = "app.py"
+runtime_dir = "runtime"
+secrets_dir = "secrets"
+
+[startup]
+# default_profile: full | local | protected
+default_profile    = "full"
+auto_open_browser  = false
+watch_after_up     = true

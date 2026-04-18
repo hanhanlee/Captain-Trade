@@ -21,7 +21,7 @@ from db.price_cache import load_prices
 from db.database import get_session, init_db
 from db.models import Portfolio
 from db.settings import is_market_closed
-from notifications.line_notify import send_message
+from notifications.line_notify import send_multicast
 
 st.set_page_config(page_title="持股監控", page_icon="💼", layout="wide")
 init_db()
@@ -139,8 +139,20 @@ def render_holding_chart(stock_id: str, df: pd.DataFrame, cost_price: float,
     df = df.copy()
     df["ma5"] = sma(df["close"], 5)
     df["ma20"] = sma(df["close"], 20)
+    bb_upper, bb_mid, bb_lower = bollinger_bands(df["close"], 20, 2.0)
+    df["bb_upper"] = bb_upper
+    df["bb_mid"] = bb_mid
+    df["bb_lower"] = bb_lower
+    df["bb_bandwidth"] = ((bb_upper - bb_lower) / bb_mid * 100).round(2)
     dif, dea, hist = macd(df["close"])
     df["macd"], df["macd_signal"], df["macd_hist"] = dif, dea, hist
+
+    latest_bw = df["bb_bandwidth"].iloc[-1] if "bb_bandwidth" in df.columns else None
+    bw_text = (
+        f"BB帶寬 {latest_bw:.2f}%"
+        if latest_bw is not None and pd.notna(latest_bw)
+        else "BB帶寬資料不足"
+    )
 
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
@@ -157,6 +169,27 @@ def render_holding_chart(stock_id: str, df: pd.DataFrame, cost_price: float,
     for col, color, name in [("ma5", "#f39c12", "MA5"), ("ma20", "#3498db", "MA20")]:
         fig.add_trace(go.Scatter(x=df["date"], y=df[col], name=name,
                                   line=dict(color=color, width=1.2)), row=1, col=1)
+
+    for col, name in [("bb_upper", "BB上軌"), ("bb_mid", "BB中軌"), ("bb_lower", "BB下軌")]:
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df[col], name=name,
+            line=dict(
+                color="rgba(52,152,219,0.45)" if col != "bb_mid" else "rgba(149,165,166,0.45)",
+                width=0.9,
+                dash="dot",
+            ),
+        ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=pd.concat([df["date"], df["date"].iloc[::-1]]),
+        y=pd.concat([df["bb_upper"], df["bb_lower"].iloc[::-1]]),
+        fill="toself",
+        fillcolor="rgba(52,152,219,0.06)",
+        line=dict(width=0),
+        hoverinfo="skip",
+        name="BB通道",
+        showlegend=False,
+    ), row=1, col=1)
 
     # 成本線
     fig.add_hline(y=cost_price, line_dash="dash", line_color="#9b59b6",
@@ -177,7 +210,8 @@ def render_holding_chart(stock_id: str, df: pd.DataFrame, cost_price: float,
                           marker_color=hist_colors, showlegend=False), row=2, col=1)
 
     fig.update_layout(height=550, template="plotly_dark",
-                      xaxis_rangeslider_visible=False, margin=dict(t=30, b=10))
+                      title=dict(text=bw_text, x=0.02, xanchor="left"),
+                      xaxis_rangeslider_visible=False, margin=dict(t=50, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -308,8 +342,8 @@ with tab_monitor:
         # LINE 推播
         if notify_btn:
             if not all_alerts:
-                send_message("💼 持股監控：所有持股目前無警示")
-                st.toast("已推播：無警示", icon="📲")
+                ok = send_multicast("💼 持股監控：所有持股目前無警示")
+                st.toast("已群播：無警示" if ok else "LINE 群播失敗", icon="📲" if ok else "❌")
             else:
                 lines = ["💼 持股監控警示"]
                 for a in all_alerts[:8]:
@@ -317,8 +351,8 @@ with tab_monitor:
                     lines.append(f"\n{emoji} {a.stock_id} {a.stock_name}")
                     lines.append(f"   {a.reason}")
                     lines.append(f"   現價 {a.current_price} 元  損益 {a.pnl_pct:+.1f}%")
-                send_message("\n".join(lines))
-                st.toast("警示已推播到 LINE", icon="📲")
+                ok = send_multicast("\n".join(lines))
+                st.toast("警示已群播到 LINE" if ok else "LINE 群播失敗", icon="📲" if ok else "❌")
 
         st.markdown("---")
 

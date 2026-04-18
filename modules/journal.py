@@ -5,7 +5,7 @@
 import pandas as pd
 import numpy as np
 from db.database import get_session
-from db.models import TradeJournal
+from db.models import TradeJournal, Portfolio
 from datetime import date
 
 
@@ -13,10 +13,11 @@ def add_trade(stock_id: str, stock_name: str, action: str, price: float,
               shares: int, trade_date: date, reason: str = "",
               emotion: str = "", pnl: float = None):
     with get_session() as sess:
+        action = action.upper()
         t = TradeJournal(
             stock_id=stock_id,
             stock_name=stock_name,
-            action=action.upper(),
+            action=action,
             price=price,
             shares=shares,
             trade_date=trade_date,
@@ -25,7 +26,135 @@ def add_trade(stock_id: str, stock_name: str, action: str, price: float,
             pnl=pnl,
         )
         sess.add(t)
+        if action == "BUY":
+            _upsert_portfolio_buy(
+                sess,
+                stock_id=stock_id,
+                stock_name=stock_name,
+                shares=int(shares),
+                price=float(price),
+                trade_date=trade_date,
+            )
         sess.commit()
+
+
+def _upsert_portfolio_buy(sess, stock_id: str, stock_name: str, shares: int,
+                          price: float, trade_date: date | None = None):
+    """將買進交易併入持股監控；已持有時用加權平均成本。"""
+    stock_id = (stock_id or "").strip()
+    if not stock_id or shares <= 0 or price <= 0:
+        return
+
+    row = sess.query(Portfolio).filter(Portfolio.stock_id == stock_id).first()
+    if row:
+        old_shares = int(row.shares or 0)
+        new_shares = old_shares + int(shares)
+        if new_shares <= 0:
+            return
+        row.cost_price = (
+            (float(row.cost_price or 0) * old_shares + float(price) * int(shares))
+            / new_shares
+        )
+        row.shares = new_shares
+        if stock_name and not row.stock_name:
+            row.stock_name = stock_name
+        if trade_date and not row.buy_date:
+            row.buy_date = trade_date
+        return
+
+    sess.add(Portfolio(
+        stock_id=stock_id,
+        stock_name=stock_name or "",
+        shares=int(shares),
+        cost_price=float(price),
+        buy_date=trade_date,
+        notes="由交易日誌自動加入",
+        note="由交易日誌自動加入",
+    ))
+
+
+def _open_positions_from_trades(rows: list[TradeJournal]) -> dict:
+    """用 FIFO 從交易日誌推算目前仍開放的買進部位。"""
+    lots_by_stock: dict[str, list[dict]] = {}
+    ordered = sorted(rows, key=lambda r: (r.trade_date or date.min, r.id or 0))
+
+    for row in ordered:
+        sid = (row.stock_id or "").strip()
+        if not sid:
+            continue
+        lots = lots_by_stock.setdefault(sid, [])
+        action = (row.action or "").upper()
+        shares = int(row.shares or 0)
+        price = float(row.price or 0)
+        if shares <= 0:
+            continue
+
+        if action == "BUY":
+            lots.append({
+                "shares": shares,
+                "price": price,
+                "stock_name": row.stock_name or "",
+                "trade_date": row.trade_date,
+            })
+        elif action == "SELL":
+            remaining = shares
+            while remaining > 0 and lots:
+                if lots[0]["shares"] > remaining:
+                    lots[0]["shares"] -= remaining
+                    remaining = 0
+                else:
+                    remaining -= lots[0]["shares"]
+                    lots.pop(0)
+
+    positions = {}
+    for sid, lots in lots_by_stock.items():
+        total_shares = sum(l["shares"] for l in lots)
+        if total_shares <= 0:
+            continue
+        total_cost = sum(l["shares"] * l["price"] for l in lots)
+        first_lot = lots[0]
+        latest_name = next((l["stock_name"] for l in reversed(lots) if l["stock_name"]), "")
+        positions[sid] = {
+            "stock_name": latest_name,
+            "shares": total_shares,
+            "cost_price": total_cost / total_shares,
+            "buy_date": first_lot.get("trade_date"),
+        }
+    return positions
+
+
+def sync_open_trades_to_portfolio() -> list[dict]:
+    """
+    將交易日誌推算出的仍持有部位補進持股監控。
+
+    只新增持股監控中不存在的股票，避免覆蓋手動維護的停損、停利與成本。
+    回傳新增項目清單。
+    """
+    added = []
+    with get_session() as sess:
+        rows = sess.query(TradeJournal).all()
+        positions = _open_positions_from_trades(rows)
+        for sid, pos in positions.items():
+            exists = sess.query(Portfolio).filter(Portfolio.stock_id == sid).first()
+            if exists:
+                continue
+            sess.add(Portfolio(
+                stock_id=sid,
+                stock_name=pos["stock_name"],
+                shares=int(pos["shares"]),
+                cost_price=float(pos["cost_price"]),
+                buy_date=pos["buy_date"],
+                notes="由交易日誌同步補入",
+                note="由交易日誌同步補入",
+            ))
+            added.append({
+                "stock_id": sid,
+                "stock_name": pos["stock_name"],
+                "shares": int(pos["shares"]),
+                "cost_price": round(float(pos["cost_price"]), 2),
+            })
+        sess.commit()
+    return added
 
 
 def get_all_trades() -> pd.DataFrame:

@@ -121,7 +121,7 @@ class ScanSignal:
         }
         return round(sum(v for k, v in weights.items() if getattr(self, k, False)), 1)
 
-    def triggered_labels(self) -> list:
+    def triggered_labels(self, strategy_version: str | None = None) -> list:
         label_map = {
             # v4 必要
             "ma_triple_breakout": "三線齊穿(首日)",
@@ -150,7 +150,24 @@ class ScanSignal:
             "vol_quality": "量能優質",
             "breakout": "突破60日高點",
         }
-        return [v for k, v in label_map.items() if getattr(self, k, False)]
+        if strategy_version == "v4":
+            allowed = {
+                "ma_triple_breakout", "ma_squeeze", "volume_explosion",
+                "atr_ok", "rs_strong", "breakout_60d", "main_force_buy_3d",
+                "bb_bandwidth_shrink", "trust_first_buy",
+                "weekly_deduction_low", "margin_clean", "rs_positive",
+            }
+        elif strategy_version == "v3":
+            allowed = {
+                "above_ma20", "ma20_rising", "volume_surge",
+                "macd_cross", "rsi_healthy", "above_bb_lower",
+                "main_force_buy_3d", "institutional_buy", "margin_clean",
+                "weekly_trend_up", "rs_positive", "ma_aligned",
+                "vol_quality", "breakout",
+            }
+        else:
+            allowed = set(label_map)
+        return [v for k, v in label_map.items() if k in allowed and getattr(self, k, False)]
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -853,7 +870,7 @@ def run_scan(
             "inst_pass": bool(
                 sig.institutional_buy or sig.inst_total_buy or sig.foreign_trust_buy
             ),
-            "signals": "、".join(sig.triggered_labels()),
+            "signals": "、".join(sig.triggered_labels(strategy_version)),
         })
 
     result_df = (

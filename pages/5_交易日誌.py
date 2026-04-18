@@ -8,11 +8,22 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import date
 
-from modules.journal import add_trade, get_trade, update_trade, get_all_trades, delete_trade, calc_performance, calc_emotion_stats
+from modules.journal import (
+    add_trade, get_trade, update_trade, get_all_trades, delete_trade,
+    calc_performance, calc_emotion_stats, sync_open_trades_to_portfolio,
+)
 from db.database import init_db
 
 st.set_page_config(page_title="交易日誌", page_icon="📔", layout="wide")
 init_db()
+
+_synced_positions = sync_open_trades_to_portfolio()
+if _synced_positions:
+    st.toast(
+        "已將交易日誌中的未入列持股補進持股監控："
+        + "、".join([p["stock_id"] for p in _synced_positions]),
+        icon="✅",
+    )
 
 EMOTIONS = ["冷靜", "樂觀", "貪婪", "恐慌", "衝動", "猶豫", "FOMO"]
 ACTIONS = ["BUY", "SELL"]
@@ -268,4 +279,7 @@ with tab_add:
                     emotion=t_emotion,
                     pnl=t_pnl if t_action == "SELL" and t_pnl != 0 else None,
                 )
-                st.success(f"✅ 已新增 {t_action} {t_id} {t_name} @ {t_price}")
+                if t_action == "BUY":
+                    st.success(f"✅ 已新增 {t_action} {t_id} {t_name} @ {t_price}，並同步加入持股監控")
+                else:
+                    st.success(f"✅ 已新增 {t_action} {t_id} {t_name} @ {t_price}")

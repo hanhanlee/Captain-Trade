@@ -13,8 +13,7 @@ from data.finmind_client import get_stock_list
 from modules.risk import (
     calc_position_fixed_risk,
     calc_position_kelly,
-    calc_pyramid_add_on,
-    calc_bias_ratio,
+    calc_pyramid_plan,
     calc_portfolio_exposure,
     calc_max_drawdown,
     calc_sector_exposure,
@@ -227,128 +226,181 @@ with tab_position:
 
                 st.caption(f"公式：{atr_highest:.2f}（最高價）− {atr_mult} × {atr_val:.2f}（ATR）= {ts['trailing_stop']:.2f}")
 
-    # ── 正金字塔加碼法 ────────────────────────────────────
+    # ── 正金字塔加碼法（ATR 動態版）────────────────────────
     st.markdown("---")
     with st.expander("🧱 正金字塔加碼計算機", expanded=False):
         st.markdown("""
-        **核心原則：**
-
-        - 第一筆（基本單）投入 50%
-        - 第二次加碼投入 30%
-        - 第三次加碼投入 20%
-
-        只有在**獲利擴大、趨勢持續、且 BIAS 沒有過熱**時才允許往上加碼。
+        **ATR 動態版核心邏輯：**
+        以進場時的波動度（Initial ATR）為度量衡，自動計算觸發價、加碼量與停損/停利線。
+        加碼前通過**雙重熔斷機制**：波動率失控或技術面極度超買時自動阻斷。
         """)
 
         p1, p2, p3 = st.columns(3)
         with p1:
-            total_plan_capital = st.number_input(
-                "總計畫資金（元）",
-                min_value=10_000,
-                max_value=100_000_000,
-                value=1_000_000,
-                step=10_000,
-                format="%d",
-                key="pyr_total_plan_capital",
+            st.caption("**模組一：初始設定**")
+            pyr_entry = st.number_input(
+                "進場價（元）", min_value=1.0, value=100.0, step=0.5, key="pyr_entry"
             )
-            stage = st.radio(
-                "加碼階段",
-                ["第一筆（基本單）", "第二次加碼", "第三次加碼"],
-                key="pyr_stage",
+            pyr_init_atr = st.number_input(
+                "進場時 ATR(14)（元）", min_value=0.1, value=3.0, step=0.1, key="pyr_init_atr"
+            )
+            pyr_base_pos = st.number_input(
+                "基礎部位（張）", min_value=1, max_value=200, value=2, step=1, key="pyr_base_pos"
             )
         with p2:
-            current_price = st.number_input(
-                "目前股價（元）",
-                min_value=1.0,
-                value=100.0,
-                step=0.5,
-                key="pyr_current_price",
+            st.caption("**目前狀況**")
+            pyr_cur_price = st.number_input(
+                "目前股價（元）", min_value=1.0, value=102.0, step=0.5, key="pyr_cur_price"
             )
-            ma20_value = st.number_input(
-                "MA20（月線）（元）",
-                min_value=0.1,
-                value=97.0,
-                step=0.5,
-                key="pyr_ma20",
+            pyr_cur_atr = st.number_input(
+                "目前 ATR(14)（元）", min_value=0.1, value=3.0, step=0.1, key="pyr_cur_atr"
             )
-            current_profit_pct = st.number_input(
-                "目前累積獲利（%）",
-                min_value=-50.0,
-                max_value=300.0,
-                value=0.0,
-                step=0.5,
-                key="pyr_profit_pct",
+            pyr_highest = st.number_input(
+                "進場以來最高收盤（元）",
+                min_value=1.0, value=102.0, step=0.5, key="pyr_highest",
+                help="用於計算移動停利線",
             )
         with p3:
-            breakout_confirmed = st.checkbox(
-                "已確認站上月線或突破平台",
-                value=True,
-                key="pyr_breakout_confirmed",
+            st.caption("**熔斷器輔助指標（選填）**")
+            pyr_bb_upper = st.number_input(
+                "布林上軌（元）",
+                min_value=0.0, value=0.0, step=0.5, key="pyr_bb_upper",
+                help="填 0 表示不啟用布林超買檢查",
             )
-            trend_continues = st.checkbox(
-                "趨勢仍持續（均線、多頭結構未破壞）",
-                value=True,
-                key="pyr_trend_continues",
+            pyr_rsi9 = st.number_input(
+                "RSI(9)",
+                min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="pyr_rsi9",
+                help="填 0 表示不啟用 RSI 超買檢查",
             )
+            st.caption("RSI(9) > 80 或價格 > 布林上軌 → 暫停加碼")
 
-        try:
-            live_bias = calc_bias_ratio(current_price, ma20_value)
-            st.caption(f"目前 BIAS：**{live_bias:.2f}%**")
-        except ValueError:
-            live_bias = None
-
-        if st.button("計算正金字塔加碼建議", key="btn_pyramid"):
-            stage_map = {
-                "第一筆（基本單）": "base",
-                "第二次加碼": "add_1",
-                "第三次加碼": "add_2",
-            }
+        if st.button("計算加碼計畫", key="btn_pyramid"):
             try:
-                pyramid = calc_pyramid_add_on(
-                    total_planned_capital=total_plan_capital,
-                    current_price=current_price,
-                    ma20=ma20_value,
-                    current_profit_pct=current_profit_pct,
-                    breakout_confirmed=breakout_confirmed,
-                    trend_continues=trend_continues,
-                    stage=stage_map[stage],
+                bb_upper_val = pyr_bb_upper if pyr_bb_upper > 0 else None
+                rsi9_val     = pyr_rsi9     if pyr_rsi9 > 0     else None
+                plan = calc_pyramid_plan(
+                    entry_price=pyr_entry,
+                    initial_atr=pyr_init_atr,
+                    base_position=int(pyr_base_pos),
+                    current_price=pyr_cur_price,
+                    current_atr=pyr_cur_atr,
+                    highest_since_entry=max(pyr_highest, pyr_entry),
+                    bb_upper=bb_upper_val,
+                    rsi9=rsi9_val,
                 )
-                st.session_state["pyramid_result"] = pyramid
+                st.session_state["pyramid_result"] = plan
             except ValueError as e:
                 st.error(str(e))
 
         if "pyramid_result" in st.session_state:
-            pr = st.session_state["pyramid_result"]
+            plan = st.session_state["pyramid_result"]
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("目前階段", pr.stage)
-            c2.metric("資金比例", f"{pr.allocation_pct:.0f}%")
-            c3.metric("建議投入金額", f"{pr.planned_amount:,.0f} 元")
-            c4.metric("目前 BIAS", f"{pr.bias_ratio:.2f}%")
-
-            c5, c6 = st.columns(2)
-            c5.metric("建議加碼股數", f"{pr.suggested_shares:,} 股")
-            c6.metric(
-                "執行判斷",
-                "可執行" if pr.allowed else "暫不執行",
-                delta="符合條件" if pr.allowed else "條件不足",
-                delta_color="normal" if pr.allowed else "inverse",
+            # ── 模組一：初始停損 ──────────────────────────────
+            st.markdown("#### 模組一：初始設定")
+            m1a, m1b, m1c = st.columns(3)
+            m1a.metric("進場價", f"{plan.entry_price:.2f} 元")
+            m1b.metric("Initial ATR(14)", f"{plan.initial_atr:.2f} 元")
+            m1c.metric(
+                "初始停損",
+                f"{plan.initial_stop_loss:.2f} 元",
+                delta=f"距進場 −{plan.entry_price - plan.initial_stop_loss:.2f} 元（2×ATR）",
+                delta_color="inverse",
             )
 
-            if pr.allowed:
-                st.success(pr.note)
-            else:
-                st.warning(pr.note)
-                for reason in pr.reasons:
-                    st.caption(f"- {reason}")
-
-            stage_table = pd.DataFrame([
-                {"階段": "第一筆（基本單）", "資金比例": "50%", "技術條件": "剛站上月線或突破平台", "BIAS 上限": "< 3%"},
-                {"階段": "第二次加碼", "資金比例": "30%", "技術條件": "獲利 5-10% 且趨勢持續", "BIAS 上限": "< 5%"},
-                {"階段": "第三次加碼", "資金比例": "20%", "技術條件": "獲利 15% 以上且仍強勢", "BIAS 上限": "< 7%"},
+            # ── 模組二：加碼計畫 ──────────────────────────────
+            st.markdown("#### 模組二：動態加碼計畫")
+            plan_df = pd.DataFrame([
+                {
+                    "加碼層級": "第一階 Level 1",
+                    "觸發價（元）": f"{plan.level1_trigger:.2f}",
+                    "計算式": f"進場價 + 0.5×ATR = {plan.entry_price:.2f} + {0.5*plan.initial_atr:.2f}",
+                    "加碼張數": f"{plan.level1_shares} 張",
+                    "目前是否觸達": "✅ 已觸達" if plan.level1_price_reached else "⏳ 尚未到達",
+                },
+                {
+                    "加碼層級": "第二階 Level 2",
+                    "觸發價（元）": f"{plan.level2_trigger:.2f}",
+                    "計算式": f"Level1 + 1.0×ATR = {plan.level1_trigger:.2f} + {plan.initial_atr:.2f}",
+                    "加碼張數": f"{plan.level2_shares} 張",
+                    "目前是否觸達": "✅ 已觸達" if plan.level2_price_reached else "⏳ 尚未到達",
+                },
             ])
-            st.markdown("#### 正金字塔規則表")
-            st.dataframe(stage_table, use_container_width=True, hide_index=True)
+            st.dataframe(plan_df, use_container_width=True, hide_index=True)
+
+            # ── 模組三：熔斷器 ────────────────────────────────
+            st.markdown("#### 模組三：雙重過熱熔斷機制")
+            cb1, cb2, cb3, cb4 = st.columns(4)
+
+            atr_ratio_str = f"{plan.atr_ratio:.2f}x  (> 1.5x)" if plan.atr_overheated else f"{plan.atr_ratio:.2f}x  (≤ 1.5x)"
+            cb1.metric(
+                "波動率膨脹",
+                atr_ratio_str,
+                delta="🔴 失控" if plan.atr_overheated else "🟢 正常",
+                delta_color="inverse" if plan.atr_overheated else "normal",
+                help=f"目前 ATR {plan.current_atr:.2f} / 初始 ATR {plan.initial_atr:.2f}",
+            )
+
+            bb_label = "無資料" if not (pyr_bb_upper > 0) else ("已突破" if plan.price_above_bb else "未突破")
+            cb2.metric(
+                "布林上軌超買",
+                bb_label,
+                delta="🔴 觸發" if plan.price_above_bb else ("—" if not (pyr_bb_upper > 0) else "🟢 未觸發"),
+                delta_color="inverse" if plan.price_above_bb else "off",
+            )
+
+            rsi_label = "無資料" if not (pyr_rsi9 > 0) else (f"RSI {plan.current_atr:.0f}" if False else f"RSI {pyr_rsi9:.1f}")
+            cb3.metric(
+                "RSI(9) 超買",
+                rsi_label,
+                delta="🔴 > 80" if plan.rsi9_overbought else ("—" if not (pyr_rsi9 > 0) else "🟢 未超買"),
+                delta_color="inverse" if plan.rsi9_overbought else "off",
+            )
+
+            if plan.circuit_breaker_triggered:
+                cb4.metric("熔斷器", "🔴 觸發", delta="加碼暫停", delta_color="inverse")
+                st.error("⚡ **熔斷機制觸發**：目前不允許執行任何加碼。請等待市場降溫後再評估。")
+            else:
+                cb4.metric("熔斷器", "🟢 未觸發", delta="加碼許可", delta_color="normal")
+
+            # ── 模組四：移動停利 ──────────────────────────────
+            st.markdown("#### 模組四：ATR 移動停利")
+            t1, t2, t3 = st.columns(3)
+            t1.metric("進場以來最高收盤", f"{plan.highest_since_entry:.2f} 元")
+            t2.metric(
+                "移動停利線",
+                f"{plan.trailing_stop:.2f} 元",
+                delta=f"Highest − 2×Current ATR = {plan.highest_since_entry:.2f} − {2*plan.current_atr:.2f}",
+                delta_color="off",
+            )
+            locked_color = "normal" if plan.trailing_locked_pct >= 0 else "inverse"
+            t3.metric(
+                "已鎖定獲利",
+                f"{plan.trailing_locked_pct:+.2f}%",
+                delta="相對進場價" ,
+                delta_color=locked_color,
+            )
+
+            if plan.current_price <= plan.trailing_stop:
+                st.error(f"🔔 **停利觸發**：目前股價 {plan.current_price:.2f} ≤ 移動停利線 {plan.trailing_stop:.2f}，應考慮出場。")
+            elif (plan.current_price - plan.trailing_stop) / plan.entry_price * 100 < 2:
+                st.warning(f"⚠️ 目前股價與停利線僅差 {plan.current_price - plan.trailing_stop:.2f} 元，緩衝偏薄。")
+
+            # ── 執行建議摘要 ──────────────────────────────────
+            st.markdown("#### 執行建議")
+            e1, e2 = st.columns(2)
+            if plan.level1_executable:
+                e1.success(f"✅ **Level 1 可執行**  加碼 {plan.level1_shares} 張  @觸發價 {plan.level1_trigger:.2f}")
+            elif not plan.level1_price_reached:
+                e1.info(f"⏳ **Level 1 待觸發**  目標 {plan.level1_trigger:.2f}，現價 {plan.current_price:.2f}")
+            else:
+                e1.error(f"🔴 **Level 1 熔斷阻擋**  已觸價但熔斷器啟動")
+
+            if plan.level2_executable:
+                e2.success(f"✅ **Level 2 可執行**  加碼 {plan.level2_shares} 張  @觸發價 {plan.level2_trigger:.2f}")
+            elif not plan.level2_price_reached:
+                e2.info(f"⏳ **Level 2 待觸發**  目標 {plan.level2_trigger:.2f}，現價 {plan.current_price:.2f}")
+            else:
+                e2.error(f"🔴 **Level 2 熔斷阻擋**  已觸價但熔斷器啟動")
 
 
 # ══ Tab：帳戶曝險 ════════════════════════════════════════════

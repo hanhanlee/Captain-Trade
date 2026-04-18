@@ -48,6 +48,7 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
 
 
 STOCK_INFO_TTL_DAYS = 30  # 股票清單快取有效期（天）
+STOCK_INFO_MIN_VALID_ROWS = 1800  # 上市 + 上櫃 + ETF/權證等，低於此值通常代表舊版只抓上市
 
 
 def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
@@ -70,7 +71,9 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
                 "SELECT s.stock_id, s.stock_name, s.industry_category, MAX(s.updated_at) as latest "
                 "FROM stock_info_cache s "
                 "LEFT JOIN price_fetch_status p ON s.stock_id = p.stock_id "
-                "WHERE p.status IS NULL OR p.status != 'delisted' "
+                "WHERE (p.status IS NULL OR p.status != 'delisted') "
+                "  AND s.stock_id GLOB '[0-9][0-9][0-9][0-9]*' "
+                "  AND s.stock_id NOT GLOB '*[^0-9]*' "
                 "GROUP BY s.stock_id"
             )).fetchall()
 
@@ -80,7 +83,7 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
             try:
                 latest_dt = datetime.fromisoformat(latest_str)
                 age_days = (datetime.now() - latest_dt).days
-                if age_days <= STOCK_INFO_TTL_DAYS:
+                if age_days <= STOCK_INFO_TTL_DAYS and len(result) >= STOCK_INFO_MIN_VALID_ROWS:
                     return pd.DataFrame(
                         [(r[0], r[1], r[2]) for r in result],
                         columns=["stock_id", "stock_name", "industry_category"]
@@ -92,8 +95,15 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
     df = _get("TaiwanStockInfo")
     if df.empty:
         return df
-    df = df[df["type"] == "twse"].copy()
-    df = df[["stock_id", "stock_name", "industry_category"]].reset_index(drop=True)
+    df = df[df["type"].isin(["twse", "tpex"])].copy()
+    df["stock_id"] = df["stock_id"].astype(str).str.strip()
+    df = df[df["stock_id"].str.fullmatch(r"\d{4,6}", na=False)].copy()
+    df = (
+        df[["stock_id", "stock_name", "industry_category"]]
+        .drop_duplicates(subset="stock_id", keep="last")
+        .sort_values("stock_id")
+        .reset_index(drop=True)
+    )
 
     # 更新快取（REPLACE INTO = upsert）
     try:
@@ -106,6 +116,7 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
         """)
         now = datetime.now().isoformat()
         with get_session() as sess:
+            sess.execute(text("DELETE FROM stock_info_cache"))
             sess.execute(sql, [{**r, "ts": now} for r in rows])
             sess.commit()
     except Exception:
@@ -143,6 +154,125 @@ def get_institutional_investors(stock_id: str, days: int = 30) -> pd.DataFrame:
     df["sell"] = pd.to_numeric(df.get("sell", 0), errors="coerce").fillna(0)
     df["net"] = df["buy"] - df["sell"]
     return df
+
+
+def get_broker_trading_daily_report(stock_id: str, trade_date) -> pd.DataFrame:
+    """
+    取得單日券商分點買賣資料。
+
+    FinMind TaiwanStockTradingDailyReport 單次只支援一檔股票一天資料，且需
+    sponsor 權限。buy_volume / sell_volume 單位為股。
+    """
+    d = trade_date.date().isoformat() if hasattr(trade_date, "date") else str(trade_date)[:10]
+    df = _get(
+        "TaiwanStockTradingDailyReport",
+        stock_id=stock_id,
+        start_date=d,
+        end_date=d,
+    )
+    if df.empty:
+        return df
+
+    df["date"] = pd.to_datetime(df["date"])
+    for col in ["buy_volume", "sell_volume", "buy_price", "sell_price"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    if "buy_volume" not in df.columns:
+        df["buy_volume"] = 0
+    if "sell_volume" not in df.columns:
+        df["sell_volume"] = 0
+    df["net_volume"] = df["buy_volume"] - df["sell_volume"]
+    return df
+
+
+def summarize_broker_main_force(df: pd.DataFrame, top_n: int = 15) -> dict:
+    """
+    主力買賣超 = 前 N 大買超券商淨買張 - 前 N 大賣超券商淨賣張。
+
+    回傳單位為「張」。FinMind 原始分點量為股，因此除以 1000。
+    """
+    if df is None or df.empty:
+        return {}
+
+    work = df.copy()
+    if "net_volume" not in work.columns:
+        work["net_volume"] = work.get("buy_volume", 0) - work.get("sell_volume", 0)
+
+    grouped = (
+        work.groupby(["date", "securities_trader_id", "securities_trader"], dropna=False)
+        ["net_volume"]
+        .sum()
+        .reset_index()
+    )
+    if grouped.empty:
+        return {}
+
+    latest_date = pd.to_datetime(grouped["date"].iloc[0]).date().isoformat()
+    buy_top = grouped[grouped["net_volume"] > 0].nlargest(top_n, "net_volume")
+    sell_top = grouped[grouped["net_volume"] < 0].nsmallest(top_n, "net_volume")
+
+    buy_top15 = float(buy_top["net_volume"].sum()) / 1000
+    sell_top15 = float((-sell_top["net_volume"]).sum()) / 1000
+    return {
+        "date": latest_date,
+        "buy_top15": buy_top15,
+        "sell_top15": sell_top15,
+        "net": buy_top15 - sell_top15,
+        "broker_count": int(grouped["securities_trader_id"].nunique()),
+    }
+
+
+def get_broker_main_force_series(
+    stock_id: str,
+    trade_dates,
+    *,
+    top_n: int = 15,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    取得多日主力買賣超序列，優先使用本機快取，缺少日期才逐日呼叫 FinMind。
+    """
+    from db.broker_cache import load_broker_main_force, save_broker_main_force
+
+    dates = []
+    for d in trade_dates:
+        if pd.isna(d):
+            continue
+        if hasattr(d, "date"):
+            dates.append(d.date().isoformat())
+        else:
+            dates.append(str(d)[:10])
+    dates = list(dict.fromkeys(dates))
+    if not dates:
+        return pd.DataFrame()
+
+    cached = pd.DataFrame() if force_refresh else load_broker_main_force(stock_id, dates)
+    cached_dates = set()
+    if not cached.empty:
+        cached_dates = set(pd.to_datetime(cached["date"]).dt.date.astype(str))
+
+    missing = [d for d in dates if d not in cached_dates]
+    fetched_rows = []
+    for d in missing:
+        try:
+            daily = get_broker_trading_daily_report(stock_id, d)
+            summary = summarize_broker_main_force(daily, top_n=top_n)
+        except Exception as exc:
+            logger.warning(f"get_broker_main_force_series {stock_id} {d}: {exc}")
+            break
+        if summary:
+            fetched_rows.append(summary)
+
+    if fetched_rows:
+        save_broker_main_force(stock_id, fetched_rows)
+        fresh = load_broker_main_force(stock_id, dates)
+    else:
+        fresh = cached
+
+    if fresh.empty:
+        return fresh
+    fresh = fresh.sort_values("date").reset_index(drop=True)
+    return fresh
 
 
 def resolve_latest_trading_day() -> date:

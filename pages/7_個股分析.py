@@ -707,6 +707,64 @@ def render_weekly_chart(stock_id: str, df: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True)
 
 
+def render_institutional_chart(main_force_df: pd.DataFrame):
+    """券商分點主力買賣超長條圖：買超向上，賣超向下。"""
+    if main_force_df is None or main_force_df.empty:
+        st.info(
+            "目前沒有可繪製的券商分點主力買賣超資料。"
+            "此資料使用 FinMind TaiwanStockTradingDailyReport，需 sponsor 權限，且單次只能查一檔股票一天。"
+        )
+        return
+
+    plot_df = main_force_df.copy()
+    plot_df["date"] = pd.to_datetime(plot_df["date"])
+    plot_df["net"] = pd.to_numeric(plot_df["net"], errors="coerce").fillna(0)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=plot_df["date"],
+        y=plot_df["net"],
+        name="主力買賣超",
+        marker_color="#2f8bd8",
+        hovertemplate="%{x|%Y-%m-%d}<br>主力買賣超 %{y:,.0f} 張<extra></extra>",
+    ))
+
+    fig.add_hline(y=0, line_color="rgba(80,80,80,0.45)", line_width=1)
+
+    latest = plot_df.iloc[-1]
+    latest_date = pd.to_datetime(latest["date"]).strftime("%m/%d")
+    latest_net = float(latest["net"])
+    latest_label = f"{latest_date} {latest_net:+,.0f}張（主力買賣超）"
+
+    fig.update_layout(
+        height=300,
+        template="plotly_white",
+        title=None,
+        yaxis_title=None,
+        xaxis_title=None,
+        margin=dict(t=16, b=12, l=32, r=24),
+        showlegend=False,
+        bargap=0.45,
+        font=dict(color="#4f4f4f"),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(130,170,200,0.28)",
+            zeroline=False,
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(130,170,200,0.28)",
+            zeroline=False,
+        ),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        f"■ {latest_label} ｜ 主力買賣超 = 前 15 大買超券商淨買張 - 前 15 大賣超券商淨賣張"
+    )
+
+
 def render_custom_preset_checks(
     *,
     stock_id: str,
@@ -992,6 +1050,20 @@ if load_inst:
                 agg_days=_preset_agg_days,
             )
 
+broker_main_force = pd.DataFrame()
+if not _is_hist:
+    broker_dates = df["date"].tail(30).tolist()
+    try:
+        from data.finmind_client import get_broker_main_force_series
+        with st.spinner("載入券商分點主力買賣超..."):
+            broker_main_force = get_broker_main_force_series(
+                target_id,
+                broker_dates,
+                top_n=15,
+            )
+    except Exception as e:
+        st.caption(f"券商分點主力買賣超暫時無法載入：{e}")
+
 # 融資資料（歷史模式下 API 只回傳近期資料，跳過以免誤判）
 _margin_trend, _margin_latest, _margin_prev = "flat", 0, 0
 if not _is_hist:
@@ -1077,6 +1149,11 @@ with col_score:
 with col_chart:
     st.subheader("📈 日K線圖")
     render_daily_chart(target_id, df.tail(120))
+
+st.markdown("---")
+
+st.subheader("🏦 主力買賣超")
+render_institutional_chart(broker_main_force)
 
 st.markdown("---")
 

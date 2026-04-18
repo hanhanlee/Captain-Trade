@@ -25,17 +25,119 @@ class PositionResult:
 
 
 @dataclass
-class PyramidAddOnResult:
-    stage: str
-    allocation_pct: float
+class PyramidPlan:
+    # ── 模組一：初始參數 ───────────────────────────────────────
     entry_price: float
-    ma20: float
-    bias_ratio: float
-    planned_amount: float
-    suggested_shares: int
-    allowed: bool
-    reasons: list
-    note: str = ""
+    initial_atr: float
+    base_position: int           # 基礎部位（張）
+    initial_stop_loss: float     # Entry - 2 × Initial_ATR
+
+    # ── 模組二：動態階梯加碼計畫 ──────────────────────────────
+    level1_trigger: float        # Entry + 0.5 × Initial_ATR
+    level1_shares: int           # Base_Position // 2（最少 1 張）
+    level2_trigger: float        # Level1_trigger + 1.0 × Initial_ATR
+    level2_shares: int           # Base_Position // 4（最少 1 張）
+
+    # ── 模組三：熔斷器狀態 ────────────────────────────────────
+    atr_ratio: float             # Current_ATR / Initial_ATR
+    atr_overheated: bool         # Current_ATR > Initial_ATR × 1.5
+    price_above_bb: bool         # Price > BB_Upper（無資料則 False）
+    rsi9_overbought: bool        # RSI(9) > 80（無資料則 False）
+    circuit_breaker_triggered: bool   # 任一條件 True → 阻斷加碼
+
+    # ── 模組四：ATR 移動停利 ──────────────────────────────────
+    trailing_stop: float         # Highest_Since_Entry - 2 × Current_ATR
+    trailing_locked_pct: float   # (trailing_stop - entry_price) / entry_price × 100
+
+    # ── 現況評估 ──────────────────────────────────────────────
+    current_price: float
+    current_atr: float
+    highest_since_entry: float
+    level1_price_reached: bool   # current_price >= level1_trigger
+    level2_price_reached: bool   # current_price >= level2_trigger
+    level1_executable: bool      # reached AND 熔斷器未觸發
+    level2_executable: bool      # reached AND 熔斷器未觸發
+
+
+def calc_pyramid_plan(
+    entry_price: float,
+    initial_atr: float,
+    base_position: int,
+    current_price: float,
+    current_atr: float,
+    highest_since_entry: float,
+    bb_upper: float | None = None,
+    rsi9: float | None = None,
+) -> "PyramidPlan":
+    """
+    ATR 正金字塔加碼計劃（四模組版本）
+
+    模組一：初始停損 = Entry - 2 × Initial_ATR
+    模組二：
+        Level 1 觸發 = Entry + 0.5 × Initial_ATR，加碼 Base/2 張
+        Level 2 觸發 = Level1 + 1.0 × Initial_ATR，加碼 Base/4 張
+    模組三：熔斷器
+        - ATR 膨脹：Current_ATR > Initial_ATR × 1.5
+        - 超買共振：Price > BB_Upper 或 RSI(9) > 80
+    模組四：移動停利 = Highest_Since_Entry - 2 × Current_ATR
+    """
+    if entry_price <= 0 or initial_atr <= 0 or base_position < 1:
+        raise ValueError("進場價、初始 ATR 必須大於 0，基礎部位至少 1 張")
+    if current_atr <= 0:
+        raise ValueError("目前 ATR 必須大於 0")
+    if highest_since_entry < entry_price:
+        raise ValueError("進場以來最高收盤不得低於進場價")
+
+    # 模組一
+    initial_stop_loss = entry_price - 2 * initial_atr
+
+    # 模組二
+    level1_trigger = entry_price + 0.5 * initial_atr
+    level1_shares  = max(1, math.floor(base_position / 2))
+    level2_trigger = level1_trigger + 1.0 * initial_atr
+    level2_shares  = max(1, math.floor(base_position / 4))
+
+    # 模組三
+    atr_ratio       = current_atr / initial_atr
+    atr_overheated  = atr_ratio > 1.5
+    price_above_bb  = (bb_upper is not None) and (current_price > bb_upper)
+    rsi9_overbought = (rsi9 is not None) and (rsi9 > 80)
+    circuit_breaker_triggered = atr_overheated or price_above_bb or rsi9_overbought
+
+    # 模組四
+    trailing_stop      = highest_since_entry - 2 * current_atr
+    trailing_locked_pct = round((trailing_stop - entry_price) / entry_price * 100, 2)
+
+    # 現況
+    level1_price_reached = current_price >= level1_trigger
+    level2_price_reached = current_price >= level2_trigger
+    level1_executable    = level1_price_reached and not circuit_breaker_triggered
+    level2_executable    = level2_price_reached and not circuit_breaker_triggered
+
+    return PyramidPlan(
+        entry_price=round(entry_price, 2),
+        initial_atr=round(initial_atr, 2),
+        base_position=base_position,
+        initial_stop_loss=round(initial_stop_loss, 2),
+        level1_trigger=round(level1_trigger, 2),
+        level1_shares=level1_shares,
+        level2_trigger=round(level2_trigger, 2),
+        level2_shares=level2_shares,
+        atr_ratio=round(atr_ratio, 3),
+        atr_overheated=atr_overheated,
+        price_above_bb=price_above_bb,
+        rsi9_overbought=rsi9_overbought,
+        circuit_breaker_triggered=circuit_breaker_triggered,
+        trailing_stop=round(trailing_stop, 2),
+        trailing_locked_pct=trailing_locked_pct,
+        current_price=round(current_price, 2),
+        current_atr=round(current_atr, 2),
+        highest_since_entry=round(highest_since_entry, 2),
+        level1_price_reached=level1_price_reached,
+        level2_price_reached=level2_price_reached,
+        level1_executable=level1_executable,
+        level2_executable=level2_executable,
+    )
 
 
 def calc_bias_ratio(current_price: float, ma20: float) -> float:
@@ -147,106 +249,6 @@ def calc_position_kelly(
     )
 
 
-def calc_pyramid_add_on(
-    total_planned_capital: float,
-    current_price: float,
-    ma20: float,
-    current_profit_pct: float,
-    breakout_confirmed: bool,
-    trend_continues: bool,
-    stage: str,
-) -> PyramidAddOnResult:
-    """
-    正金字塔加碼法計算器。
-
-    stage:
-        "base"   -> 第一筆（基本單）50%
-        "add_1"  -> 第二次加碼 30%
-        "add_2"  -> 第三次加碼 20%
-    """
-    if total_planned_capital <= 0:
-        raise ValueError("總計畫資金必須大於 0")
-    if current_price <= 0:
-        raise ValueError("現價必須大於 0")
-
-    bias_ratio = calc_bias_ratio(current_price, ma20)
-
-    stage_rules = {
-        "base": {
-            "label": "第一筆（基本單）",
-            "allocation_pct": 50.0,
-            "bias_limit": 3.0,
-        },
-        "add_1": {
-            "label": "第二次加碼",
-            "allocation_pct": 30.0,
-            "bias_limit": 5.0,
-        },
-        "add_2": {
-            "label": "第三次加碼",
-            "allocation_pct": 20.0,
-            "bias_limit": 7.0,
-        },
-    }
-    if stage not in stage_rules:
-        raise ValueError("stage 必須為 base / add_1 / add_2")
-
-    rule = stage_rules[stage]
-    planned_amount = total_planned_capital * rule["allocation_pct"] / 100
-    suggested_shares = max(1, math.floor(planned_amount / current_price))
-
-    reasons: list[str] = []
-    allowed = True
-
-    if not breakout_confirmed:
-        allowed = False
-        reasons.append("尚未確認站上月線或突破平台")
-
-    if stage == "base":
-        if bias_ratio >= rule["bias_limit"]:
-            allowed = False
-            reasons.append(f"BIAS {bias_ratio:.2f}% ≥ {rule['bias_limit']:.1f}%")
-    elif stage == "add_1":
-        if not trend_continues:
-            allowed = False
-            reasons.append("趨勢未確認持續")
-        if current_profit_pct < 5 or current_profit_pct > 10:
-            allowed = False
-            reasons.append("目前獲利未落在 +5% 到 +10% 區間")
-        if bias_ratio >= rule["bias_limit"]:
-            allowed = False
-            reasons.append(f"BIAS {bias_ratio:.2f}% ≥ {rule['bias_limit']:.1f}%")
-    elif stage == "add_2":
-        if not trend_continues:
-            allowed = False
-            reasons.append("趨勢未確認持續")
-        if current_profit_pct < 15:
-            allowed = False
-            reasons.append("目前獲利未達 +15%")
-        if bias_ratio >= rule["bias_limit"]:
-            allowed = False
-            reasons.append(f"BIAS {bias_ratio:.2f}% ≥ {rule['bias_limit']:.1f}%")
-
-    if allowed:
-        note = (
-            f"符合 {rule['label']} 條件，可動用計畫資金的 {rule['allocation_pct']:.0f}% ，"
-            f"約可買 {suggested_shares} 股。"
-        )
-    else:
-        note = f"目前不建議執行 {rule['label']}。"
-
-    return PyramidAddOnResult(
-        stage=rule["label"],
-        allocation_pct=rule["allocation_pct"],
-        entry_price=current_price,
-        ma20=ma20,
-        bias_ratio=bias_ratio,
-        planned_amount=round(planned_amount),
-        suggested_shares=suggested_shares,
-        allowed=allowed,
-        reasons=reasons,
-        note=note,
-    )
 
 
 def calc_portfolio_exposure(holdings_stats: list, account_size: float) -> dict:

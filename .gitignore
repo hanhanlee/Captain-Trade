@@ -11,6 +11,11 @@
 *.sqlite
 *.sqlite3
 
+# Local tools / secrets / runtime state
+tools/
+secrets/
+runtime/
+
 # Python
 __pycache__/
 *.py[cod]

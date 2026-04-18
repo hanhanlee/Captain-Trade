@@ -162,6 +162,21 @@ if worker is None:
 
 s = worker.status()
 
+def _market_day_context(latest_trading_day):
+    today = date.today()
+    is_weekend = today.weekday() >= 5
+    manual_closed = is_market_closed()
+    is_today_data = latest_trading_day == today
+    is_expected_open = (not is_weekend) and (not manual_closed)
+    return {
+        "today": today,
+        "is_weekend": is_weekend,
+        "manual_closed": manual_closed,
+        "is_expected_open": is_expected_open,
+        "is_today_data": is_today_data,
+        "is_waiting_today": is_expected_open and (not is_today_data),
+    }
+
 # ══ 區塊 1：狀態 & 控制 ══════════════════════════════════════════
 st.markdown('<div class="sec-header">系統狀態</div>', unsafe_allow_html=True)
 
@@ -197,7 +212,8 @@ elif s["paused_for_market"]:
 else:
     _ltd          = s.get("latest_trading_day")
     _yb_done      = s.get("yahoo_bridge_done", False)
-    _finmind_ok   = (_ltd == date.today())
+    _day_ctx      = _market_day_context(_ltd)
+    _finmind_ok   = _day_ctx["is_today_data"]
     _queue        = s.get("queue_size", 0)
     _fund_q       = s.get("fund_queue_size", 0)
 
@@ -209,8 +225,8 @@ else:
     elif _cur_stock.startswith("[基本面]"):
         _w_phase = "fund"
     elif _cur_stock and not _cur_stock.startswith("["):
-        # 純股票代碼：queue > 0 表示真正在更新，queue = 0 表示巡迴已完成快取的股票
-        _w_phase = "ohlcv" if _queue > 0 else "idle"
+        # 純股票代碼：queue > 0 表示真正在更新；queue = 0 則是在巡檢快取命中的股票。
+        _w_phase = "ohlcv" if _queue > 0 else "cache_check"
     else:
         _w_phase = "idle"
 
@@ -227,6 +243,11 @@ else:
         _cls, _icon = "ok", "🟢"
         _main = f"OHLCV 核心價格更新中（待完成 {_queue} 檔）"
         _sub  = f"正在抓取：{_cur_stock}　｜　完成後自動開始法人/融資補充"
+
+    elif _w_phase == "cache_check":
+        _cls, _icon = "ok", "🟢"
+        _main = "快取巡檢中"
+        _sub  = f"核心 OHLCV 待更新 0 檔　｜　正在檢查：{_cur_stock}"
 
     elif _w_phase in ("inst", "margin"):
         _inst_d = s.get("inst_supplementary_done", 0)
@@ -250,12 +271,22 @@ else:
         _main = f"今日資料全部更新完成（{_sup.strftime('%H:%M')}）"
         _sub  = "核心 OHLCV + 法人 + 融資融券 皆已就緒"
 
-    elif _yb_done and not _finmind_ok and datetime.now().hour >= 15:
+    elif _day_ctx["is_weekend"]:
+        _cls, _icon = "info", "🔵"
+        _main = "非交易日"
+        _sub = f"今天是週末，資料參考最近交易日 {_ltd}；不需等待今日資料"
+
+    elif _day_ctx["manual_closed"]:
+        _cls, _icon = "info", "🔵"
+        _main = "休市模式啟用中"
+        _sub = f"資料參考最近交易日 {_ltd}；關閉休市模式後才會恢復一般補抓"
+
+    elif _yb_done and _day_ctx["is_waiting_today"] and datetime.now().hour >= 15:
         _cls, _icon = "info", "🔵"
         _main = "Yahoo Bridge 已完成　等待 FinMind 盤後更新"
         _sub  = f"核心資料由 Yahoo 補充（基準日 {_ltd}），法人/融資待 FinMind 上線後補充"
 
-    elif not _finmind_ok and datetime.now().hour >= 15:
+    elif _day_ctx["is_waiting_today"] and datetime.now().hour >= 15:
         _cls, _icon = "info", "🔵"
         _main = "等待 FinMind 更新今日資料"
         _sub  = "FinMind 通常 15:30–19:00 發布，Worker 每輪自動重查，無需手動操作"
@@ -335,7 +366,7 @@ if _la_at and _la_stock:
         _phase_ctx = f"補充融資 {_marg_d2}/{_marg_t2}"
     elif _now_phase and not _now_phase.startswith("["):
         _q2 = s.get("queue_size", 0)
-        _phase_ctx = f"OHLCV 更新 剩 {_q2} 檔"
+        _phase_ctx = f"OHLCV 更新 剩 {_q2} 檔" if _q2 > 0 else "快取巡檢"
     else:
         _phase_ctx = ""
 
@@ -377,6 +408,7 @@ try:
 
     _ref_date  = resolve_latest_trading_day()
     _ref_str   = _ref_date.isoformat()
+    _ref_ctx   = _market_day_context(_ref_date)
     _smr       = get_cache_summary()
     _skip_ids  = set(get_delisted_stocks(include_legacy_no_update=True))
     _susp_ids  = set(get_suspended_stocks(today_only=True))
@@ -411,8 +443,7 @@ try:
 
     # 今日是否為交易日但 FinMind 尚未發布（例如下午 2 點）
     _ref_behind_today = (
-        _ref_date < date.today()
-        and date.today().weekday() < 5
+        _ref_ctx["is_waiting_today"]
         and datetime.now().hour >= 13
     )
 
@@ -430,6 +461,7 @@ except Exception:
     _inst_done_ref   = 0
     _margin_done_ref = 0
     _ref_behind_today = False
+    _ref_ctx = _market_day_context(_ref_date)
 
 elapsed_str = "—"
 if s["last_fetch_at"]:
@@ -464,6 +496,10 @@ st.markdown(f"""
 _ref_display = _ref_str
 if _ref_date == date.today():
     _ref_display = f"{_ref_str}（今日）"
+elif _ref_ctx.get("is_weekend"):
+    _ref_display = f"{_ref_str}（週末非交易日）"
+elif _ref_ctx.get("manual_closed"):
+    _ref_display = f"{_ref_str}（休市模式）"
 elif _ref_behind_today:
     _ref_display = f"{_ref_str}　⚠️ 今日 {date.today()} 尚待 FinMind 發布"
 
@@ -495,12 +531,12 @@ st.markdown(f"""
   <div class="metric-box {_inst_cls}">
     <div class="mb-label">法人資料</div>
     <div class="mb-val">{_inst_val}</div>
-    <div class="mb-sub">已完成 {_inst_done_ref if _w_inst_total == 0 else _w_inst_done} / {_inst_active} 檔</div>
+    <div class="mb-sub">已完成 {_inst_done_ref} / {_inst_active} 檔</div>
   </div>
   <div class="metric-box {_margin_cls}">
     <div class="mb-label">融資融券</div>
     <div class="mb-val">{_margin_val}</div>
-    <div class="mb-sub">已完成 {_margin_done_ref if _w_marg_total == 0 else _w_marg_done} / {_margin_active} 檔</div>
+    <div class="mb-sub">已完成 {_margin_done_ref} / {_margin_active} 檔</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -533,22 +569,14 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
         _core_done = 0
 
     # Worker supplementary 計數器比 DB date 查詢更即時（不受法人/融資發布時間落差影響）
-    if _w_inst_total > 0:
-        _inst_done  = _w_inst_done
-        _inst_total = _w_inst_total
-    else:
-        _inst_done  = _inst_done_ref
-        _inst_total = _inst_active
-
-    if _w_marg_total > 0:
-        _margin_done  = _w_marg_done
-        _margin_total = _w_marg_total
-    else:
-        _margin_done  = _margin_done_ref
-        _margin_total = _margin_active
+    _inst_done  = _inst_done_ref
+    _inst_total = _inst_active
+    _margin_done  = _margin_done_ref
+    _margin_total = _margin_active
     _core_pct      = _core_done / _active_total if _active_total else 0
-    _finmind_updated = (s.get("latest_trading_day") == date.today())
-    _is_waiting_now  = (not _finmind_updated and datetime.now().hour >= 15)
+    _progress_ctx = _market_day_context(s.get("latest_trading_day"))
+    _finmind_updated = _progress_ctx["is_today_data"]
+    _is_waiting_now  = (_progress_ctx["is_waiting_today"] and datetime.now().hour >= 15)
 
     def _pbar(label, done, total, note=""):
         pct = min(done / total, 1.0) if total > 0 else 0.0
@@ -564,6 +592,10 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
     _ohlcv_queue_left = s.get("queue_size", 0)
     if _is_waiting_now:
         _supp_note = "⏳ 等待 FinMind 盤後更新（通常 17–19 時）"
+    elif _progress_ctx["is_weekend"]:
+        _supp_note = "非交易日，使用最近交易日資料"
+    elif _progress_ctx["manual_closed"]:
+        _supp_note = "休市模式中，使用最近交易日資料"
     elif _ohlcv_queue_left > 0:
         _supp_note = f"⏳ 等待 OHLCV 核心資料完成（還剩 {_ohlcv_queue_left} 檔）"
     elif _core_pct < 0.5:
@@ -678,6 +710,24 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
                 if ok_l or fail_l: st.rerun()
 
     # ── 附加資料排除清單 ─────────────────────────────────────────
+    _inst_err_ids = s.get("inst_error_ids", [])
+    _margin_err_ids = s.get("margin_error_ids", [])
+    if _inst_err_ids or _margin_err_ids:
+        with st.expander(
+            f"⚠️ 附加資料抓取錯誤（法人 {len(_inst_err_ids)} 檔 ／ 融資 {len(_margin_err_ids)} 檔）",
+            expanded=True
+        ):
+            st.caption(
+                "以下股票本次 worker 啟動期間抓取附加資料時發生錯誤。"
+                "這類錯誤通常是暫時性 API/網路問題，worker 下一輪仍會重試。"
+            )
+            if _inst_err_ids:
+                st.markdown(f"**法人抓取錯誤（{len(_inst_err_ids)} 檔）：**")
+                st.code("  ".join(_inst_err_ids[:200]) + ("  ..." if len(_inst_err_ids) > 200 else ""))
+            if _margin_err_ids:
+                st.markdown(f"**融資融券抓取錯誤（{len(_margin_err_ids)} 檔）：**")
+                st.code("  ".join(_margin_err_ids[:200]) + ("  ..." if len(_margin_err_ids) > 200 else ""))
+
     if _inst_no_upd > 0 or _margin_no_upd > 0:
         with st.expander(
             f"ℹ️ 附加資料排除清單（法人 {_inst_no_upd} 檔 ／ 融資 {_margin_no_upd} 檔）",

@@ -125,6 +125,8 @@ class PrefetchWorker:
         self._supplementary_date: date | None = None      # 已執行 Supplementary 的日期
         self._inst_no_update: set = set()                 # 本次啟動中法人無資料的股票
         self._margin_no_update: set = set()               # 本次啟動中融資無資料的股票
+        self._inst_error: set = set()                     # 本次啟動中法人抓取錯誤的股票
+        self._margin_error: set = set()                   # 本次啟動中融資抓取錯誤的股票
 
     # ── 公開控制 ───────────────────────────────────────────────
 
@@ -230,6 +232,15 @@ class PrefetchWorker:
     def _within_trading_hours(self) -> bool:
         if self.rebuild_mode or self.backtest_rebuild_mode:
             return False   # 重建模式：不受交易時間限制
+        today = date.today()
+        if today.weekday() >= 5:
+            return False
+        try:
+            from db.settings import is_market_closed
+            if is_market_closed():
+                return False
+        except Exception:
+            pass
         now = datetime.now().time()
         from datetime import time as _time
         return _time(9, 0) <= now <= self._get_trading_end_time()
@@ -702,20 +713,25 @@ class PrefetchWorker:
 
     def _should_run_supplementary(self) -> bool:
         """判斷是否需要執行 Supplementary 附加資料抓取（法人 + 融資）"""
-        today = date.today()
-        if self._supplementary_date == today:
-            return False
-        # 只在 FinMind 已更新今日資料後才執行（確保附加資料與核心資料同日）
         try:
             ltd = _latest_trading_day()
-            if ltd < today:
-                return False  # FinMind 尚未更新今日資料
         except Exception:
             return False
-        # 週末不執行
-        if today.weekday() >= 5:
-            return False
-        return True
+
+        if self._supplementary_date != ltd:
+            return True
+
+        # 若同一交易日曾開始補抓但沒有完成（例如舊版 import 錯誤、429、
+        # app 被中斷），下一輪仍應繼續補，不可只因日期相同就永久跳過。
+        if not self.supplementary_completed_at:
+            return True
+
+        if self.inst_supplementary_total > 0 and self.inst_supplementary_done < self.inst_supplementary_total:
+            return True
+        if self.margin_supplementary_total > 0 and self.margin_supplementary_done < self.margin_supplementary_total:
+            return True
+
+        return False
 
     def _fetch_inst_today(self, stock_id: str) -> str:
         """
@@ -724,12 +740,13 @@ class PrefetchWorker:
         """
         try:
             from db.inst_cache import is_inst_fresh, save_institutional
-            from data.finmind_client import get_institutional
+            from data.finmind_client import get_institutional_investors
 
-            if is_inst_fresh(stock_id):
+            target_date = _latest_trading_day()
+            if is_inst_fresh(stock_id, target_date=target_date):
                 return "cached"
 
-            df = get_institutional(stock_id, days=3)
+            df = get_institutional_investors(stock_id, days=5)
             if df.empty:
                 return "no_update"
 
@@ -750,19 +767,19 @@ class PrefetchWorker:
             from db.margin_cache import get_margin, save_margin
             from data.finmind_client import get_margin_trading
 
-            today = date.today()
-            today_str = today.strftime("%Y-%m-%d")
+            target_date = _latest_trading_day()
+            target_str = target_date.strftime("%Y-%m-%d")
 
-            # 已有今日資料
-            existing = get_margin(stock_id, days=1)
+            # 已有最新交易日資料
+            existing = get_margin(stock_id, days=10)
             if not existing.empty:
                 latest = existing["date"].max()
                 if hasattr(latest, "date"):
                     latest = latest.date()
-                if str(latest)[:10] >= today_str:
+                if str(latest)[:10] >= target_str:
                     return "cached"
 
-            df = get_margin_trading(stock_id, days=3)
+            df = get_margin_trading(stock_id, days=5)
             if df.empty:
                 return "no_update"
 
@@ -779,11 +796,40 @@ class PrefetchWorker:
         Supplementary 附加資料抓取（法人 + 融資融券）。
         在核心價格資料完成後執行，動態分母排除 no_update 的股票。
         """
-        today = date.today()
-        self._supplementary_date = today
+        target_date = _latest_trading_day()
+        if self._supplementary_date != target_date:
+            self._inst_no_update.clear()
+            self._margin_no_update.clear()
+            self._inst_error.clear()
+            self._margin_error.clear()
+            self.supplementary_completed_at = None
+        self._supplementary_date = target_date
 
-        inst_queue  = [sid for sid in active_ids if sid not in self._inst_no_update]
-        margin_queue = [sid for sid in active_ids if sid not in self._margin_no_update]
+        target_str = target_date.isoformat()
+        active_set = set(active_ids)
+        try:
+            from db.database import get_session
+            from sqlalchemy import text
+            with get_session() as sess:
+                inst_done_ids = {
+                    r[0] for r in sess.execute(
+                        text("SELECT DISTINCT stock_id FROM inst_cache WHERE date = :d"),
+                        {"d": target_str},
+                    ).fetchall()
+                }
+                margin_done_ids = {
+                    r[0] for r in sess.execute(
+                        text("SELECT DISTINCT stock_id FROM margin_cache WHERE date = :d"),
+                        {"d": target_str},
+                    ).fetchall()
+                }
+        except Exception as e:
+            logger.warning(f"Supplementary 讀取已完成清單失敗：{e}")
+            inst_done_ids = set()
+            margin_done_ids = set()
+
+        inst_queue = sorted(active_set - inst_done_ids - self._inst_no_update)
+        margin_queue = sorted(active_set - margin_done_ids - self._margin_no_update)
 
         self.inst_supplementary_total   = len(inst_queue)
         self.margin_supplementary_total = len(margin_queue)
@@ -807,7 +853,8 @@ class PrefetchWorker:
             self._note_attempt(f"[法人] {stock_id}", result)
 
             if result in ("ok", "cached"):
-                self._record_request()
+                if result == "ok":
+                    self._record_request()
                 self.last_fetch_at = datetime.now()
                 self.inst_supplementary_done += 1
                 # 動態縮小分母
@@ -819,7 +866,8 @@ class PrefetchWorker:
             elif result == "rate_limit":
                 hit_rate_limit = True
                 break
-            # 'error': 繼續下一檔
+            elif result == "error":
+                self._inst_error.add(stock_id)
 
         if hit_rate_limit and not self._stop_event.is_set():
             self.current_stock = ""
@@ -839,7 +887,8 @@ class PrefetchWorker:
             self._note_attempt(f"[融資] {stock_id}", result)
 
             if result in ("ok", "cached"):
-                self._record_request()
+                if result == "ok":
+                    self._record_request()
                 self.last_fetch_at = datetime.now()
                 self.margin_supplementary_done += 1
                 if result == "ok":
@@ -850,6 +899,8 @@ class PrefetchWorker:
             elif result == "rate_limit":
                 hit_rate_limit = True
                 break
+            elif result == "error":
+                self._margin_error.add(stock_id)
 
         self.current_stock = ""
 
@@ -1164,6 +1215,10 @@ class PrefetchWorker:
             "last_attempt_stock":          self.last_attempt_stock,
             "inst_no_update_count":        len(self._inst_no_update),
             "margin_no_update_count":      len(self._margin_no_update),
+            "inst_error_count":            len(self._inst_error),
+            "margin_error_count":          len(self._margin_error),
+            "inst_error_ids":              sorted(self._inst_error),
+            "margin_error_ids":            sorted(self._margin_error),
             "inst_supplementary_total":    self.inst_supplementary_total,
             "inst_supplementary_done":     self.inst_supplementary_done,
             "margin_supplementary_total":  self.margin_supplementary_total,

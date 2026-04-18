@@ -6,7 +6,7 @@ TTL 設計：24 小時。
   - 休市期間：資料不變，直接讀快取，完全不消耗 API
 """
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from sqlalchemy import text
 from .database import get_session, ENGINE
 from .models import Base
@@ -14,28 +14,47 @@ from .models import Base
 INST_CACHE_TTL_HOURS = 24
 
 
-def is_inst_fresh(stock_id: str, max_age_hours: int = INST_CACHE_TTL_HOURS) -> bool:
+def _default_target_date() -> date:
+    today = date.today()
+    if today.weekday() == 5:
+        return today - timedelta(days=1)
+    if today.weekday() == 6:
+        return today - timedelta(days=2)
+    if datetime.now().hour < 15:
+        target = today - timedelta(days=1)
+        while target.weekday() >= 5:
+            target -= timedelta(days=1)
+        return target
+    return today
+
+
+def is_inst_fresh(
+    stock_id: str,
+    max_age_hours: int = INST_CACHE_TTL_HOURS,
+    target_date: date | str | None = None,
+) -> bool:
     """
     回傳 True 表示快取夠新（不需重新 API 請求）。
 
-    休市模式開啟時：只要有任何快取就視為新鮮（不過期），
-    完全不消耗 API 額度。
+    快取必須已涵蓋 target_date 才算新鮮。max_age_hours 保留為相容舊呼叫，
+    但不再只靠 fetched_at 判斷，避免把舊交易日資料誤當最新資料。
     """
+    if target_date is None:
+        target_date = _default_target_date()
+    target_str = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)[:10]
+
     with get_session() as sess:
         row = sess.execute(
-            text("SELECT MAX(fetched_at) FROM inst_cache WHERE stock_id = :sid"),
+            text("SELECT MAX(date), MAX(fetched_at) FROM inst_cache WHERE stock_id = :sid"),
             {"sid": stock_id},
         ).fetchone()
     if not row or not row[0]:
         return False  # 沒有任何快取，必須抓取
 
-    # 休市模式：有快取就直接用，不管多舊
-    from db.settings import is_market_closed
-    if is_market_closed():
+    latest_date = str(row[0])[:10]
+    if latest_date >= target_str:
         return True
-
-    fetched = datetime.fromisoformat(str(row[0])) if isinstance(row[0], str) else row[0]
-    return (datetime.now() - fetched).total_seconds() < max_age_hours * 3600
+    return False
 
 
 def save_institutional(stock_id: str, df: pd.DataFrame) -> int:
