@@ -761,8 +761,28 @@ def render_institutional_chart(main_force_df: pd.DataFrame):
         ),
     )
     st.plotly_chart(fig, use_container_width=True)
+    latest_concentration = pd.to_numeric(latest.get("top5_buy_concentration"), errors="coerce")
+    latest_streak = pd.to_numeric(latest.get("consecutive_buy_days"), errors="coerce")
+    latest_reversal_raw = pd.to_numeric(latest.get("reversal_flag"), errors="coerce")
+    concentration_text = (
+        f"{float(latest_concentration):.1f}%"
+        if pd.notna(latest_concentration) else "N/A"
+    )
+    streak_text = (
+        f"{int(latest_streak)} 天"
+        if pd.notna(latest_streak) else "N/A"
+    )
+    reversal_text = (
+        "是" if pd.notna(latest_reversal_raw) and bool(latest_reversal_raw) else
+        ("否" if pd.notna(latest_reversal_raw) else "N/A")
+    )
     st.caption(
         f"■ {latest_label} ｜ 主力買賣超 = 前 15 大買超券商淨買張 - 前 15 大賣超券商淨賣張"
+    )
+    st.caption(
+        f"Top 5 買超集中度：{concentration_text} ｜ "
+        f"連續買超：{streak_text} ｜ "
+        f"反手訊號：{reversal_text}"
     )
 
 

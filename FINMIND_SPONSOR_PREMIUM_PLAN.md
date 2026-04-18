@@ -225,7 +225,7 @@ risk_flags_cache(
 - 接入選股雷達：暫停交易排除尚未啟用，避免此階段改變策略結果；等 scanner scoring/排除規則一起設計。
 - 接入持股監控：明確風險才 LINE 推播。
 
-### Step 1-7：分點主力補強
+### Step 1-7：分點主力補強（已完成第一版）
 
 沿用現有：
 
@@ -254,6 +254,18 @@ reversal_flag
 - `risk_penalty` 存正數。
 - 缺資料應標記 missing，不可當作 0。
 - 歷史回測不可使用基準日後才知道的分點資料。
+
+完成狀態：
+
+- 已在 `broker_main_force_cache` 新增 `top5_buy_concentration`、`consecutive_buy_days`、`reversal_flag` 欄位與舊 DB migration；新欄位允許 `NULL`，避免缺資料被誤判為 0。
+- 已在 `summarize_broker_main_force()` 計算 Top 5 買超集中度：前 5 大買超 / 前 15 大買超。
+- 已在 `get_broker_main_force_series()` 回傳序列時補上連續主力買超天數與反手訊號，並回寫 cache。
+- 已在個股分析的主力買賣超圖下方顯示 Top 5 集中度、連續買超天數、反手訊號。
+- 已驗證 `reversal_flag` 採用「前兩天 net > 0 且今天 net < 0」才觸發，降低單日雜訊造成的誤報。
+
+待完成：
+
+- Scanner / Premium score 是否使用這三個指標，等 Step 2-10 分數拆分時再決定。
 
 ### Step 1-8：基本面 Penalty Mode
 

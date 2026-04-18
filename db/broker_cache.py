@@ -22,6 +22,9 @@ def ensure_broker_cache_table():
                 sell_top15   REAL DEFAULT 0,
                 net          REAL DEFAULT 0,
                 broker_count INTEGER DEFAULT 0,
+                top5_buy_concentration REAL,
+                consecutive_buy_days INTEGER,
+                reversal_flag INTEGER,
                 fetched_at   TEXT,
                 PRIMARY KEY (stock_id, date)
             )
@@ -30,6 +33,18 @@ def ensure_broker_cache_table():
             CREATE INDEX IF NOT EXISTS idx_broker_main_force_stock_date
             ON broker_main_force_cache (stock_id, date)
         """))
+        for col_name, col_type in [
+            ("top5_buy_concentration", "REAL"),
+            ("consecutive_buy_days", "INTEGER"),
+            ("reversal_flag", "INTEGER"),
+        ]:
+            exists = sess.execute(text(
+                "SELECT 1 FROM pragma_table_info('broker_main_force_cache') WHERE name = :name"
+            ), {"name": col_name}).fetchone()
+            if not exists:
+                sess.execute(text(
+                    f"ALTER TABLE broker_main_force_cache ADD COLUMN {col_name} {col_type}"
+                ))
         sess.commit()
 
 
@@ -45,7 +60,10 @@ def load_broker_main_force(stock_id: str, dates: list[str]) -> pd.DataFrame:
 
     with get_session() as sess:
         rows = sess.execute(text(f"""
-            SELECT date, buy_top15, sell_top15, net, broker_count, fetched_at
+            SELECT
+                date, buy_top15, sell_top15, net, broker_count,
+                top5_buy_concentration, consecutive_buy_days, reversal_flag,
+                fetched_at
             FROM broker_main_force_cache
             WHERE stock_id = :sid AND date IN ({placeholders})
             ORDER BY date ASC
@@ -53,16 +71,34 @@ def load_broker_main_force(stock_id: str, dates: list[str]) -> pd.DataFrame:
 
     if not rows:
         return pd.DataFrame(columns=[
-            "date", "buy_top15", "sell_top15", "net", "broker_count", "fetched_at"
+            "date", "buy_top15", "sell_top15", "net", "broker_count",
+            "top5_buy_concentration", "consecutive_buy_days", "reversal_flag",
+            "fetched_at"
         ])
 
     df = pd.DataFrame(rows, columns=[
-        "date", "buy_top15", "sell_top15", "net", "broker_count", "fetched_at"
+        "date", "buy_top15", "sell_top15", "net", "broker_count",
+        "top5_buy_concentration", "consecutive_buy_days", "reversal_flag",
+        "fetched_at"
     ])
     df["date"] = pd.to_datetime(df["date"])
     for col in ["buy_top15", "sell_top15", "net", "broker_count"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    for col in ["top5_buy_concentration", "consecutive_buy_days", "reversal_flag"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+def _nullable_float(value):
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
+def _nullable_int(value):
+    if value is None or pd.isna(value):
+        return None
+    return int(value)
 
 
 def save_broker_main_force(stock_id: str, rows: list[dict]) -> int:
@@ -85,15 +121,26 @@ def save_broker_main_force(stock_id: str, rows: list[dict]) -> int:
             "sell_top15": float(row.get("sell_top15") or 0),
             "net": float(row.get("net") or 0),
             "broker_count": int(row.get("broker_count") or 0),
-            "fetched_at": now,
+            "top5_buy_concentration": _nullable_float(row.get("top5_buy_concentration")),
+            "consecutive_buy_days": _nullable_int(row.get("consecutive_buy_days")),
+            "reversal_flag": _nullable_int(row.get("reversal_flag")),
+            "fetched_at": row.get("fetched_at") or now,
         })
 
     with get_session() as sess:
         sess.execute(text("""
             INSERT OR REPLACE INTO broker_main_force_cache
-                (stock_id, date, buy_top15, sell_top15, net, broker_count, fetched_at)
+                (
+                    stock_id, date, buy_top15, sell_top15, net, broker_count,
+                    top5_buy_concentration, consecutive_buy_days, reversal_flag,
+                    fetched_at
+                )
             VALUES
-                (:stock_id, :date, :buy_top15, :sell_top15, :net, :broker_count, :fetched_at)
+                (
+                    :stock_id, :date, :buy_top15, :sell_top15, :net, :broker_count,
+                    :top5_buy_concentration, :consecutive_buy_days, :reversal_flag,
+                    :fetched_at
+                )
         """), payload)
         sess.commit()
 

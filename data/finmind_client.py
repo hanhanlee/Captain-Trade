@@ -450,16 +450,57 @@ def summarize_broker_main_force(df: pd.DataFrame, top_n: int = 15) -> dict:
     latest_date = pd.to_datetime(grouped["date"].iloc[0]).date().isoformat()
     buy_top = grouped[grouped["net_volume"] > 0].nlargest(top_n, "net_volume")
     sell_top = grouped[grouped["net_volume"] < 0].nsmallest(top_n, "net_volume")
+    buy_top5 = grouped[grouped["net_volume"] > 0].nlargest(5, "net_volume")
 
     buy_top15 = float(buy_top["net_volume"].sum()) / 1000
     sell_top15 = float((-sell_top["net_volume"]).sum()) / 1000
+    buy_top5_shares = float(buy_top5["net_volume"].sum()) / 1000
+    top5_buy_concentration = (
+        round(buy_top5_shares / buy_top15 * 100, 2)
+        if buy_top15 > 0 else 0.0
+    )
     return {
         "date": latest_date,
         "buy_top15": buy_top15,
         "sell_top15": sell_top15,
         "net": buy_top15 - sell_top15,
         "broker_count": int(grouped["securities_trader_id"].nunique()),
+        "top5_buy_concentration": top5_buy_concentration,
     }
+
+
+def enrich_broker_main_force_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add series-level broker force metrics.
+
+    - consecutive_buy_days: running streak where daily main-force net > 0.
+    - reversal_flag: previous 2 days were net-buy and current day turns net-sell.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy().sort_values("date").reset_index(drop=True)
+    work["net"] = pd.to_numeric(work.get("net", 0), errors="coerce").fillna(0)
+    if "top5_buy_concentration" not in work.columns:
+        work["top5_buy_concentration"] = pd.NA
+    work["top5_buy_concentration"] = pd.to_numeric(
+        work["top5_buy_concentration"], errors="coerce"
+    )
+
+    streaks = []
+    streak = 0
+    for value in work["net"]:
+        if value > 0:
+            streak += 1
+        else:
+            streak = 0
+        streaks.append(streak)
+    work["consecutive_buy_days"] = streaks
+
+    prev1_buy = work["net"].shift(1) > 0
+    prev2_buy = work["net"].shift(2) > 0
+    work["reversal_flag"] = ((work["net"] < 0) & prev1_buy & prev2_buy).astype(int)
+    return work
 
 
 def get_broker_main_force_series(
@@ -512,6 +553,8 @@ def get_broker_main_force_series(
     if fresh.empty:
         return fresh
     fresh = fresh.sort_values("date").reset_index(drop=True)
+    fresh = enrich_broker_main_force_metrics(fresh)
+    save_broker_main_force(stock_id, fresh.to_dict("records"))
     return fresh
 
 

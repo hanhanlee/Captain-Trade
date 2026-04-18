@@ -116,6 +116,9 @@ def _migrate_schema():
                     sell_top15   REAL DEFAULT 0,
                     net          REAL DEFAULT 0,
                     broker_count INTEGER DEFAULT 0,
+                    top5_buy_concentration REAL,
+                    consecutive_buy_days INTEGER,
+                    reversal_flag INTEGER,
                     fetched_at   TEXT,
                     PRIMARY KEY (stock_id, date)
                 )
@@ -125,6 +128,17 @@ def _migrate_schema():
                 ON broker_main_force_cache (stock_id, date)
             """))
             logger.info("migration: 建立 broker_main_force_cache 表")
+        else:
+            for col_name, col_type in [
+                ("top5_buy_concentration", "REAL"),
+                ("consecutive_buy_days", "INTEGER"),
+                ("reversal_flag", "INTEGER"),
+            ]:
+                if not _column_exists(conn, "broker_main_force_cache", col_name):
+                    conn.execute(text(
+                        f"ALTER TABLE broker_main_force_cache ADD COLUMN {col_name} {col_type}"
+                    ))
+                    logger.info("migration: broker_main_force_cache 新增欄位 %s", col_name)
 
         if not _table_exists(conn, "risk_flags_cache"):
             conn.execute(text("""
