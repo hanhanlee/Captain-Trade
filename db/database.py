@@ -126,6 +126,23 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 broker_main_force_cache 表")
 
+        if not _table_exists(conn, "risk_flags_cache"):
+            conn.execute(text("""
+                CREATE TABLE risk_flags_cache (
+                    stock_id    TEXT NOT NULL,
+                    date        TEXT NOT NULL,
+                    flag_type   TEXT NOT NULL,
+                    detail      TEXT,
+                    fetched_at  TEXT,
+                    PRIMARY KEY (stock_id, date, flag_type)
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_risk_flags_stock_date
+                ON risk_flags_cache (stock_id, date)
+            """))
+            logger.info("migration: 建立 risk_flags_cache 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

@@ -54,6 +54,7 @@ _PREMIUM_DATASETS = {
     "TaiwanStockHoldingSharesPer",
     "TaiwanStockDispositionSecuritiesPeriod",
     "TaiwanStockSuspended",
+    "TaiwanStockPriceLimit",
     "TaiwanStockKBar",
     "TaiwanStockPriceTick",
 }
@@ -1035,6 +1036,137 @@ def smart_get_fundamentals(stock_id: str) -> dict:
     if metrics:
         save_fundamental(stock_id, metrics)
     return metrics
+
+
+def _first_existing(row: dict, names: list[str], default=None):
+    for name in names:
+        value = row.get(name)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _row_date(row: dict, fallback: str | None = None) -> str:
+    value = _first_existing(
+        row,
+        [
+            "date",
+            "Date",
+            "announcement_date",
+            "effective_date",
+            "start_date",
+            "begin_date",
+            "trading_date",
+        ],
+        fallback,
+    )
+    if hasattr(value, "date"):
+        return value.date().isoformat()
+    return str(value or "")[:10]
+
+
+def _row_stock_id(row: dict, fallback: str = "") -> str:
+    return str(_first_existing(row, ["stock_id", "StockID", "stock_no", "stock_code"], fallback) or "").strip()
+
+
+def _normalize_risk_flag_rows(df: pd.DataFrame, flag_type: str, stock_id: str = "") -> list[dict]:
+    if df is None or df.empty:
+        return []
+
+    rows = []
+    for raw in df.to_dict("records"):
+        sid = _row_stock_id(raw, stock_id)
+        d = _row_date(raw)
+        if not sid or not d:
+            continue
+        detail = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in raw.items()}
+        detail.setdefault("flag_type", flag_type)
+        rows.append({
+            "stock_id": sid,
+            "date": d,
+            "flag_type": flag_type,
+            "detail": detail,
+        })
+    return rows
+
+
+def fetch_risk_flags_from_finmind(
+    stock_id: str = "",
+    start_date: str = "",
+    end_date: str = "",
+) -> list[dict]:
+    """
+    Fetch and normalize official risk flags from FinMind Premium datasets.
+
+    This function does not cache by itself. Use get_stock_risk_flags() for the
+    cache-first public API.
+    """
+    datasets = [
+        ("TaiwanStockDispositionSecuritiesPeriod", "disposition"),
+        ("TaiwanStockSuspended", "suspended"),
+        ("TaiwanStockPriceLimit", "price_limit"),
+    ]
+    normalized: list[dict] = []
+    for dataset, flag_type in datasets:
+        kwargs = {}
+        if end_date:
+            kwargs["end_date"] = end_date
+        try:
+            df = _get(dataset, stock_id=stock_id, start_date=start_date, **kwargs)
+        except PremiumUnavailableError as exc:
+            logger.debug(f"fetch_risk_flags {dataset}: Premium unavailable: {exc}")
+            continue
+        except Exception as exc:
+            logger.debug(f"fetch_risk_flags {dataset} failed: {exc}")
+            continue
+        if not df.empty:
+            normalized.extend(_normalize_risk_flag_rows(df, flag_type, stock_id=stock_id))
+    return normalized
+
+
+def get_stock_risk_flags(
+    stock_id: str,
+    start_date: str,
+    end_date: str | None = None,
+    *,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Cache-first official risk flags for one stock/date range.
+
+    If Premium is disabled or temporarily unavailable, returns cached rows if
+    present, otherwise an empty DataFrame. Free-mode behavior remains intact.
+    """
+    from db.risk_flags_cache import load_risk_flags, save_risk_flags
+
+    end = end_date or start_date
+    cached = pd.DataFrame() if force_refresh else load_risk_flags(stock_id, start_date, end)
+    if not force_refresh and not cached.empty:
+        return cached
+
+    try:
+        rows = fetch_risk_flags_from_finmind(stock_id=stock_id, start_date=start_date, end_date=end)
+    except PremiumUnavailableError as exc:
+        logger.debug(f"get_stock_risk_flags {stock_id}: Premium unavailable: {exc}")
+        return cached
+    except Exception as exc:
+        logger.debug(f"get_stock_risk_flags {stock_id} failed: {exc}")
+        return cached
+
+    if rows:
+        save_risk_flags(rows)
+        return load_risk_flags(stock_id, start_date, end)
+    return cached
+
+
+def get_cached_risk_flags(
+    stock_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    from db.risk_flags_cache import load_risk_flags
+
+    return load_risk_flags(stock_id=stock_id, start_date=start_date, end_date=end_date)
 
 
 def get_batch_prices(stock_ids: list, days: int = 120) -> dict[str, pd.DataFrame]:

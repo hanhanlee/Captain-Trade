@@ -168,7 +168,7 @@ API 回 402 / 403 時：
 
 ## 3. Phase 1：高價值功能
 
-### Step 1-6：官方風險旗標
+### Step 1-6：官方風險旗標（施工中）
 
 資料源：
 
@@ -207,6 +207,21 @@ risk_flags_cache(
 
 - 暫停交易排除必須以基準日或下一交易日可知資料為準。
 - 不可用未來公告排除過去回測標的。
+
+完成狀態：
+
+- 已在 `db/database.py` migration 建立 `risk_flags_cache`。
+- 已新增 `db/risk_flags_cache.py`，提供 `save_risk_flags()` / `load_risk_flags()`。
+- 已在 `data/finmind_client.py` 新增 `fetch_risk_flags_from_finmind()`、`get_stock_risk_flags()`、`get_cached_risk_flags()`。
+- Premium 關閉時，`get_stock_risk_flags()` 會回傳既有 cache 或空 DataFrame，不會打 Premium API。
+- `TaiwanStockPriceLimit` 經官方文件確認為 backer / sponsor dataset，已納入 Premium gate。
+- `fetch_risk_flags_from_finmind()` 已改為 per-dataset try/catch，單一 dataset unavailable 不會中止其他 dataset。
+
+待完成：
+
+- 接入選股雷達：顯示 flags、處置扣分、暫停交易排除。
+- 接入個股分析：顯示官方風險旗標區塊。
+- 接入持股監控：明確風險才 LINE 推播。
 
 ### Step 1-7：分點主力補強
 
