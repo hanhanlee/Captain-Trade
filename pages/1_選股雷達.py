@@ -10,7 +10,13 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import time
 
-from data.finmind_client import get_daily_price, summarize_institutional_signal, get_cached_risk_flags
+from data.finmind_client import (
+    can_fetch_premium_fundamentals,
+    get_cached_risk_flags,
+    get_daily_price,
+    get_fundamentals_mode,
+    summarize_institutional_signal,
+)
 from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
@@ -477,6 +483,8 @@ with st.sidebar:
                 "min_roe":              float(min_roe),
                 "max_debt_ratio":       float(max_debt),
             }
+            _fund_mode_label = get_fundamentals_mode()
+            st.caption(f"目前基本面模式：`{_fund_mode_label}`（off/warn/penalty/exclude 由 config.toml 控制）")
             st.caption("💡 首次啟用時需從 API 抓財報資料，建議先讓背景工作器預先填充")
 
     st.markdown("---")
@@ -720,7 +728,26 @@ with tab_scan:
 
         # ── 基本面資料預載（快取優先，首次可能需要 API）──────────
         fund_data: dict = {}
-        if use_fundamental and fundamental_filter and not _disable_non_price_extras:
+        fundamental_mode = get_fundamentals_mode()
+        fundamental_enabled_for_scan = (
+            use_fundamental
+            and bool(fundamental_filter)
+            and not _disable_non_price_extras
+            and fundamental_mode != "off"
+        )
+        if use_fundamental and fundamental_mode == "off":
+            st.info("基本面模式目前為 off，本次掃描跳過基本面條件。")
+        if fundamental_enabled_for_scan:
+            _can_fetch_fund, _fund_reason = can_fetch_premium_fundamentals()
+            if not _can_fetch_fund:
+                st.warning(
+                    "基本面資料需要 FinMind Premium。"
+                    f"目前狀態：{_fund_reason}。本次掃描會整批跳過基本面條件，"
+                    "不會逐檔呼叫財報 API。"
+                )
+                fundamental_enabled_for_scan = False
+
+        if fundamental_enabled_for_scan:
             from data.finmind_client import smart_get_fundamentals
             fund_prog = st.progress(0, text="載入基本面資料（讀取快取）...")
             fund_api, fund_cache = 0, 0
@@ -752,6 +779,8 @@ with tab_scan:
                 st.caption(
                     f"基本面資料：快取 **{fund_cache}** 檔 / API **{fund_api}** 次"
                 )
+        else:
+            fundamental_filter = {}
 
         with st.spinner("計算指標，篩選中..."):
             use_inst = (dsm.institutional_available
@@ -781,6 +810,7 @@ with tab_scan:
                 overheat_action=overheat_action,
                 ma_breakout_mode=ma_breakout_mode,
                 strategy_version=strategy_version,
+                fundamental_mode=fundamental_mode,
                 debug=True,
             )
             st.session_state["debug_info"] = debug_info
@@ -891,12 +921,17 @@ with tab_scan:
             "close": "收盤", "change_pct": "漲跌%", "volume_ratio": "量比",
             "score": "強度分數", "rs_score": "RS分數", "bias_ratio": "乖離率(%)",
             "volatility_pct": "日均振幅%", "premium_flags": "Premium旗標",
+            "fundamental_penalty": "基本面扣分(未套用)",
+            "fundamental_flags": "基本面旗標",
+            "fundamental_missing_fields": "基本面缺資料",
             "risk_penalty": "風險扣分(未套用)", "signals": "觸發條件",
         })
         display_df.index = range(1, len(display_df) + 1)
 
         if "premium_flags" in result_df.columns and result_df["premium_flags"].astype(str).str.len().gt(0).any():
             st.caption("Premium 風險旗標目前只顯示，不影響 v3/v4 必要條件、分數與排序。")
+        if "fundamental_flags" in result_df.columns and result_df["fundamental_flags"].astype(str).str.len().gt(0).any():
+            st.caption("基本面 penalty / flags 目前只顯示，不影響 v3/v4 必要條件與排序；exclude 模式除外。")
 
         st.dataframe(display_df, use_container_width=True, height=500)
 

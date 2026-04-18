@@ -624,6 +624,65 @@ def _passes_fundamental(fund: dict, config: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def compute_fundamental_penalty(
+    fund: dict,
+    config: dict,
+    mode: str = "penalty",
+) -> tuple[int, list[str], list[str]]:
+    """
+    Convert fundamentals into display-only penalty/flag fields.
+
+    Missing fields are reported separately and are not treated as failures.
+    """
+    mode = (mode or "penalty").lower()
+    if mode == "off" or not config:
+        return 0, [], []
+    if not fund:
+        return 0, [], ["fundamentals"]
+
+    penalty = 0
+    flags: list[str] = []
+    missing: list[str] = []
+
+    def _add(flag: str, points: int):
+        nonlocal penalty
+        flags.append(flag)
+        if mode == "penalty":
+            penalty += points
+
+    eps = fund.get("eps_ttm")
+    if config.get("require_eps_positive"):
+        if eps is None:
+            missing.append("eps_ttm")
+        elif eps <= 0:
+            _add(f"EPS TTM {eps:.2f} <= 0", 10)
+
+    cf = fund.get("operating_cf")
+    if config.get("require_positive_cf"):
+        if cf is None:
+            missing.append("operating_cf")
+        elif cf <= 0:
+            _add(f"營業現金流 {cf:.0f} <= 0", 10)
+
+    roe = fund.get("roe")
+    min_roe = config.get("min_roe", 0)
+    if min_roe > 0:
+        if roe is None:
+            missing.append("roe")
+        elif roe < min_roe:
+            _add(f"ROE {roe:.1f}% < {min_roe}%", 5)
+
+    debt = fund.get("debt_ratio")
+    max_debt = config.get("max_debt_ratio", 0)
+    if max_debt > 0:
+        if debt is None:
+            missing.append("debt_ratio")
+        elif debt > max_debt:
+            _add(f"負債比 {debt:.1f}% > {max_debt}%", 5)
+
+    return int(penalty), flags, missing
+
+
 def run_scan(
     price_data: dict,
     stock_info: pd.DataFrame,
@@ -646,6 +705,7 @@ def run_scan(
     overheat_action: str = "drop",    # "drop" | "penalty"
     ma_breakout_mode: str = "strict", # "strict"：昨日三線全在線下；"loose"：昨日任一線在線下
     strategy_version: str = "v4",    # "v4"：領先攻擊版；"v3"：均線突破版
+    fundamental_mode: str = "exclude", # "off" | "warn" | "penalty" | "exclude"
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:
     """
@@ -673,6 +733,9 @@ def run_scan(
     margin_data = margin_data or {}
     fundamental_data = fundamental_data or {}
     fundamental_filter = fundamental_filter or {}
+    fundamental_mode = (fundamental_mode or "exclude").lower()
+    if fundamental_mode not in {"off", "warn", "penalty", "exclude"}:
+        fundamental_mode = "exclude"
 
     # 準備大盤收盤序列
     market_close = None
@@ -778,10 +841,16 @@ def run_scan(
                     continue
 
         # ── 基本面過濾（EPS / ROE / 現金流 / 負債比）────────────
-        if fundamental_filter:
+        fundamental_penalty = 0
+        fundamental_flags: list[str] = []
+        fundamental_missing: list[str] = []
+        if fundamental_filter and fundamental_mode != "off":
             fund = fundamental_data.get(stock_id, {})
+            fundamental_penalty, fundamental_flags, fundamental_missing = (
+                compute_fundamental_penalty(fund, fundamental_filter, fundamental_mode)
+            )
             passed, reason = _passes_fundamental(fund, fundamental_filter)
-            if not passed:
+            if fundamental_mode == "exclude" and not passed:
                 if debug:
                     stock_analysis[stock_id] = {
                         "stock_name": info.get("stock_name", ""),
@@ -867,6 +936,9 @@ def run_scan(
                 else None
             ),
             "overheated": is_overheated,
+            "fundamental_penalty": int(fundamental_penalty),
+            "fundamental_flags": "、".join(fundamental_flags),
+            "fundamental_missing_fields": "、".join(fundamental_missing),
             "inst_pass": bool(
                 sig.institutional_buy or sig.inst_total_buy or sig.foreign_trust_buy
             ),

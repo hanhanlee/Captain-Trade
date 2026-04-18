@@ -47,6 +47,10 @@ class PremiumState:
 class PremiumUnavailableError(RuntimeError):
     """Raised when a premium-only dataset is requested while Premium is unavailable."""
 
+    def __init__(self, message: str, reason: str = "unknown"):
+        super().__init__(message)
+        self.reason = reason
+
 
 _PREMIUM_DATASETS = {
     "TaiwanStockTradingDailyReport",
@@ -151,6 +155,32 @@ def get_premium_state() -> PremiumState:
         )
 
 
+def get_fundamentals_mode() -> str:
+    """Return normalized fundamentals mode from config.toml."""
+    mode = str(
+        _load_finmind_settings().get("features", {}).get("fundamentals_mode", "penalty")
+    ).strip().lower()
+    return mode if mode in {"off", "warn", "penalty", "exclude"} else "penalty"
+
+
+def can_fetch_premium_fundamentals() -> tuple[bool, str]:
+    """Whether fundamentals API fetches should be attempted right now."""
+    settings = _load_finmind_settings()
+    mode = get_fundamentals_mode()
+    if mode == "off":
+        return False, "fundamentals_mode=off"
+    if not bool(settings["premium_enabled"]):
+        return False, "premium_enabled=false"
+    if str(settings["tier"]) == "free":
+        return False, "tier=free"
+    state = get_premium_state()
+    if state.degraded:
+        return False, f"runtime degraded: {state.last_error}"
+    if state.quota_pct < 0.15:
+        return False, "quota below 15%"
+    return True, ""
+
+
 def _set_premium_degraded(error: str) -> None:
     with _premium_state_lock:
         _premium_state.degraded = True
@@ -224,11 +254,20 @@ def _premium_gate(dataset: str) -> None:
     state = get_premium_state()
 
     if not enabled or tier == "free":
-        raise PremiumUnavailableError(f"{dataset} requires FinMind Premium; current tier={tier}")
+        raise PremiumUnavailableError(
+            f"{dataset} requires FinMind Premium; current tier={tier}",
+            reason="disabled" if not enabled else "free_tier",
+        )
     if state.degraded:
-        raise PremiumUnavailableError(f"FinMind Premium runtime degraded: {state.last_error}")
+        raise PremiumUnavailableError(
+            f"FinMind Premium runtime degraded: {state.last_error}",
+            reason="degraded",
+        )
     if state.quota_pct < 0.15:
-        raise PremiumUnavailableError("FinMind Premium quota below 15%; premium fetch paused")
+        raise PremiumUnavailableError(
+            "FinMind Premium quota below 15%; premium fetch paused",
+            reason="quota_low",
+        )
 
 
 def _requests_per_minute() -> int:

@@ -418,8 +418,12 @@ class PrefetchWorker:
     def _get_funds_needing_fetch(self) -> list[str]:
         """回傳尚無新鮮基本面快取的股票清單"""
         try:
-            from data.finmind_client import get_stock_list
+            from data.finmind_client import can_fetch_premium_fundamentals, get_stock_list
             from db.fundamental_cache import get_stocks_needing_fundamental
+            can_fetch, reason = can_fetch_premium_fundamentals()
+            if not can_fetch:
+                logger.info(f"基本面預抓跳過：{reason}")
+                return []
             all_ids = get_stock_list()["stock_id"].tolist()
             return get_stocks_needing_fundamental(all_ids)
         except Exception as e:

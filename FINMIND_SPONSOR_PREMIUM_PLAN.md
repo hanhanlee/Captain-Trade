@@ -267,7 +267,7 @@ reversal_flag
 
 - Scanner / Premium score 是否使用這三個指標，等 Step 2-10 分數拆分時再決定。
 
-### Step 1-8：基本面 Penalty Mode
+### Step 1-8：基本面 Penalty Mode（施工中）
 
 現有 smart fundamentals 已有基礎，補上模式與分數整合。
 
@@ -290,6 +290,19 @@ penalty
 ```
 
 整合進 scanner 的 Premium 分數，不改 v3 / v4 必要條件。
+
+完成狀態：
+
+- 已新增 `get_fundamentals_mode()` 與 `can_fetch_premium_fundamentals()`，讓 Scanner / Worker 在入口先判斷是否可抓基本面資料。
+- 已讓 `PremiumUnavailableError` 帶 `reason`，目前可區分 disabled、free_tier、degraded、quota_low。
+- 已在 Worker `_get_funds_needing_fetch()` 加 Premium 前置檢查；Premium 未啟用、tier=free、quota 不足或 mode=off 時直接回傳 `[]`，不排入基本面預抓佇列。
+- 已在選股雷達掃描前加 Premium 前置檢查；不可抓取時只顯示一次 warning，整批跳過基本面，不逐股呼叫 `smart_get_fundamentals()`。
+- 已新增 `compute_fundamental_penalty()`，輸出 display-only `fundamental_penalty`、`fundamental_flags`、`fundamental_missing_fields`。
+- `warn` / `penalty` 模式目前不改 `score` 與排序；`exclude` 模式保留舊有基本面剔除行為。
+
+待完成：
+
+- 待 Step 2-10 分數拆分時，再決定 `fundamental_penalty` 是否合併進正式 `risk_penalty` / `final_score`。
 
 ### Step 1-9：股權分散籌碼共振
 
