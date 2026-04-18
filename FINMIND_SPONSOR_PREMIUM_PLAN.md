@@ -217,10 +217,12 @@ risk_flags_cache(
 - `TaiwanStockPriceLimit` 經官方文件確認為 backer / sponsor dataset，已納入 Premium gate。
 - `fetch_risk_flags_from_finmind()` 已改為 per-dataset try/catch，單一 dataset unavailable 不會中止其他 dataset。
 - 已在 `pages/7_個股分析.py` 新增「官方風險旗標（Premium）」區塊，供單股驗證 cache/API 狀態；目前只顯示，不影響評分。
+- 已在 `pages/1_選股雷達.py` 將 cached risk flags 補到掃描結果，顯示 `premium_flags` 與 `risk_penalty`；目前只讀 cache，不會在掃描時呼叫 FinMind Premium API，也不影響 v3/v4 必要條件、分數與排序。
+- Scanner 顯示層已驗證：以 `scan_date` 整批查詢 cache 一次，`disposition` 顯示 `risk_penalty = 10`，`suspended` / `price_limit` 目前只顯示旗標、不扣分、不排除。
 
 待完成：
 
-- 接入選股雷達：顯示 flags、處置扣分、暫停交易排除。
+- 接入選股雷達：暫停交易排除尚未啟用，避免此階段改變策略結果；等 scanner scoring/排除規則一起設計。
 - 接入持股監控：明確風險才 LINE 推播。
 
 ### Step 1-7：分點主力補強
@@ -336,6 +338,12 @@ final_score = score
 ```
 
 所有 schema migration 必須用安全方式處理舊資料，例如 `ALTER TABLE ADD COLUMN` 前先檢查欄位是否存在。
+
+目前完成：
+
+- Scanner 顯示層已先補上 `premium_flags` 與 `risk_penalty` 欄位。
+- `risk_penalty` 現階段只顯示為「未套用」，不改變 `score`、排序、v3/v4 必要條件或歷史掃描結果判讀。
+- 目前使用 cache-only 路徑，避免選股雷達因大量股票逐檔觸發 Premium API 與 quota 消耗。
 
 ### Step 2-11：個股分析 Premium 區塊
 

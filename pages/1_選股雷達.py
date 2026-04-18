@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import time
 
-from data.finmind_client import get_daily_price, summarize_institutional_signal
+from data.finmind_client import get_daily_price, summarize_institutional_signal, get_cached_risk_flags
 from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
@@ -22,6 +22,60 @@ from db.settings import is_market_closed
 init_db()
 
 st.set_page_config(page_title="選股雷達", page_icon="🔍", layout="wide")
+
+
+_RISK_FLAG_LABELS = {
+    "disposition": "處置",
+    "suspended": "暫停交易",
+    "price_limit": "漲跌幅限制",
+}
+
+_RISK_FLAG_PENALTIES = {
+    "disposition": 10,
+    "suspended": 0,
+    "price_limit": 0,
+}
+
+
+def _attach_cached_risk_flags(result_df: pd.DataFrame, scan_date) -> pd.DataFrame:
+    """Attach cached Premium risk flags without calling FinMind during scans."""
+    result_df = result_df.copy()
+    result_df["premium_flags"] = ""
+    result_df["risk_penalty"] = 0
+
+    if result_df.empty or "stock_id" not in result_df.columns or scan_date is None:
+        return result_df
+
+    try:
+        d = pd.to_datetime(scan_date).strftime("%Y-%m-%d")
+        cached = get_cached_risk_flags(start_date=d, end_date=d)
+    except Exception:
+        return result_df
+
+    if cached is None or cached.empty or "stock_id" not in cached.columns:
+        return result_df
+
+    stock_ids = set(result_df["stock_id"].astype(str))
+    cached = cached[cached["stock_id"].astype(str).isin(stock_ids)]
+    if cached.empty:
+        return result_df
+
+    flags_by_stock = {}
+    penalty_by_stock = {}
+    for sid, group in cached.groupby(cached["stock_id"].astype(str)):
+        labels = []
+        penalty = 0
+        for _, flag in group.iterrows():
+            flag_type = str(flag.get("flag_type", "") or "")
+            labels.append(_RISK_FLAG_LABELS.get(flag_type, flag_type or "風險旗標"))
+            penalty += _RISK_FLAG_PENALTIES.get(flag_type, 0)
+        flags_by_stock[sid] = "、".join(dict.fromkeys(labels))
+        penalty_by_stock[sid] = int(penalty)
+
+    sid_series = result_df["stock_id"].astype(str)
+    result_df["premium_flags"] = sid_series.map(flags_by_stock).fillna("")
+    result_df["risk_penalty"] = sid_series.map(penalty_by_stock).fillna(0).astype(int)
+    return result_df
 
 
 def render_chart(stock_id: str, df: pd.DataFrame):
@@ -764,6 +818,8 @@ with tab_scan:
                 if filtered > 0:
                     st.info(f"法人必要條件（{inst_label}）：已過濾 **{filtered}** 檔未符合")
 
+        result_df = _attach_cached_risk_flags(result_df, _active_scan_date)
+
         if result_df.empty:
             st.warning("沒有符合條件的股票，可嘗試調整篩選條件")
         else:
@@ -834,9 +890,13 @@ with tab_scan:
             "stock_id": "代碼", "stock_name": "名稱", "industry": "產業",
             "close": "收盤", "change_pct": "漲跌%", "volume_ratio": "量比",
             "score": "強度分數", "rs_score": "RS分數", "bias_ratio": "乖離率(%)",
-            "volatility_pct": "日均振幅%", "signals": "觸發條件",
+            "volatility_pct": "日均振幅%", "premium_flags": "Premium旗標",
+            "risk_penalty": "風險扣分(未套用)", "signals": "觸發條件",
         })
         display_df.index = range(1, len(display_df) + 1)
+
+        if "premium_flags" in result_df.columns and result_df["premium_flags"].astype(str).str.len().gt(0).any():
+            st.caption("Premium 風險旗標目前只顯示，不影響 v3/v4 必要條件、分數與排序。")
 
         st.dataframe(display_df, use_container_width=True, height=500)
 
