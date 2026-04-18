@@ -7,16 +7,73 @@ import os
 import threading
 import logging
 import requests
+import time
 import pandas as pd
 import numpy as np
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta, date
+from pathlib import Path
 from dotenv import load_dotenv
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
+FINMIND_USER_INFO_API = "https://api.web.finmindtrade.com/v2/user_info"
 TOKEN = os.getenv("FINMIND_TOKEN", "")
+
+ROOT = Path(__file__).resolve().parent.parent
+CONFIG_FILE = ROOT / "config.toml"
+
+
+@dataclass
+class PremiumState:
+    user_enabled: bool = False
+    tier: str = "free"
+    quota_pct: float = 1.0
+    degraded: bool = False
+    last_error: str = ""
+    last_quota_check: datetime | None = None
+    user_count: int | None = None
+    api_request_limit: int | None = None
+
+
+class PremiumUnavailableError(RuntimeError):
+    """Raised when a premium-only dataset is requested while Premium is unavailable."""
+
+
+_PREMIUM_DATASETS = {
+    "TaiwanStockTradingDailyReport",
+    "TaiwanStockTradingDailyReportSecIdAgg",
+    "TaiwanStockHoldingSharesPer",
+    "TaiwanStockDispositionSecuritiesPeriod",
+    "TaiwanStockSuspended",
+    "TaiwanStockKBar",
+    "TaiwanStockPriceTick",
+}
+
+_FUNDAMENTAL_DATASETS = {
+    "TaiwanStockFinancialStatements",
+    "TaiwanStockBalanceSheet",
+    "TaiwanStockCashFlowsStatement",
+}
+
+_settings_lock = threading.Lock()
+_settings_cache: dict | None = None
+_settings_loaded_at: datetime | None = None
+_SETTINGS_TTL_SEC = 30
+
+_premium_state_lock = threading.Lock()
+_premium_state = PremiumState()
+
+_request_lock = threading.Lock()
+_request_times = deque()
 
 # ── 全域最新交易日（執行緒安全）────────────────────────────────────
 _trading_day_lock = threading.Lock()
@@ -25,7 +82,184 @@ _trading_day_resolved_at: datetime | None = None
 _TRADING_DAY_TTL_SEC = 3600   # 解析結果快取 1 小時，避免重複打 API
 
 
+def _load_finmind_settings(force: bool = False) -> dict:
+    """Read FinMind feature flags from config.toml with a short in-memory TTL."""
+    global _settings_cache, _settings_loaded_at
+
+    now = datetime.now()
+    with _settings_lock:
+        if (
+            not force
+            and _settings_cache is not None
+            and _settings_loaded_at is not None
+            and (now - _settings_loaded_at).total_seconds() < _SETTINGS_TTL_SEC
+        ):
+            return dict(_settings_cache)
+
+        settings = {
+            "tier": "free",
+            "premium_enabled": False,
+            "features": {
+                "risk_flags": True,
+                "broker_branch": True,
+                "holding_shares": True,
+                "fundamentals_mode": "penalty",
+            },
+        }
+
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "rb") as f:
+                    raw = tomllib.load(f)
+                finmind = raw.get("finmind", {}) if isinstance(raw, dict) else {}
+                features = finmind.get("features", {}) if isinstance(finmind, dict) else {}
+                settings["tier"] = str(finmind.get("tier", settings["tier"])).strip().lower()
+                settings["premium_enabled"] = bool(
+                    finmind.get("premium_enabled", settings["premium_enabled"])
+                )
+                settings["features"].update(features)
+            except Exception as exc:
+                logger.warning(f"Failed to read config.toml finmind settings: {exc}")
+
+        if settings["tier"] not in {"free", "backer", "sponsor", "auto"}:
+            settings["tier"] = "free"
+
+        _settings_cache = settings
+        _settings_loaded_at = now
+
+        with _premium_state_lock:
+            _premium_state.user_enabled = bool(settings["premium_enabled"])
+            _premium_state.tier = settings["tier"]
+
+        return dict(settings)
+
+
+def get_premium_state() -> PremiumState:
+    """Return a snapshot of the current Premium runtime state for UI/status use."""
+    _load_finmind_settings()
+    with _premium_state_lock:
+        return PremiumState(
+            user_enabled=_premium_state.user_enabled,
+            tier=_premium_state.tier,
+            quota_pct=_premium_state.quota_pct,
+            degraded=_premium_state.degraded,
+            last_error=_premium_state.last_error,
+            last_quota_check=_premium_state.last_quota_check,
+            user_count=_premium_state.user_count,
+            api_request_limit=_premium_state.api_request_limit,
+        )
+
+
+def _set_premium_degraded(error: str) -> None:
+    with _premium_state_lock:
+        _premium_state.degraded = True
+        _premium_state.last_error = error
+
+
+def refresh_finmind_user_info(force: bool = False) -> PremiumState:
+    """
+    Refresh FinMind API quota state.
+
+    This endpoint uses a different base URL and Authorization Bearer header.
+    It intentionally does not go through _get(), which targets /api/v4/data and
+    sends the token as a query parameter.
+    """
+    _load_finmind_settings()
+    now = datetime.now()
+    with _premium_state_lock:
+        last = _premium_state.last_quota_check
+        cached_valid = not force and last is not None and (now - last).total_seconds() < 3600
+    if cached_valid:
+        return get_premium_state()
+
+    if not TOKEN:
+        with _premium_state_lock:
+            _premium_state.last_quota_check = now
+            _premium_state.last_error = "FINMIND_TOKEN is not configured"
+        return get_premium_state()
+
+    try:
+        resp = requests.get(
+            FINMIND_USER_INFO_API,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            timeout=10,
+        )
+        if resp.status_code in (402, 403):
+            _set_premium_degraded(f"user_info HTTP {resp.status_code}")
+            return get_premium_state()
+        resp.raise_for_status()
+        data = resp.json()
+        user_count = int(data.get("user_count") or 0)
+        api_limit = int(data.get("api_request_limit") or 0)
+        quota_pct = 1.0
+        if api_limit > 0:
+            quota_pct = max(0.0, min(1.0, (api_limit - user_count) / api_limit))
+        with _premium_state_lock:
+            _premium_state.user_count = user_count
+            _premium_state.api_request_limit = api_limit
+            _premium_state.quota_pct = quota_pct
+            _premium_state.last_quota_check = now
+            _premium_state.last_error = ""
+            if quota_pct >= 0.15:
+                _premium_state.degraded = False
+    except Exception as exc:
+        with _premium_state_lock:
+            _premium_state.last_quota_check = now
+            _premium_state.last_error = f"user_info failed: {exc}"
+    return get_premium_state()
+
+
+def _is_premium_dataset(dataset: str) -> bool:
+    return dataset in _PREMIUM_DATASETS or dataset in _FUNDAMENTAL_DATASETS
+
+
+def _premium_gate(dataset: str) -> None:
+    if not _is_premium_dataset(dataset):
+        return
+
+    settings = _load_finmind_settings()
+    enabled = bool(settings["premium_enabled"])
+    tier = str(settings["tier"])
+    state = get_premium_state()
+
+    if not enabled or tier == "free":
+        raise PremiumUnavailableError(f"{dataset} requires FinMind Premium; current tier={tier}")
+    if state.degraded:
+        raise PremiumUnavailableError(f"FinMind Premium runtime degraded: {state.last_error}")
+    if state.quota_pct < 0.15:
+        raise PremiumUnavailableError("FinMind Premium quota below 15%; premium fetch paused")
+
+
+def _requests_per_minute() -> int:
+    settings = _load_finmind_settings()
+    tier = str(settings["tier"])
+    enabled = bool(settings["premium_enabled"])
+    state = get_premium_state()
+
+    if enabled and tier in {"backer", "sponsor", "auto"} and state.quota_pct >= 0.15:
+        return 40
+    return 8
+
+
+def _wait_for_rate_limit() -> None:
+    """Small sliding-window limiter shared by all FinMind /api/v4/data requests."""
+    while True:
+        limit = max(1, int(_requests_per_minute()))
+        now = time.monotonic()
+        with _request_lock:
+            while _request_times and now - _request_times[0] >= 60:
+                _request_times.popleft()
+            if len(_request_times) < limit:
+                _request_times.append(now)
+                return
+            sleep_for = max(0.05, 60 - (now - _request_times[0]))
+        time.sleep(min(sleep_for, 5.0))
+
+
 def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd.DataFrame:
+    _premium_gate(dataset)
+    _wait_for_rate_limit()
+
     params = {
         "dataset": dataset,
         "token": TOKEN,
@@ -37,11 +271,16 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
     params.update(kwargs)
 
     resp = requests.get(FINMIND_API, params=params, timeout=30)
+    if resp.status_code in (402, 403):
+        _set_premium_degraded(f"{dataset} HTTP {resp.status_code}")
     resp.raise_for_status()  # 429 立即拋出，由呼叫端決定如何處理（DSM 備援 / Worker 暫停）
 
     data = resp.json()
 
     if data.get("status") != 200:
+        status = data.get("status")
+        if status in (402, 403):
+            _set_premium_degraded(f"{dataset} API status {status}: {data.get('msg', '')}")
         raise RuntimeError(f"FinMind API error: {data.get('msg', 'unknown')}")
 
     return pd.DataFrame(data.get("data", []))
@@ -751,7 +990,11 @@ def smart_get_fundamentals(stock_id: str) -> dict:
     智慧取基本面指標：先查本機快取（90 天 TTL），過期才呼叫 API
 
     回傳 dict（空 dict 表示無資料，跳過基本面過濾）
-    遇到 402（付費端點）或其他 HTTP 錯誤時，存空快取後回傳空 dict，不中斷掃描。
+
+    快取行為：
+    - HTTP 402 / API 回空資料：存空快取（資料本身不可用，90 天內不重試）
+    - PremiumUnavailableError：不存快取（Premium 關閉或 quota 不足，屬暫時狀態）
+    - 其他 HTTP / 網路錯誤：不存快取（暫時性問題，下次重試）
     """
     import requests as _req
     from db.fundamental_cache import is_fundamental_fresh, load_fundamental, save_fundamental
@@ -761,25 +1004,26 @@ def smart_get_fundamentals(stock_id: str) -> dict:
 
     try:
         df = get_financial_statements(stock_id, years=3)
+    except PremiumUnavailableError:
+        # Premium 未啟用 / quota 不足 / runtime degraded：暫時狀態，不快取
+        logger.debug(f"smart_get_fundamentals {stock_id}: Premium unavailable, skipping cache")
+        return {}
     except _req.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 0
         if status == 402:
-            # TaiwanStockFinancialStatements 需要付費方案
-            # 存空快取避免 90 天內重複打 API；基本面過濾自動放行此股
+            # API 端確認此資料集需要付費方案，存空快取避免 90 天內重複嘗試
             save_fundamental(stock_id, {})
-            import logging as _log
-            _log.getLogger(__name__).warning(
+            logger.warning(
                 f"FinMind 財報端點需要付費方案（402），基本面過濾已停用。"
                 f"（首次觸發於 {stock_id}）"
             )
         else:
-            import logging as _log
-            _log.getLogger(__name__).debug(f"get_financial_statements {stock_id} HTTP {status}: {e}")
-            save_fundamental(stock_id, {})
+            # 其他 HTTP 錯誤（429、5xx 等）屬暫時問題，不快取
+            logger.debug(f"get_financial_statements {stock_id} HTTP {status}: {e}")
         return {}
     except Exception as e:
-        import logging as _log
-        _log.getLogger(__name__).debug(f"get_financial_statements {stock_id} failed: {e}")
+        # 網路錯誤、timeout 等暫時性問題，不快取
+        logger.debug(f"get_financial_statements {stock_id} failed: {e}")
         return {}
 
     if df.empty:

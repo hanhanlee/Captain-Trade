@@ -492,6 +492,68 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ── FinMind Premium 狀態 ────────────────────────────────────────
+try:
+    from data.finmind_client import get_premium_state, refresh_finmind_user_info
+
+    _premium_state = get_premium_state()
+    _premium_enabled_label = "啟用" if _premium_state.user_enabled else "未啟用"
+    _premium_runtime_label = "降級" if _premium_state.degraded else "正常"
+    _premium_cls = "warn" if _premium_state.degraded else ("ok" if _premium_state.user_enabled else "")
+    _quota_label = "—"
+    _quota_sub = "尚未查詢 user_info"
+    if _premium_state.api_request_limit:
+        _quota_label = f"{_premium_state.quota_pct * 100:.0f}%"
+        _quota_sub = f"已用 {_premium_state.user_count or 0} / {_premium_state.api_request_limit}"
+    _quota_time = (
+        _premium_state.last_quota_check.strftime("%H:%M:%S")
+        if _premium_state.last_quota_check else "—"
+    )
+
+    st.markdown(f"""
+<div class="metric-grid" style="grid-template-columns:repeat(4,1fr);">
+  <div class="metric-box">
+    <div class="mb-label">FinMind Tier</div>
+    <div class="mb-val">{_premium_state.tier.upper()}</div>
+    <div class="mb-sub">Premium {_premium_enabled_label}</div>
+  </div>
+  <div class="metric-box {_premium_cls}">
+    <div class="mb-label">Premium Runtime</div>
+    <div class="mb-val">{_premium_runtime_label}</div>
+    <div class="mb-sub">{_premium_state.last_error or "Free 功能不受影響"}</div>
+  </div>
+  <div class="metric-box">
+    <div class="mb-label">API Quota 剩餘</div>
+    <div class="mb-val">{_quota_label}</div>
+    <div class="mb-sub">{_quota_sub}</div>
+  </div>
+  <div class="metric-box">
+    <div class="mb-label">Quota Checked</div>
+    <div class="mb-val">{_quota_time}</div>
+    <div class="mb-sub">user_info 使用 Bearer token</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    with st.expander("FinMind Premium 監控", expanded=False):
+        st.caption("Premium 設定讀取 `config.toml`；`.env` 僅保留 `FINMIND_TOKEN`。user_info 需用 Bearer token，不走一般資料 API。")
+        cpi1, cpi2 = st.columns([1, 3])
+        if cpi1.button("查詢 API 用量", use_container_width=True):
+            refresh_finmind_user_info(force=True)
+            st.rerun()
+        cpi2.write(
+            {
+                "tier": _premium_state.tier,
+                "premium_enabled": _premium_state.user_enabled,
+                "quota_pct": round(_premium_state.quota_pct, 4),
+                "degraded": _premium_state.degraded,
+                "last_error": _premium_state.last_error,
+                "last_quota_check": str(_premium_state.last_quota_check or ""),
+            }
+        )
+except Exception as _premium_exc:
+    st.caption(f"FinMind Premium 狀態載入失敗：{_premium_exc}")
+
 # ── 資料待更新（3格，以 resolve_latest_trading_day 為準）────────
 _ref_display = _ref_str
 if _ref_date == date.today():

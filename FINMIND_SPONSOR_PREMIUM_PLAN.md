@@ -1,6 +1,6 @@
 # FinMind Sponsor Premium 升級施工依據
 
-> 狀態：施工前規格  
+> 狀態：施工中  
 > 日期：2026-04-19  
 > 目的：FinMind 999 Sponsor 試用期間，以可熱插拔、可降級、可量化評估的方式導入 Premium 資料，不破壞現有 Free 模式與 v3/v4 核心策略。
 
@@ -20,7 +20,7 @@
 
 ## 2. Phase 0：基礎建設
 
-### Step 0-1：Rate Limiter
+### Step 0-1：Rate Limiter（已完成第一版）
 
 在 `data/finmind_client.py` 的 `_get()` 加入節流。
 
@@ -41,7 +41,13 @@
 - 每次 `_get()` 前檢查
 - 不需要一開始就做完整 token bucket
 
-### Step 0-2：Config
+完成狀態：
+
+- 已在 `data/finmind_client.py` 的 `_get()` 前加入 Premium gate 與 sliding-window rate limiter。
+- Free 模式預設保守速率，Sponsor / Backer / auto 且 quota 足夠時可提高速率。
+- Premium-only dataset 在 Premium 關閉時會被本機 gate 阻擋，不會打 API。
+
+### Step 0-2：Config（已完成第一版）
 
 在 `config.toml` 新增：
 
@@ -70,7 +76,12 @@ fundamentals_mode = "penalty"
 FINMIND_TOKEN=...
 ```
 
-### Step 0-3：user_info quota check
+完成狀態：
+
+- 已在 `config.toml` 加入 `[finmind]` 與 `[finmind.features]`。
+- 已在 `srock/config.py` 的 `Config` dataclass 與 `load_config()` 中加入 FinMind tier / feature flags。
+
+### Step 0-3：user_info quota check（已完成基礎版）
 
 新增 FinMind user_info 查詢：
 
@@ -88,7 +99,13 @@ Authorization: Bearer {token}
 - `user_info` 必須用獨立 request，並用 `Authorization: Bearer {token}` header。
 - 不要讓 `user_info` 走現有 `_get()`，避免混用 API base URL 與認證方式。
 
-### Step 0-4：Premium Runtime State
+完成狀態：
+
+- 已新增 `refresh_finmind_user_info(force=False)`。
+- `user_info` 使用獨立 request 與 Bearer token，不走 `_get()`。
+- 預設每小時快取一次 quota 狀態。
+
+### Step 0-4：Premium Runtime State（已完成基礎版）
 
 不將 API 錯誤寫回 config，只維護執行期狀態。
 
@@ -110,7 +127,18 @@ API 回 402 / 403 時：
 - 不修改 `config.toml`
 - Free 功能繼續
 
-### Step 0-5：資料管理頁 Premium 狀態 UI
+完成狀態：
+
+- 已新增 `PremiumState` 與 `get_premium_state()`。
+- API 回 402 / 403 時只標記 runtime degraded，不寫回 config。
+- `PremiumUnavailableError` 已被 `smart_get_fundamentals()` 特別處理，避免暫時性 Premium 狀態被錯快取成 90 天空資料。
+
+待 Phase 1 補強：
+
+- `PremiumUnavailableError` 需要正規化 reason，例如 `disabled` / `tier_free` / `quota_low` / `degraded` / `forbidden` / `http_402`。
+- 基本面相關的 worker / scanner 入口需做前置判斷，避免 Free 模式逐股觸發 `_premium_gate()` exception 空轉。
+
+### Step 0-5：資料管理頁 Premium 狀態 UI（已完成第一版）
 
 在 `pages/6_資料管理.py` 顯示：
 
@@ -120,6 +148,21 @@ API 回 402 / 403 時：
 - degraded
 - last_error
 - last_quota_check
+
+完成狀態：
+
+- 已在 `pages/6_資料管理.py` 顯示 FinMind tier、Premium runtime、quota、last quota check。
+- 已加上手動「查詢 API 用量」按鈕。
+
+### Step 0-6：待修項目（移入 Phase 1 基本面整合）
+
+目前 `smart_get_fundamentals()` 已避免把 Premium 暫時不可用錯誤寫入 90 天空快取，但尚未完整消除 Free 模式的重複嘗試。
+
+待修內容：
+
+1. Worker 入口：`_get_funds_needing_fetch()` 在 Premium 未啟用或 tier 為 `free` 時直接回傳 `[]`，不排入基本面預抓佇列。
+2. Scanner 入口：掃描前先做一次 Premium 狀態檢查。若 Premium 未啟用但使用者開啟基本面過濾，顯示一次 warning，整批跳過基本面，不進入逐股 `smart_get_fundamentals()`。
+3. `PremiumUnavailableError reason`：在 Phase 1 基本面 penalty mode 一起正規化，區分 402 權限不足、quota 不足、runtime degraded、功能關閉等狀態。
 
 ---
 

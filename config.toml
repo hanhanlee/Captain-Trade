@@ -15,3 +15,14 @@ secrets_dir = "secrets"
 default_profile    = "full"
 auto_open_browser  = false
 watch_after_up     = true
+
+[finmind]
+# tier: free | backer | sponsor | auto
+tier = "free"
+premium_enabled = false
+
+[finmind.features]
+risk_flags = true
+broker_branch = true
+holding_shares = true
+fundamentals_mode = "penalty"

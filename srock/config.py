@@ -28,6 +28,16 @@ _DEFAULTS: dict = {
         "auto_open_browser": False,
         "watch_after_up": True,
     },
+    "finmind": {
+        "tier": "free",
+        "premium_enabled": False,
+        "features": {
+            "risk_flags": True,
+            "broker_branch": True,
+            "holding_shares": True,
+            "fundamentals_mode": "penalty",
+        },
+    },
 }
 
 
@@ -96,6 +106,14 @@ class Config:
     auto_open_browser: bool = False
     watch_after_up: bool = True
 
+    # finmind premium flags
+    finmind_tier: str = "free"
+    finmind_premium_enabled: bool = False
+    finmind_risk_flags: bool = True
+    finmind_broker_branch: bool = True
+    finmind_holding_shares: bool = True
+    finmind_fundamentals_mode: str = "penalty"
+
 
 def load_config() -> Config:
     raw: dict = dict(_DEFAULTS)
@@ -107,6 +125,8 @@ def load_config() -> Config:
     svc = raw["services"]
     pth = raw["paths"]
     stup = raw["startup"]
+    fin = raw["finmind"]
+    fin_features = fin.get("features", {})
 
     return Config(
         streamlit_port=int(svc["streamlit_port"]),
@@ -119,4 +139,10 @@ def load_config() -> Config:
         default_profile=stup["default_profile"],
         auto_open_browser=bool(stup["auto_open_browser"]),
         watch_after_up=bool(stup["watch_after_up"]),
+        finmind_tier=str(fin.get("tier", "free")),
+        finmind_premium_enabled=bool(fin.get("premium_enabled", False)),
+        finmind_risk_flags=bool(fin_features.get("risk_flags", True)),
+        finmind_broker_branch=bool(fin_features.get("broker_branch", True)),
+        finmind_holding_shares=bool(fin_features.get("holding_shares", True)),
+        finmind_fundamentals_mode=str(fin_features.get("fundamentals_mode", "penalty")),
     )
