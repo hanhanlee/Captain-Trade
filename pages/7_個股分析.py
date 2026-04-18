@@ -12,6 +12,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import json
 
 from db.database import init_db
 from db.price_cache import load_prices
@@ -765,6 +766,67 @@ def render_institutional_chart(main_force_df: pd.DataFrame):
     )
 
 
+def render_official_risk_flags(stock_id: str, analysis_date, is_historical: bool = False):
+    """Display Premium official risk flags without affecting strategy scoring."""
+    try:
+        from data.finmind_client import (
+            get_cached_risk_flags,
+            get_premium_state,
+            get_stock_risk_flags,
+        )
+    except Exception as exc:
+        st.caption(f"官方風險旗標模組尚不可用：{exc}")
+        return
+
+    state = get_premium_state()
+    d = pd.Timestamp(analysis_date).date().isoformat()
+
+    with st.expander("🛡️ 官方風險旗標（Premium）", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Tier", state.tier.upper())
+        c2.metric("Premium", "啟用" if state.user_enabled else "未啟用")
+        c3.metric("Runtime", "降級" if state.degraded else "正常")
+
+        if not state.user_enabled or state.tier == "free":
+            st.info("Premium 未啟用，僅顯示本機快取；不會呼叫 FinMind Premium API。")
+            flags = get_cached_risk_flags(stock_id=stock_id, start_date=d, end_date=d)
+        elif state.degraded:
+            st.warning(f"Premium runtime 已降級：{state.last_error or 'unknown'}。目前僅顯示本機快取。")
+            flags = get_cached_risk_flags(stock_id=stock_id, start_date=d, end_date=d)
+        else:
+            if is_historical:
+                st.caption("歷史模式：僅查詢分析基準日的旗標資料。此區塊只供檢視，不影響回測或評分。")
+            flags = get_stock_risk_flags(stock_id=stock_id, start_date=d, end_date=d)
+
+        if flags is None or flags.empty:
+            st.success(f"{d} 無官方風險旗標快取或回傳資料。")
+            return
+
+        rows = []
+        for _, row in flags.iterrows():
+            detail = row.get("detail") or {}
+            reason = ""
+            if isinstance(detail, dict):
+                reason = (
+                    detail.get("reason")
+                    or detail.get("處置原因")
+                    or detail.get("note")
+                    or detail.get("name")
+                    or ""
+                )
+                detail_text = json.dumps(detail, ensure_ascii=False, default=str)
+            else:
+                detail_text = str(detail)
+            rows.append({
+                "日期": pd.Timestamp(row["date"]).date().isoformat() if pd.notna(row.get("date")) else "",
+                "旗標": row.get("flag_type", ""),
+                "原因/摘要": reason,
+                "原始資料": detail_text,
+            })
+
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
 def render_custom_preset_checks(
     *,
     stock_id: str,
@@ -1154,6 +1216,10 @@ st.markdown("---")
 
 st.subheader("🏦 主力買賣超")
 render_institutional_chart(broker_main_force)
+
+st.markdown("---")
+
+render_official_risk_flags(target_id, df.iloc[-1]["date"], is_historical=_is_hist)
 
 st.markdown("---")
 

@@ -216,11 +216,11 @@ risk_flags_cache(
 - Premium 關閉時，`get_stock_risk_flags()` 會回傳既有 cache 或空 DataFrame，不會打 Premium API。
 - `TaiwanStockPriceLimit` 經官方文件確認為 backer / sponsor dataset，已納入 Premium gate。
 - `fetch_risk_flags_from_finmind()` 已改為 per-dataset try/catch，單一 dataset unavailable 不會中止其他 dataset。
+- 已在 `pages/7_個股分析.py` 新增「官方風險旗標（Premium）」區塊，供單股驗證 cache/API 狀態；目前只顯示，不影響評分。
 
 待完成：
 
 - 接入選股雷達：顯示 flags、處置扣分、暫停交易排除。
-- 接入個股分析：顯示官方風險旗標區塊。
 - 接入持股監控：明確風險才 LINE 推播。
 
 ### Step 1-7：分點主力補強
@@ -347,6 +347,18 @@ final_score = score
 - 基本面 flags
 - 風險旗標
 - Premium missing fields
+
+完成狀態：
+
+- 官方風險旗標（risk flags）區塊已完成：顯示 Premium runtime 狀態、分析基準日 flags、原始 detail；目前只顯示，不影響評分。
+
+待完成：
+
+- 分點集中度
+- 主力反手
+- 大戶 / 散戶趨勢
+- 基本面 flags
+- Premium missing fields 彙整
 
 ### Step 2-12：持股監控 Premium 警示
 
