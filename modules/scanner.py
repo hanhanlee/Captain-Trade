@@ -886,7 +886,11 @@ def run_scan(
         # 優先用 ATR 倍數判斷（對熱門電子股更有彈性），ATR 無效時 fallback 至 BIAS %
         if strategy_version == "v4":
             if overheat_atr_mult > 0 and sig.atr14 > 0:
-                is_overheated = sig.atr_overheat
+                if close > 0 and sig.ma20_bias_ratio != -100:
+                    ma20_from_bias = close / (1 + sig.ma20_bias_ratio / 100)
+                    is_overheated = close > ma20_from_bias + overheat_atr_mult * sig.atr14
+                else:
+                    is_overheated = sig.atr_overheat
             else:
                 is_overheated = (
                     pd.notna(sig.ma20_bias_ratio)

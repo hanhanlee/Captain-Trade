@@ -77,6 +77,27 @@ def _ensure_premium_score_columns(result_df: pd.DataFrame) -> pd.DataFrame:
     return result_df.sort_values("score", ascending=False).reset_index(drop=True)
 
 
+def _format_heat_distance(row) -> str:
+    pct = row.get("heat_room_pct")
+    abs_val = row.get("heat_room_abs")
+    if pd.isna(pct):
+        return "—"
+    try:
+        pct = float(pct)
+    except (TypeError, ValueError):
+        return "—"
+
+    yuan = ""
+    if not pd.isna(abs_val):
+        try:
+            yuan = f" ({float(abs_val):+.2f} 元)"
+        except (TypeError, ValueError):
+            yuan = ""
+    if pct < 0:
+        return f"⚠️ 已過熱 {pct:+.2f}%{yuan}"
+    return f"差 {pct:.2f}%{yuan}"
+
+
 def _attach_cached_risk_flags(result_df: pd.DataFrame, scan_date) -> pd.DataFrame:
     """Attach cached Premium risk flags without calling FinMind during scans."""
     result_df = _ensure_premium_score_columns(result_df)
@@ -1179,21 +1200,8 @@ with tab_scan:
 
         display_df = result_df.copy()
 
-        # 合併「距過熱%」+ 「差幾元」為單一易讀欄位
-        def _fmt_heat(row):
-            pct = row.get("heat_room_pct")
-            abs_val = row.get("heat_room_abs")
-            if pct is None:
-                return "—"
-            if pct < 0:
-                if abs_val is not None:
-                    return f"⚠️ 已過熱 ({abs(abs_val):.1f}元)"
-                return "⚠️ 已過熱"
-            if abs_val is not None:
-                return f"{pct}% (差{abs_val:.1f}元)"
-            return f"{pct}%"
-
-        display_df["距過熱"] = display_df.apply(_fmt_heat, axis=1)
+        # 合併「差多少%」+「多少元」為單一易讀欄位
+        display_df["距過熱"] = display_df.apply(_format_heat_distance, axis=1)
         display_df = display_df.drop(columns=["heat_room_pct", "heat_room_abs"], errors="ignore")
 
         display_df = display_df.rename(columns={
@@ -1781,12 +1789,22 @@ with tab_history:
                 # 展開後直接顯示結果預覽（前 10 筆）
                 df_prev = load_session_results(rec["id"])
                 if not df_prev.empty:
+                    df_prev = df_prev.copy()
+                    df_prev["距過熱"] = df_prev.apply(_format_heat_distance, axis=1)
                     show_df = df_prev.head(10).rename(columns={
                         "stock_id": "代碼", "stock_name": "名稱",
                         "industry": "產業", "close": "收盤",
                         "change_pct": "漲跌%", "score": "分數",
                         "rs_score": "RS", "signals": "觸發條件",
                     })
-                    st.dataframe(show_df, use_container_width=True, hide_index=True)
+                    preview_cols = [
+                        "代碼", "名稱", "產業", "收盤", "漲跌%", "分數",
+                        "RS", "距過熱", "觸發條件",
+                    ]
+                    st.dataframe(
+                        show_df[[c for c in preview_cols if c in show_df.columns]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
                     if len(df_prev) > 10:
                         st.caption(f"僅顯示前 10 筆，共 {len(df_prev)} 筆。點「載入結果」可在掃描頁查看全部。")
