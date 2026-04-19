@@ -947,6 +947,139 @@ def render_holding_shares(stock_id: str, analysis_date, is_historical: bool = Fa
         )
 
 
+def render_premium_summary(
+    stock_id: str,
+    analysis_date,
+    broker_main_force: pd.DataFrame,
+    is_historical: bool = False,
+):
+    """Summarize Premium signals from cache/current page data without extra API calls."""
+    try:
+        from data.finmind_client import (
+            get_cached_holding_shares,
+            get_cached_risk_flags,
+            get_premium_state,
+        )
+    except Exception as exc:
+        st.caption(f"Premium summary unavailable: {exc}")
+        return
+
+    state = get_premium_state()
+    d = pd.Timestamp(analysis_date).date().isoformat()
+    start = (pd.Timestamp(d) - pd.Timedelta(days=180)).date().isoformat()
+
+    positive: list[str] = []
+    negative: list[str] = []
+    missing: list[str] = []
+
+    if broker_main_force is not None and not broker_main_force.empty:
+        bdf = broker_main_force.copy().sort_values("date").reset_index(drop=True)
+        latest_broker = bdf.iloc[-1]
+        net = pd.to_numeric(latest_broker.get("net"), errors="coerce")
+        concentration = pd.to_numeric(latest_broker.get("top5_buy_concentration"), errors="coerce")
+        streak = pd.to_numeric(latest_broker.get("consecutive_buy_days"), errors="coerce")
+        reversal = pd.to_numeric(latest_broker.get("reversal_flag"), errors="coerce")
+        if pd.notna(net):
+            if net > 0:
+                positive.append(f"Broker main-force net buy {net:,.0f}")
+            elif net < 0:
+                negative.append(f"Broker main-force net sell {abs(net):,.0f}")
+        if pd.notna(concentration) and concentration >= 50:
+            positive.append(f"Top-5 broker buy concentration {concentration:.1f}%")
+        if pd.notna(streak) and int(streak) >= 3:
+            positive.append(f"Broker net-buy streak {int(streak)} days")
+        if pd.notna(reversal) and bool(reversal):
+            negative.append("Broker reversal flag")
+    elif not is_historical:
+        missing.append("broker_main_force")
+
+    try:
+        risk_df = get_cached_risk_flags(stock_id=stock_id, start_date=d, end_date=d)
+    except Exception:
+        risk_df = pd.DataFrame()
+    if risk_df is not None and not risk_df.empty:
+        for flag_type in risk_df["flag_type"].astype(str).dropna().unique():
+            negative.append(f"Official risk flag: {flag_type}")
+    else:
+        positive.append("No cached official risk flag for analysis date")
+
+    try:
+        holding_df = get_cached_holding_shares(stock_id=stock_id, start_date=start, end_date=d)
+    except Exception:
+        holding_df = pd.DataFrame()
+    if holding_df is not None and not holding_df.empty:
+        hdf = holding_df.copy()
+        hdf["date"] = pd.to_datetime(hdf["date"], errors="coerce")
+        hdf = hdf.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+        if not hdf.empty:
+            latest_holding = hdf.iloc[-1]
+            prev_holding = hdf.iloc[-2] if len(hdf) >= 2 else None
+
+            def _holding_delta(col: str):
+                if prev_holding is None:
+                    return None
+                if pd.isna(latest_holding.get(col)) or pd.isna(prev_holding.get(col)):
+                    return None
+                return float(latest_holding[col]) - float(prev_holding[col])
+
+            d400 = _holding_delta("above_400_pct")
+            d1000 = _holding_delta("above_1000_pct")
+            d10 = _holding_delta("below_10_pct")
+            if d400 is not None and d400 != 0:
+                target = positive if d400 > 0 else negative
+                target.append(
+                    f"400+ lots holder ratio {'up' if d400 > 0 else 'down'} {d400:+.2f}pp"
+                )
+            if d1000 is not None and d1000 != 0:
+                target = positive if d1000 > 0 else negative
+                target.append(
+                    f"1000+ lots holder ratio {'up' if d1000 > 0 else 'down'} {d1000:+.2f}pp"
+                )
+            if d10 is not None and d10 != 0:
+                target = negative if d10 > 0 else positive
+                target.append(
+                    f"Small-holder ratio {'up' if d10 > 0 else 'down'} {d10:+.2f}pp"
+                )
+        else:
+            missing.append("holding_shares_cache")
+    else:
+        missing.append("holding_shares_cache")
+
+    with st.expander("Premium summary", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Tier", state.tier.upper())
+        c2.metric("Runtime", "Degraded" if state.degraded else "Normal")
+        c3.metric("Positive", len(positive))
+        c4.metric("Negative", len(negative))
+        if state.degraded:
+            st.warning(state.last_error or "Premium runtime degraded")
+        if not state.user_enabled or state.tier == "free":
+            st.caption("Premium is disabled; summary uses local cache and page-loaded data only.")
+
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            st.markdown("**Positive flags**")
+            if positive:
+                for item in positive:
+                    st.write(f"- {item}")
+            else:
+                st.caption("None")
+        with s2:
+            st.markdown("**Negative flags**")
+            if negative:
+                for item in negative:
+                    st.write(f"- {item}")
+            else:
+                st.caption("None")
+        with s3:
+            st.markdown("**Missing fields**")
+            if missing:
+                for item in sorted(set(missing)):
+                    st.write(f"- {item}")
+            else:
+                st.caption("None")
+
+
 def render_custom_preset_checks(
     *,
     stock_id: str,
@@ -1344,6 +1477,15 @@ render_official_risk_flags(target_id, df.iloc[-1]["date"], is_historical=_is_his
 st.markdown("---")
 
 render_holding_shares(target_id, df.iloc[-1]["date"], is_historical=_is_hist)
+
+st.markdown("---")
+
+render_premium_summary(
+    target_id,
+    df.iloc[-1]["date"],
+    broker_main_force,
+    is_historical=_is_hist,
+)
 
 st.markdown("---")
 

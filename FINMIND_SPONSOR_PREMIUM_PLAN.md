@@ -482,3 +482,20 @@ LINE 只推明確風險，避免噪音。
 - Cached official risk flags are applied after scan without calling Premium APIs, then `final_score` is recomputed and results are resorted.
 - Old scan history rows are backfilled with Premium score columns when loaded.
 - Next follow-up: add true positive `premium_score` sources from cached broker/holding-share signals after thresholds are finalized.
+
+- Follow-up: `_attach_cached_risk_flags()` currently recomputes and resorts by final score via `_ensure_premium_score_columns()` at the end. This is acceptable for current final-display usage, but future callers that need stable input order should split attach/recompute/sort into separate helpers.
+
+## Progress Update - 2026-04-19 Step 2-11 draft
+
+- Added a draft `render_premium_summary()` section to `pages/7_個股分析.py`.
+- The summary uses only local cache and already-loaded page data: cached risk flags, cached holding-share metrics, and broker main-force data already fetched by the page.
+- It groups signals into positive flags, negative flags, and missing fields, and shows tier/runtime status.
+- No additional Premium API calls are introduced by the summary section.
+- Pending user validation before commit.
+- Step 2-11 draft note: holding-share ratio flat deltas are intentionally ignored in Premium summary; they are not missing data.
+
+## Progress Update - 2026-04-19 Step 2-11 completed
+
+- User validation passed for the `render_premium_summary()` draft.
+- Step 2-11 is complete for the current scope: individual-stock Premium summary now groups positive flags, negative flags, and missing fields without extra Premium API calls.
+- Manual update remains deferred until the full FinMind Premium plan is complete.
