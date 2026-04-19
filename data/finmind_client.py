@@ -960,20 +960,47 @@ def get_financial_statements(stock_id: str, years: int = 3) -> pd.DataFrame:
     type 可能值：綜合損益表 / 資產負債表 / 現金流量表
     """
     start = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
-    df = _get("TaiwanStockFinancialStatements", stock_id=stock_id, start_date=start)
-    if df.empty:
-        return df
+    frames = []
+    for dataset in (
+        "TaiwanStockFinancialStatements",
+        "TaiwanStockBalanceSheet",
+        "TaiwanStockCashFlowsStatement",
+    ):
+        part = _get(dataset, stock_id=stock_id, start_date=start)
+        if not part.empty:
+            part = part.copy()
+            part["statement_dataset"] = dataset
+            frames.append(part)
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
     df["date"] = pd.to_datetime(df["date"])
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     return df
+
+
+def _extract_type_series(df: pd.DataFrame, *type_names: str) -> pd.Series:
+    """Extract financial statement rows by exact FinMind type code."""
+    if df.empty or "type" not in df.columns:
+        return pd.Series(dtype=float)
+    wanted = {str(name) for name in type_names if name}
+    sub = df[df["type"].astype(str).isin(wanted)].copy()
+    if sub.empty:
+        return pd.Series(dtype=float)
+    return sub.groupby("date")["value"].sum().sort_index()
 
 
 def _extract_series(df: pd.DataFrame, name_pattern: str,
                     stmt_type: str = None) -> pd.Series:
     """從財報 DataFrame 提取特定科目的季度序列（按日期排序）"""
     mask = df["origin_name"].str.contains(name_pattern, case=False, na=False)
+    if "type" in df.columns:
+        mask &= ~df["type"].astype(str).str.endswith("_per", na=False)
     if stmt_type:
-        mask &= df["type"].str.contains(stmt_type, na=False)
+        if "statement_dataset" in df.columns:
+            mask &= df["statement_dataset"].str.contains(stmt_type, na=False)
+        else:
+            mask &= df["type"].str.contains(stmt_type, na=False)
     sub = df[mask].copy()
     if sub.empty:
         return pd.Series(dtype=float)
@@ -1000,14 +1027,14 @@ def compute_fundamentals(df: pd.DataFrame) -> dict:
     result: dict = {}
 
     # ── EPS（近 4 季合計）────────────────────────────────────────
-    eps_s = _extract_series(df, "每股盈餘", "損益")
+    eps_s = _extract_type_series(df, "EPS")
     if eps_s.empty:
         eps_s = _extract_series(df, "每股盈餘")
     result["eps_ttm"] = float(eps_s.tail(4).sum()) if len(eps_s) >= 1 else None
 
     # ── 淨利 & 股東權益 → ROE ───────────────────────────────────
-    ni_s  = _extract_series(df, "本期淨利", "損益")
-    eq_s  = _extract_series(df, "權益", "資產負債")
+    ni_s  = _extract_type_series(df, "IncomeAfterTaxes")
+    eq_s  = _extract_type_series(df, "Equity")
     if ni_s.empty:
         ni_s = _extract_series(df, "本期淨利")
     if eq_s.empty:
@@ -1020,14 +1047,18 @@ def compute_fundamentals(df: pd.DataFrame) -> dict:
         result["roe"] = None
 
     # ── 營業現金流（近 4 季合計）────────────────────────────────
-    ocf_s = _extract_series(df, "營業活動", "現金流")
+    ocf_s = _extract_type_series(
+        df,
+        "CashFlowsFromOperatingActivities",
+        "NetCashInflowFromOperatingActivities",
+    )
     if ocf_s.empty:
         ocf_s = _extract_series(df, "營業活動")
     result["operating_cf"] = float(ocf_s.tail(4).sum()) if len(ocf_s) >= 1 else None
 
     # ── 負債比（最新季）─────────────────────────────────────────
-    ast_s = _extract_series(df, "資產總", "資產負債")
-    lib_s = _extract_series(df, "負債總", "資產負債")
+    ast_s = _extract_type_series(df, "TotalAssets")
+    lib_s = _extract_type_series(df, "Liabilities")
     if ast_s.empty:
         ast_s = _extract_series(df, "資產總計")
     if lib_s.empty:
@@ -1040,8 +1071,8 @@ def compute_fundamentals(df: pd.DataFrame) -> dict:
         result["debt_ratio"] = None
 
     # ── 毛利率（最新季 & YoY）──────────────────────────────────
-    rev_s = _extract_series(df, "營業收入", "損益")
-    gp_s  = _extract_series(df, "毛利|營業毛利", "損益")
+    rev_s = _extract_type_series(df, "Revenue")
+    gp_s  = _extract_type_series(df, "GrossProfit")
     if rev_s.empty:
         rev_s = _extract_series(df, "營業收入")
     if gp_s.empty:
@@ -1087,7 +1118,14 @@ def smart_get_fundamentals(stock_id: str) -> dict:
     from db.fundamental_cache import is_fundamental_fresh, load_fundamental, save_fundamental
 
     if is_fundamental_fresh(stock_id):
-        return load_fundamental(stock_id)
+        cached = load_fundamental(stock_id)
+        has_metrics = any(
+            cached.get(k) is not None
+            for k in ("eps_ttm", "roe", "operating_cf", "debt_ratio")
+        )
+        can_retry_empty_cache, _ = can_fetch_premium_fundamentals()
+        if has_metrics or not can_retry_empty_cache:
+            return cached
 
     try:
         df = get_financial_statements(stock_id, years=3)

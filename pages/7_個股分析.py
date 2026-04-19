@@ -77,6 +77,114 @@ def _to_bool(value, default=False) -> bool:
     return bool(value)
 
 
+def _fundamental_check_rows(stock_id: str, preset: dict) -> list[dict]:
+    """Evaluate saved fundamental filters for a single stock."""
+    req_eps = _to_bool(preset.get("sb_req_eps"), True)
+    req_cf = _to_bool(preset.get("sb_req_cf"), True)
+    min_roe = float(preset.get("sb_min_roe") or 0)
+    max_debt = float(preset.get("sb_max_debt") or 0)
+
+    try:
+        from data.finmind_client import (
+            can_fetch_premium_fundamentals,
+            get_fundamentals_mode,
+            smart_get_fundamentals,
+        )
+        from db.fundamental_cache import is_fundamental_fresh, load_fundamental
+    except Exception as exc:
+        return [{
+            "自訂條件": "基本面過濾",
+            "結果": "無法檢查",
+            "目前數值": f"基本面模組載入失敗：{exc}",
+        }]
+
+    mode = get_fundamentals_mode()
+    if mode == "off":
+        return [{
+            "自訂條件": "基本面過濾",
+            "結果": "停用",
+            "目前數值": "config.toml fundamentals_mode=off",
+        }]
+
+    metrics = {}
+    source = ""
+    if is_fundamental_fresh(stock_id):
+        metrics = load_fundamental(stock_id)
+        if any(metrics.get(k) is not None for k in ("eps_ttm", "operating_cf", "roe", "debt_ratio")):
+            source = "本機快取"
+        else:
+            metrics = {}
+
+    if not metrics:
+        can_fetch, reason = can_fetch_premium_fundamentals()
+        if not can_fetch:
+            return [{
+                "自訂條件": "基本面過濾",
+                "結果": "資料不足",
+                "目前數值": f"無新鮮快取，且目前不可抓取：{reason}",
+            }]
+        with st.spinner(f"載入 {stock_id} 基本面資料..."):
+            metrics = smart_get_fundamentals(stock_id)
+        source = "API / 快取"
+
+    if not any(metrics.get(k) is not None for k in ("eps_ttm", "operating_cf", "roe", "debt_ratio")):
+        return [{
+            "自訂條件": "基本面過濾",
+            "結果": "資料不足",
+            "目前數值": f"FinMind 財報無可用指標（來源：{source or '未知'}）",
+        }]
+
+    rows: list[dict] = []
+    data_date = metrics.get("data_date") or "未標示"
+
+    def _add(label: str, passed: bool | None, value: str):
+        rows.append({
+            "自訂條件": label,
+            "結果": "資料不足" if passed is None else ("通過" if passed else "未通過"),
+            "目前數值": f"{value}（{source}，資料日 {data_date}）",
+        })
+
+    eps = metrics.get("eps_ttm")
+    if req_eps:
+        _add(
+            "EPS TTM > 0",
+            None if eps is None else float(eps) > 0,
+            "N/A" if eps is None else f"{float(eps):.2f}",
+        )
+
+    operating_cf = metrics.get("operating_cf")
+    if req_cf:
+        _add(
+            "營業現金流 > 0",
+            None if operating_cf is None else float(operating_cf) > 0,
+            "N/A" if operating_cf is None else f"{float(operating_cf):,.0f}",
+        )
+
+    roe = metrics.get("roe")
+    if min_roe > 0:
+        _add(
+            f"ROE >= {min_roe:g}%",
+            None if roe is None else float(roe) >= min_roe,
+            "N/A" if roe is None else f"{float(roe):.2f}%",
+        )
+
+    debt = metrics.get("debt_ratio")
+    if max_debt > 0:
+        _add(
+            f"負債比 <= {max_debt:g}%",
+            None if debt is None else float(debt) <= max_debt,
+            "N/A" if debt is None else f"{float(debt):.2f}%",
+        )
+
+    if not rows:
+        rows.append({
+            "自訂條件": "基本面過濾",
+            "結果": "未設定條件",
+            "目前數值": f"已載入基本面資料（{source}，資料日 {data_date}）",
+        })
+    return rows
+
+
 def _get_daily_volume_rank(stock_id: str, trade_date) -> tuple[int | None, int, float | None]:
     """回傳指定交易日成交量排名：(rank, total, volume)。rank 為 1-based。"""
     try:
@@ -1243,11 +1351,7 @@ def render_custom_preset_checks(
         })
 
     if use_fundamental:
-        rows.append({
-            "自訂條件": "基本面過濾",
-            "結果": "未檢查",
-            "目前數值": "個股分析頁暫不呼叫財報 API；掃描頁仍會套用此條件",
-        })
+        rows.extend(_fundamental_check_rows(stock_id, preset))
 
     if _to_bool(preset.get("sb_use_sector_filter"), False):
         rows.append({
