@@ -1,6 +1,6 @@
 # FinMind Sponsor Premium 升級施工依據
 
-> 狀態：施工中  
+> 狀態：第一輪實作完成，進入試用期觀察與後續追蹤
 > 日期：2026-04-19  
 > 目的：FinMind 999 Sponsor 試用期間，以可熱插拔、可降級、可量化評估的方式導入 Premium 資料，不破壞現有 Free 模式與 v3/v4 核心策略。
 
@@ -168,7 +168,7 @@ API 回 402 / 403 時：
 
 ## 3. Phase 1：高價值功能
 
-### Step 1-6：官方風險旗標（施工中）
+### Step 1-6：官方風險旗標（已完成第一版）
 
 資料源：
 
@@ -267,7 +267,7 @@ reversal_flag
 
 - Scanner / Premium score 是否使用這三個指標，等 Step 2-10 分數拆分時再決定。
 
-### Step 1-8：基本面 Penalty Mode（施工中）
+### Step 1-8：基本面 Penalty Mode（已完成第一版）
 
 現有 smart fundamentals 已有基礎，補上模式與分數整合。
 
@@ -304,7 +304,7 @@ penalty
 
 - 待 Step 2-10 分數拆分時，再決定 `fundamental_penalty` 是否合併進正式 `risk_penalty` / `final_score`。
 
-### Step 1-9：股權分散籌碼共振
+### Step 1-9：股權分散籌碼共振（已完成第一版）
 
 資料源：
 
@@ -334,7 +334,7 @@ holding_shares_cache(
 
 ## 4. Phase 2：UI 與評估
 
-### Step 2-10：Scanner 分數拆分
+### Step 2-10：Scanner 分數拆分（已完成）
 
 掃描結果加欄位：
 
@@ -370,7 +370,7 @@ final_score = score
 - `risk_penalty` 現階段只顯示為「未套用」，不改變 `score`、排序、v3/v4 必要條件或歷史掃描結果判讀。
 - 目前使用 cache-only 路徑，避免選股雷達因大量股票逐檔觸發 Premium API 與 quota 消耗。
 
-### Step 2-11：個股分析 Premium 區塊
+### Step 2-11：個股分析 Premium 區塊（已完成）
 
 在 `pages/7_個股分析.py` 加 expander：
 
@@ -393,7 +393,7 @@ final_score = score
 - 基本面 flags
 - Premium missing fields 彙整
 
-### Step 2-12：持股監控 Premium 警示
+### Step 2-12：持股監控 Premium 警示（已完成）
 
 在 `pages/2_持股監控.py` 加：
 
@@ -404,9 +404,9 @@ final_score = score
 
 LINE 只推明確風險，避免噪音。
 
-### Step 2-13：試用期評估報表
+### Step 2-13：試用期評估報表（已完成）
 
-在資料管理頁新增 tab，比較過去 30 天掃描結果：
+在選股雷達的歷史紀錄 tab 新增評估區塊，比較最近掃描結果：
 
 - positive premium flags
 - negative risk/fundamental flags
@@ -485,20 +485,12 @@ LINE 只推明確風險，避免噪音。
 
 - Follow-up: `_attach_cached_risk_flags()` currently recomputes and resorts by final score via `_ensure_premium_score_columns()` at the end. This is acceptable for current final-display usage, but future callers that need stable input order should split attach/recompute/sort into separate helpers.
 
-## Progress Update - 2026-04-19 Step 2-11 draft
-
-- Added a draft `render_premium_summary()` section to `pages/7_個股分析.py`.
-- The summary uses only local cache and already-loaded page data: cached risk flags, cached holding-share metrics, and broker main-force data already fetched by the page.
-- It groups signals into positive flags, negative flags, and missing fields, and shows tier/runtime status.
-- No additional Premium API calls are introduced by the summary section.
-- Pending user validation before commit.
-- Step 2-11 draft note: holding-share ratio flat deltas are intentionally ignored in Premium summary; they are not missing data.
-
 ## Progress Update - 2026-04-19 Step 2-11 completed
 
-- User validation passed for the `render_premium_summary()` draft.
+- User validation passed for the `render_premium_summary()` implementation.
 - Step 2-11 is complete for the current scope: individual-stock Premium summary now groups positive flags, negative flags, and missing fields without extra Premium API calls.
 - Manual update remains deferred until the full FinMind Premium plan is complete.
+- Step 2-11 note: holding-share ratio flat deltas are intentionally ignored in Premium summary; they are not missing data.
 
 ## Progress Update - 2026-04-19 Step 2-12 completed
 
@@ -507,7 +499,7 @@ LINE 只推明確風險，避免噪音。
 - Premium alerts are converted into the existing `StockAlert` flow, so screen warnings, alert count, and LINE notification reuse the current portfolio alert behavior.
 - No new batch Premium API calls are introduced by the portfolio monitor alert section.
 - Validation note: `AlertLevel` values are string class constants and `StockAlert.level` stores those same string values, so Premium alert priority sorting uses matching dictionary keys.
-- User validation passed for the portfolio Premium alert draft.
+- User validation passed for the portfolio Premium alert implementation.
 
 ## Progress Update - 2026-04-19 Step 2-13 completed
 
