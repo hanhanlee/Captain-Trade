@@ -509,12 +509,12 @@ LINE 只推明確風險，避免噪音。
 - Validation note: `AlertLevel` values are string class constants and `StockAlert.level` stores those same string values, so Premium alert priority sorting uses matching dictionary keys.
 - User validation passed for the portfolio Premium alert draft.
 
-## Progress Update - 2026-04-19 Step 2-13 draft
+## Progress Update - 2026-04-19 Step 2-13 completed
 
-- Added a draft Premium trial evaluation section to the scan history tab in `pages/1_選股雷達.py`.
+- Added a Premium trial evaluation section to the scan history tab in `pages/1_選股雷達.py`.
 - The report reads only scan history and price cache; it does not call Premium APIs.
 - Scan results are grouped into `negative risk/fundamental flags`, `positive premium flags`, and `no tracked flags`.
 - Design note: negative scanner flags may include fundamental penalty strings from Step 2-10, so the evaluation report intentionally labels that bucket as risk/fundamental instead of pure Premium.
 - The report calculates cached forward returns after 5, 10, and 20 trading days, plus win rate, sample count, average final score, average risk penalty, and missing-data rate.
 - Added a detail expander for per-stock scan date, rank, Premium group, forward returns, and Premium flag fields.
-- Pending user validation before commit.
+- User validation passed for the Premium trial evaluation report.
