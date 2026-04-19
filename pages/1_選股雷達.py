@@ -159,7 +159,7 @@ def _render_strategy_condition_reference(
 | {overheat_label} | 必要 | +10 | {overheat_note} |
 | 相對強度 RS > 80 | 必要 | +10 | 個股明顯領先大盤，確認為真正強勢股 |
 | 突破 60 日收盤新高 | 必要 | +10 | 確認為真實突破，而非盤整區間反彈 |
-| 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
+| 主力連續 3 日買超 | 必要 | +10 | 前15買超分點 − 前15賣超分點（主力買賣超）連續 3 個交易日為正 |
 | 布林頻寬縮減（vs 20日前） | 加分 | +10 | 盤整極致後的變盤第一天 |
 | 投信第一天買超 | 加分 | +10 | 法人資金剛開始表態的訊號 |
 | 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
@@ -178,7 +178,7 @@ def _render_strategy_condition_reference(
 | 布林正常（不低於下軌）| 必要 | +10 | 收盤不破布林下軌，避免弱勢股 |
 | MACD 黃金交叉 | 必要（擇一）| +15 | DIF 上穿 DEA，或 MACD 在零軸上方 |
 | RSI 健康區（50–70）| 必要（擇一）| +10 | RSI 在多頭健康區間，尚未超買 |
-| 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
+| 主力連續 3 日買超 | 必要 | +10 | 前15買超分點 − 前15賣超分點（主力買賣超）連續 3 個交易日為正 |
 | {inst_desc} | {inst_type} | {inst_score} | {inst_note} |
 | 週線多頭 | 加分 | +10 | 週MA10 向上且收盤站上 |
 | 相對強勢 RS > 70 | 加分 | +8 | 個股表現領先大盤 |
@@ -1186,13 +1186,31 @@ with tab_scan:
             use_inst = bool(inst_data) or (
                 dsm.institutional_available and not _disable_non_price_extras
             )
-            if not use_inst:
-                st.warning(
-                    "目前無法取得法人資料；v3/v4 都需要「主力連續 3 日買超」作為必要條件，"
-                    "本次掃描可能不會產生入選結果。"
-                )
-            elif _is_hist_scan and inst_data:
+            if _is_hist_scan and inst_data:
                 st.caption(f"歷史掃描：從本機快取讀取 {len(inst_data)} 檔法人資料（截至 {_active_scan_date}）")
+
+            # 批次載入分點主力快取（不打 API，只讀本機 DB）
+            _broker_data: dict = {}
+            try:
+                from db.broker_cache import load_broker_main_force_batch
+                from data.finmind_client import resolve_latest_trading_day
+                from datetime import timedelta
+                _ltd = resolve_latest_trading_day()
+                _broker_dates = [
+                    (_ltd - timedelta(days=i)).isoformat()
+                    for i in range(10)
+                    if (_ltd - timedelta(days=i)).weekday() < 5
+                ][:5]
+                _broker_data = load_broker_main_force_batch(_broker_dates)
+            except Exception:
+                pass
+
+            if not _broker_data:
+                st.warning(
+                    "分點主力快取無資料；v3/v4「主力連 3 日買超」條件將全部判為未達，"
+                    "掃描結果可能偏少。請先至「資料管理」執行分點資料補抓。"
+                )
+
             result_df, sector_info, debug_info = run_scan(
                 price_data=price_data,
                 stock_info=stock_list,
@@ -1214,6 +1232,7 @@ with tab_scan:
                 ma_breakout_mode=ma_breakout_mode,
                 strategy_version=strategy_version,
                 fundamental_mode=fundamental_mode,
+                broker_data=_broker_data,
                 debug=True,
             )
             st.session_state["debug_info"] = debug_info

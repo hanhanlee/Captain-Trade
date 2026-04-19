@@ -89,6 +89,49 @@ def load_broker_main_force(stock_id: str, dates: list[str]) -> pd.DataFrame:
     return df
 
 
+def load_broker_main_force_batch(dates: list[str]) -> dict[str, pd.DataFrame]:
+    """
+    一次查詢，回傳指定日期內所有股票的分點主力資料。
+    回傳值：{stock_id: DataFrame}，DataFrame 已按 date ASC 排序。
+    用於全市場掃描，避免逐檔查詢。
+    """
+    ensure_broker_cache_table()
+    clean_dates = [str(d)[:10] for d in dates if d]
+    if not clean_dates:
+        return {}
+
+    placeholders = ",".join(f":d{i}" for i in range(len(clean_dates)))
+    params = {f"d{i}": d for i, d in enumerate(clean_dates)}
+
+    with get_session() as sess:
+        rows = sess.execute(text(f"""
+            SELECT
+                stock_id, date, buy_top15, sell_top15, net, broker_count,
+                top5_buy_concentration, consecutive_buy_days, reversal_flag
+            FROM broker_main_force_cache
+            WHERE date IN ({placeholders})
+            ORDER BY stock_id, date ASC
+        """), params).fetchall()
+
+    if not rows:
+        return {}
+
+    df_all = pd.DataFrame(rows, columns=[
+        "stock_id", "date", "buy_top15", "sell_top15", "net", "broker_count",
+        "top5_buy_concentration", "consecutive_buy_days", "reversal_flag",
+    ])
+    df_all["date"] = pd.to_datetime(df_all["date"])
+    for col in ["buy_top15", "sell_top15", "net", "broker_count"]:
+        df_all[col] = pd.to_numeric(df_all[col], errors="coerce").fillna(0)
+    for col in ["top5_buy_concentration", "consecutive_buy_days", "reversal_flag"]:
+        df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+
+    return {
+        sid: grp.reset_index(drop=True)
+        for sid, grp in df_all.groupby("stock_id")
+    }
+
+
 def _nullable_float(value):
     if value is None or pd.isna(value):
         return None

@@ -60,6 +60,7 @@ def load_holdings() -> list:
                 "stop_loss": r.stop_loss,
                 "take_profit": r.take_profit,
                 "notes": (r.notes if hasattr(r, "notes") else None) or r.note or "",
+                "intraday_monitor": bool(r.intraday_monitor) if r.intraday_monitor is not None else False,
             }
             for r in rows
         ]
@@ -89,7 +90,8 @@ def delete_holding(holding_id: int):
             sess.commit()
 
 
-def update_holding(holding_id: int, shares, cost_price, stop_loss, take_profit, notes):
+def update_holding(holding_id: int, shares, cost_price, stop_loss, take_profit, notes,
+                   intraday_monitor: bool = False):
     with get_session() as sess:
         row = sess.query(Portfolio).filter(Portfolio.id == holding_id).first()
         if row:
@@ -100,6 +102,8 @@ def update_holding(holding_id: int, shares, cost_price, stop_loss, take_profit, 
             row.note = notes
             if hasattr(row, "notes"):
                 row.notes = notes
+            if hasattr(row, "intraday_monitor"):
+                row.intraday_monitor = bool(intraday_monitor)
             sess.commit()
 
 
@@ -780,10 +784,11 @@ with tab_manage:
         st.info("尚無持股紀錄")
     else:
         holdings_df = pd.DataFrame(holdings)[
-            ["id", "stock_id", "stock_name", "shares", "cost_price", "stop_loss", "take_profit", "notes"]
+            ["id", "stock_id", "stock_name", "shares", "cost_price", "stop_loss", "take_profit",
+             "notes", "intraday_monitor"]
         ].copy()
 
-        st.caption("可直接修改股數、成本價、停損價、停利價與備註；股票代碼與名稱固定不允許編輯。")
+        st.caption("可直接修改欄位；🔔 盤中監控：勾選後每分鐘掃描現價，觸及 MA5/10/20 或停損停利時推播 LINE。")
 
         edited_holdings = st.data_editor(
             holdings_df,
@@ -799,6 +804,7 @@ with tab_manage:
                 "stop_loss": st.column_config.NumberColumn("stop_loss", min_value=0.0, step=0.01),
                 "take_profit": st.column_config.NumberColumn("take_profit", min_value=0.0, step=0.01),
                 "notes": st.column_config.TextColumn("notes"),
+                "intraday_monitor": st.column_config.CheckboxColumn("🔔盤中監控", default=False),
             },
             key="current_holdings_editor",
         )
@@ -812,6 +818,7 @@ with tab_manage:
                 edited_df["stop_loss"] = pd.to_numeric(edited_df["stop_loss"], errors="coerce")
                 edited_df["take_profit"] = pd.to_numeric(edited_df["take_profit"], errors="coerce")
                 edited_df["notes"] = edited_df["notes"].fillna("").astype(str)
+                edited_df["intraday_monitor"] = edited_df.get("intraday_monitor", False).fillna(False).astype(bool)
 
                 invalid = edited_df[
                     edited_df["shares"].isna()
@@ -831,6 +838,7 @@ with tab_manage:
                             stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) and row["stop_loss"] > 0 else None,
                             take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) and row["take_profit"] > 0 else None,
                             notes=row["notes"],
+                            intraday_monitor=bool(row.get("intraday_monitor", False)),
                         )
                     st.success("持股資料已更新")
                     st.rerun()

@@ -46,7 +46,7 @@ class ScanSignal:
     margin_clean: bool = False         # 融資減少 / 籌碼集中
     rs_positive: bool = False          # 相對強度 RS > 70
     rs_score: float = 0.0              # RS 分數（0-100）
-    main_force_buy_3d: bool = False    # 主力（三大法人合計）連續 3 日買超
+    main_force_buy_3d: bool = False    # 主力買賣超（前15買超分點 − 前15賣超分點）連續 3 日 > 0
     # ── 保留 v3 欄位（供顯示/回測參考，不計入主計分）──
     above_ma20: bool = False
     ma20_rising: bool = False
@@ -216,6 +216,7 @@ def analyze_stock(
     market_close: pd.Series = None,   # 大盤收盤序列，供 RS 計算（選填）
     precomputed: bool = False,        # True 時跳過 compute_indicators（已預先計算）
     ma_breakout_mode: str = "strict", # "strict"：昨日須全在三線下；"loose"：昨日只要在任一線下
+    broker_df: pd.DataFrame = None,   # 分點主力買賣超序列（已含 consecutive_buy_days）
 ):
     """
     分析單一股票，回傳 ScanSignal 或 None（資料不足）
@@ -327,13 +328,18 @@ def analyze_stock(
         # 保留 v3 法人欄位
         sig.institutional_buy = bool(inst_buying.get("strict_pass", False))
         sig.inst_total_buy     = bool(inst_buying.get("aggregate_pass", False))
-        sig.main_force_buy_3d  = bool(inst_buying.get("main_force_buy_3d", False))
         sig.foreign_trust_buy  = sig.inst_total_buy and bool(
             inst_buying.get("foreign_trust_pass", False)
         )
     elif inst_buying:
         sig.institutional_buy = True
-        sig.main_force_buy_3d = True
+
+    # 主力連 3 日買超：以分點券商資料為準
+    # 定義：(前15買超分點總買進 − 前15賣超分點總賣出) 連續 3 日 > 0
+    if broker_df is not None and not broker_df.empty:
+        latest_broker = broker_df.sort_values("date").iloc[-1]
+        streak = pd.to_numeric(latest_broker.get("consecutive_buy_days"), errors="coerce")
+        sig.main_force_buy_3d = bool(pd.notna(streak) and int(streak) >= 3)
 
     # 7. [v4] 突破近 20 日收盤高點（排除今日本身）
     if len(df) >= 22:
@@ -706,6 +712,7 @@ def run_scan(
     ma_breakout_mode: str = "strict", # "strict"：昨日三線全在線下；"loose"：昨日任一線在線下
     strategy_version: str = "v4",    # "v4"：領先攻擊版；"v3"：均線突破版
     fundamental_mode: str = "exclude", # "off" | "warn" | "penalty" | "exclude"
+    broker_data: dict = None,         # {stock_id: DataFrame}，分點主力快取（None = 不用）
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:
     """
@@ -733,6 +740,7 @@ def run_scan(
     margin_data = margin_data or {}
     fundamental_data = fundamental_data or {}
     fundamental_filter = fundamental_filter or {}
+    broker_data = broker_data or {}
     fundamental_mode = (fundamental_mode or "exclude").lower()
     if fundamental_mode not in {"off", "warn", "penalty", "exclude"}:
         fundamental_mode = "exclude"
@@ -867,6 +875,7 @@ def run_scan(
             margin_trend=margin_data.get(stock_id, "flat"),
             market_close=market_close,
             ma_breakout_mode=ma_breakout_mode,
+            broker_df=broker_data.get(stock_id),
         )
 
         if debug:

@@ -7,7 +7,7 @@
 """
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, time as dtime
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -114,6 +114,25 @@ def job_portfolio_check():
         logger.error(f"持股警示任務失敗：{e}")
 
 
+def job_intraday_monitor():
+    """
+    盤中持股監控任務
+    週一到週五 09:00–13:30，每分鐘執行一次。
+    CronTrigger 設 hour="9-13"，函式內自行截止在 13:30。
+    """
+    now = datetime.now().time()
+    if now > dtime(13, 30):
+        return
+
+    from modules.intraday_monitor import run_intraday_check
+    try:
+        sent = run_intraday_check()
+        if sent:
+            logger.info(f"盤中監控：推播 {sent} 則警示")
+    except Exception as e:
+        logger.error(f"盤中監控任務失敗：{e}")
+
+
 def job_weekly_performance():
     """
     每週五收盤後推播績效摘要
@@ -159,6 +178,14 @@ def run_scheduler():
         name="盤中持股警示",
     )
 
+    # 盤中分K監控：週一到週五 09:00–13:30，每分鐘一次
+    scheduler.add_job(
+        job_intraday_monitor,
+        CronTrigger(day_of_week="mon-fri", hour="9-13", minute="*", timezone="Asia/Taipei"),
+        id="intraday_monitor",
+        name="盤中分K監控",
+    )
+
     # 盤後持股警示：週一到週五 14:35
     scheduler.add_job(
         job_portfolio_check,
@@ -177,6 +204,7 @@ def run_scheduler():
 
     logger.info("排程器啟動，等待任務觸發...")
     logger.info("排程時間：")
+    logger.info("  盤中分K監控：週一至週五 09:00–13:30（每分鐘）")
     logger.info("  盤後選股：週一至週五 14:45")
     logger.info("  持股警示：週一至週五 13:30 / 14:35")
     logger.info("  週績效報告：週五 15:10")

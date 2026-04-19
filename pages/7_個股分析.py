@@ -345,14 +345,19 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: b
             "rule": "今日收盤 > 過去 60 個交易日最高收盤",
         },
         {
-            "name": "三大法人連續買超 3 天以上",
+            "name": "主力連續買超 3 日以上",
             "pass": sig.main_force_buy_3d,
             "detail": (
-                "三大法人合計淨買超：近 3 個交易日未全部為正"
-                if has_inst else
-                "未載入法人資料（請勾選「載入法人買賣超」）"
+                (
+                    f"連續買超 **{int(_broker_streak)}** 日，"
+                    f"主力淨買超 **{_broker_net:+.0f}** 張"
+                    if pd.notna(_broker_streak) and pd.notna(_broker_net)
+                    else "分點資料已載入，條件未達（連續買超 < 3 日）"
+                )
+                if _has_broker else
+                "未載入分點主力資料（需 Premium 並先執行預抓取）"
             ),
-            "rule": "三大法人合計買賣超 > 0，且連續至少 3 個交易日",
+            "rule": "前15買超分點 − 前15賣超分點（主力買賣超）連續 3 日 > 0",
         },
     ]
 
@@ -372,6 +377,15 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: b
 
     # ── 加分條件 ────────────────────────────────────────────────
     st.markdown("##### 加分條件")
+
+    # 分點主力摘要（供卡片 detail 使用）
+    _broker_streak = None
+    _broker_net = None
+    _has_broker = broker_main_force is not None and not broker_main_force.empty
+    if _has_broker:
+        _latest_b = broker_main_force.sort_values("date").iloc[-1]
+        _broker_streak = pd.to_numeric(_latest_b.get("consecutive_buy_days"), errors="coerce")
+        _broker_net = pd.to_numeric(_latest_b.get("net"), errors="coerce")
 
     # 投信今昨資料
     trust_today_val = trust_prev_val = None
@@ -408,7 +422,15 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: b
             "name": "投信第一天買超",
             "pass": sig.trust_first_buy,
             "score": 10,
-            "detail": "昨日投信 ≤ 0，今日轉正（需載入法人資料）",
+            "detail": (
+                (
+                    f"昨日投信 **{trust_prev_val:.0f}** 張 → 今日 **{trust_today_val:.0f}** 張（轉正）"
+                    if trust_today_val is not None and trust_prev_val is not None
+                    else "昨日投信 ≤ 0，今日轉正"
+                )
+                if has_inst else
+                "未載入法人資料（請勾選「載入法人買賣超」）"
+            ),
         },
         {
             "name": "週線 MA10 扣抵值低位",
@@ -562,14 +584,19 @@ def render_scorecard_v3(sig, df: pd.DataFrame, has_inst: bool = False):
             "rule": "MACD 黃金交叉（DIF由下往上穿越DEA 或 DIF>DEA>0）OR RSI在50–70健康區",
         },
         {
-            "name": "三大法人連續買超 3 天以上",
+            "name": "主力連續買超 3 日以上",
             "pass": sig.main_force_buy_3d,
             "detail": (
-                "三大法人合計淨買超：近 3 個交易日未全部為正"
-                if has_inst else
-                "未載入法人資料（請勾選「載入法人買賣超」）"
+                (
+                    f"連續買超 **{int(_broker_streak)}** 日，"
+                    f"主力淨買超 **{_broker_net:+.0f}** 張"
+                    if pd.notna(_broker_streak) and pd.notna(_broker_net)
+                    else "分點資料已載入，條件未達（連續買超 < 3 日）"
+                )
+                if _has_broker else
+                "未載入分點主力資料（需 Premium 並先執行預抓取）"
             ),
-            "rule": "三大法人合計買賣超 > 0，且連續至少 3 個交易日",
+            "rule": "前15買超分點 − 前15賣超分點（主力買賣超）連續 3 日 > 0",
         },
     ]
 
@@ -1540,7 +1567,8 @@ except Exception:
 # 分析
 sig = analyze_stock(df, inst_buying=inst_buying, precomputed=True,
                     margin_trend=_margin_trend,
-                    ma_breakout_mode=_ma_breakout_mode)
+                    ma_breakout_mode=_ma_breakout_mode,
+                    broker_df=broker_main_force if not broker_main_force.empty else None)
 _volume_rank = _get_daily_volume_rank(target_id, df.iloc[-1]["date"])
 _raw_custom_overheat_mult = _custom_preset.get("sb_overheat_atr_mult")
 _custom_overheat_mult = (

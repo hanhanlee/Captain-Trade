@@ -53,6 +53,11 @@ def _table_exists(conn, table_name: str) -> bool:
 def _migrate_schema():
     """輕量 schema migration，確保舊 DB 可相容新版欄位與新表。"""
     with ENGINE.begin() as conn:
+        # portfolio intraday_monitor 欄位（舊 DB 補建）
+        if not _column_exists(conn, "portfolio", "intraday_monitor"):
+            conn.execute(text("ALTER TABLE portfolio ADD COLUMN intraday_monitor INTEGER DEFAULT 0"))
+            logger.info("migration: portfolio 新增 intraday_monitor 欄位")
+
         # portfolio notes 欄位相容
         if _column_exists(conn, "portfolio", "note") and not _column_exists(conn, "portfolio", "notes"):
             conn.execute(text("ALTER TABLE portfolio ADD COLUMN notes TEXT"))
