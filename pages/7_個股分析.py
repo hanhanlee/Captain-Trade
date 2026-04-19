@@ -847,6 +847,106 @@ def render_official_risk_flags(stock_id: str, analysis_date, is_historical: bool
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
+def render_holding_shares(stock_id: str, analysis_date, is_historical: bool = False):
+    """Display Premium large-holder distribution trends."""
+    try:
+        from data.finmind_client import (
+            get_cached_holding_shares,
+            get_holding_shares,
+            get_premium_state,
+        )
+    except Exception as exc:
+        st.caption(f"大戶持股比例載入失敗：{exc}")
+        return
+
+    state = get_premium_state()
+    end = pd.Timestamp(analysis_date).date().isoformat()
+    start = (pd.Timestamp(end) - pd.Timedelta(days=180)).date().isoformat()
+
+    with st.expander("大戶持股比例（Premium）", expanded=False):
+        if not state.user_enabled or state.tier == "free":
+            st.info("Premium 未啟用，僅顯示本機快取；不會呼叫 FinMind Premium API。")
+            hdf = get_cached_holding_shares(stock_id=stock_id, start_date=start, end_date=end)
+        elif state.degraded:
+            st.warning(f"Premium runtime 已降級：{state.last_error or 'unknown'}。目前僅顯示本機快取。")
+            hdf = get_cached_holding_shares(stock_id=stock_id, start_date=start, end_date=end)
+        elif is_historical:
+            st.caption("歷史分析模式僅讀取截至分析日的本機快取，避免用未來資料回看。")
+            hdf = get_cached_holding_shares(stock_id=stock_id, start_date=start, end_date=end)
+        else:
+            hdf = get_holding_shares(stock_id=stock_id, start_date=start, end_date=end)
+
+        if hdf is None or hdf.empty:
+            st.info("目前沒有可顯示的大戶持股比例資料。")
+            return
+
+        hdf = hdf.copy()
+        hdf["date"] = pd.to_datetime(hdf["date"], errors="coerce")
+        hdf = hdf.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+        if hdf.empty:
+            st.info("目前沒有可顯示的大戶持股比例資料。")
+            return
+
+        latest = hdf.iloc[-1]
+        prev = hdf.iloc[-2] if len(hdf) >= 2 else None
+
+        def _fmt_pct(value):
+            return "N/A" if pd.isna(value) else f"{float(value):.2f}%"
+
+        def _delta(col):
+            if prev is None or pd.isna(latest.get(col)) or pd.isna(prev.get(col)):
+                return None
+            return float(latest[col]) - float(prev[col])
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("400 張以上", _fmt_pct(latest.get("above_400_pct")), delta=_delta("above_400_pct"))
+        m2.metric("1000 張以上", _fmt_pct(latest.get("above_1000_pct")), delta=_delta("above_1000_pct"))
+        m3.metric("10 張以下", _fmt_pct(latest.get("below_10_pct")), delta=_delta("below_10_pct"), delta_color="inverse")
+
+        plot_df = hdf.tail(24).rename(columns={
+            "above_400_pct": "400 張以上",
+            "above_1000_pct": "1000 張以上",
+            "below_10_pct": "10 張以下",
+        })
+        fig = go.Figure()
+        for col, color in [
+            ("400 張以上", "#2f8bd8"),
+            ("1000 張以上", "#7c3aed"),
+            ("10 張以下", "#d97706"),
+        ]:
+            if col in plot_df.columns:
+                fig.add_trace(go.Scatter(
+                    x=plot_df["date"],
+                    y=plot_df[col],
+                    mode="lines+markers",
+                    name=col,
+                    line=dict(color=color, width=2),
+                ))
+        fig.update_layout(
+            height=280,
+            template="plotly_white",
+            margin=dict(t=16, b=12, l=32, r=24),
+            yaxis_title="比例 %",
+            xaxis_title=None,
+            legend=dict(orientation="h", y=1.08),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        show_df = hdf.tail(12).copy()
+        show_df["date"] = show_df["date"].dt.strftime("%Y-%m-%d")
+        st.dataframe(
+            show_df.rename(columns={
+                "date": "日期",
+                "above_400_pct": "400 張以上 %",
+                "above_1000_pct": "1000 張以上 %",
+                "below_10_pct": "10 張以下 %",
+                "fetched_at": "快取時間",
+            }),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
 def render_custom_preset_checks(
     *,
     stock_id: str,
@@ -1240,6 +1340,10 @@ render_institutional_chart(broker_main_force)
 st.markdown("---")
 
 render_official_risk_flags(target_id, df.iloc[-1]["date"], is_historical=_is_hist)
+
+st.markdown("---")
+
+render_holding_shares(target_id, df.iloc[-1]["date"], is_historical=_is_hist)
 
 st.markdown("---")
 

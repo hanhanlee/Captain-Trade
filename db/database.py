@@ -157,6 +157,24 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 risk_flags_cache 表")
 
+        if not _table_exists(conn, "holding_shares_cache"):
+            conn.execute(text("""
+                CREATE TABLE holding_shares_cache (
+                    stock_id       TEXT NOT NULL,
+                    date           TEXT NOT NULL,
+                    above_400_pct  REAL,
+                    above_1000_pct REAL,
+                    below_10_pct   REAL,
+                    fetched_at     TEXT,
+                    PRIMARY KEY (stock_id, date)
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_holding_shares_stock_date
+                ON holding_shares_cache (stock_id, date)
+            """))
+            logger.info("migration: 建立 holding_shares_cache 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

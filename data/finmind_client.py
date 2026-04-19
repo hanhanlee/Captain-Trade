@@ -4,6 +4,7 @@ FinMind API 客戶端
 免費帳號（註冊會員）每小時限制 600 次請求；遇 429 自動退避重試。
 """
 import os
+import re
 import threading
 import logging
 import requests
@@ -1249,6 +1250,161 @@ def get_cached_risk_flags(
     from db.risk_flags_cache import load_risk_flags
 
     return load_risk_flags(stock_id=stock_id, start_date=start_date, end_date=end_date)
+
+
+def _holding_level_bounds(value) -> tuple[int | None, int | None]:
+    """
+    Return lower/upper share-count bounds from a FinMind holding-share level.
+
+    FinMind commonly returns ranges such as "1-999" or "400,001-600,000".
+    This parser is intentionally tolerant so minor label changes do not break
+    the derived Premium fields.
+    """
+    text = str(value or "").replace(",", "")
+    numbers = [int(x) for x in re.findall(r"\d+", text)]
+    if not numbers:
+        return None, None
+    if len(numbers) == 1:
+        n = numbers[0]
+        lowered = text.lower()
+        if any(token in lowered for token in ["above", "over", "up", "以上"]):
+            return n, None
+        if any(token in lowered for token in ["below", "under", "less", "以下"]):
+            return None, n
+        return n, n
+    return min(numbers[0], numbers[1]), max(numbers[0], numbers[1])
+
+
+def _find_holding_column(df: pd.DataFrame, candidates: list[str], contains: list[str]) -> str | None:
+    lower_map = {str(col).lower(): col for col in df.columns}
+    for name in candidates:
+        col = lower_map.get(name.lower())
+        if col is not None:
+            return col
+    for col in df.columns:
+        low = str(col).lower()
+        if any(token.lower() in low for token in contains):
+            return col
+    return None
+
+
+def _normalize_holding_shares(df: pd.DataFrame, stock_id: str = "") -> list[dict]:
+    if df is None or df.empty:
+        return []
+
+    level_col = _find_holding_column(
+        df,
+        ["HoldingSharesLevel", "holding_shares_level", "level"],
+        ["holdingshareslevel", "holding", "level", "shares"],
+    )
+    pct_col = _find_holding_column(
+        df,
+        ["percent", "percentage", "HoldingSharesPercent", "HoldingSharesPercentage"],
+        ["percent", "percentage", "ratio"],
+    )
+    if not level_col or not pct_col:
+        logger.warning(
+            "TaiwanStockHoldingSharesPer missing expected columns: %s",
+            list(df.columns),
+        )
+        return []
+
+    work = df.copy()
+    work["_stock_id"] = work.apply(lambda r: _row_stock_id(r.to_dict(), stock_id), axis=1)
+    work["_date"] = work.apply(lambda r: _row_date(r.to_dict()), axis=1)
+    work["_pct"] = pd.to_numeric(work[pct_col], errors="coerce")
+
+    rows: list[dict] = []
+    for (sid, d), group in work.dropna(subset=["_pct"]).groupby(["_stock_id", "_date"]):
+        if not sid or not d:
+            continue
+        above_400 = 0.0
+        above_1000 = 0.0
+        below_10 = 0.0
+        for _, row in group.iterrows():
+            lower, upper = _holding_level_bounds(row.get(level_col))
+            pct = float(row["_pct"])
+            if lower is not None and lower >= 400_000:
+                above_400 += pct
+            if lower is not None and lower >= 1_000_000:
+                above_1000 += pct
+            if upper is not None and upper <= 10_000:
+                below_10 += pct
+        rows.append({
+            "stock_id": str(sid),
+            "date": str(d)[:10],
+            "above_400_pct": round(above_400, 4),
+            "above_1000_pct": round(above_1000, 4),
+            "below_10_pct": round(below_10, 4),
+        })
+    return rows
+
+
+def fetch_holding_shares_from_finmind(
+    stock_id: str,
+    start_date: str = "",
+    end_date: str = "",
+) -> list[dict]:
+    """Fetch and summarize TaiwanStockHoldingSharesPer Premium data."""
+    kwargs = {}
+    if end_date:
+        kwargs["end_date"] = end_date
+    df = _get(
+        "TaiwanStockHoldingSharesPer",
+        stock_id=stock_id,
+        start_date=start_date,
+        **kwargs,
+    )
+    return _normalize_holding_shares(df, stock_id=stock_id)
+
+
+def get_holding_shares(
+    stock_id: str,
+    start_date: str,
+    end_date: str | None = None,
+    *,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Cache-first large-holder distribution summary.
+
+    Premium unavailable states return local cache only, matching the other
+    Premium datasets so Free-mode behavior remains unchanged.
+    """
+    from db.holding_shares_cache import load_holding_shares, save_holding_shares
+
+    end = end_date or start_date
+    cached = pd.DataFrame() if force_refresh else load_holding_shares(stock_id, start_date, end)
+    if not force_refresh and not cached.empty:
+        return cached
+
+    try:
+        rows = fetch_holding_shares_from_finmind(
+            stock_id=stock_id,
+            start_date=start_date,
+            end_date=end,
+        )
+    except PremiumUnavailableError as exc:
+        logger.debug(f"get_holding_shares {stock_id}: Premium unavailable: {exc}")
+        return cached
+    except Exception as exc:
+        logger.debug(f"get_holding_shares {stock_id} failed: {exc}")
+        return cached
+
+    if rows:
+        save_holding_shares(rows)
+        return load_holding_shares(stock_id, start_date, end)
+    return cached
+
+
+def get_cached_holding_shares(
+    stock_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    from db.holding_shares_cache import load_holding_shares
+
+    return load_holding_shares(stock_id=stock_id, start_date=start_date, end_date=end_date)
 
 
 def get_batch_prices(stock_ids: list, days: int = 120) -> dict[str, pd.DataFrame]:

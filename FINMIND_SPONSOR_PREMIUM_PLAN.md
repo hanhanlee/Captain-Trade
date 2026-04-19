@@ -460,3 +460,16 @@ LINE 只推明確風險，避免噪音。
 - 風險旗標要記錄公告日 / 生效日，防止 look-ahead bias。
 - 評估報表拆成正面旗標 / 負面旗標 / 無旗標三組。
 - 現有表加欄位要做 migration，舊資料預設值要安全。
+
+- Follow-up: `TaiwanStockHoldingSharesPer` level parsing should be rechecked against real Premium samples. Current `_holding_level_bounds()` treats a pure numeric level with no range/above/below keyword as a single-point range `(n, n)`, which is a safe default; if FinMind uses numeric bucket codes instead of share-count ranges, add an explicit mapping.
+
+## Progress Update - 2026-04-19
+
+- Completed Step 1-9 first implementation for `TaiwanStockHoldingSharesPer`.
+- Added `holding_shares_cache` table and index migration.
+- Added `db/holding_shares_cache.py` cache helpers.
+- Added cache-first FinMind APIs: `fetch_holding_shares_from_finmind()`, `get_holding_shares()`, and `get_cached_holding_shares()`.
+- Added normalized metrics: `above_400_pct`, `above_1000_pct`, and `below_10_pct`.
+- Added Premium large-holder display to `pages/7_個股分析.py` after official risk flags.
+- Verified with `py_compile`, `init_db()` migration check, and a synthetic `_normalize_holding_shares()` sample.
+- Manual/reviewer validation passed; final manual update can be done after the full Premium plan is complete.
