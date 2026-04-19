@@ -21,6 +21,7 @@ from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
 from db.scan_history import save_scan_session, load_scan_history, load_session_results, delete_scan_session
+from db.price_cache import load_prices_multi
 from db.database import init_db
 
 from db.settings import is_market_closed
@@ -126,6 +127,205 @@ def _attach_cached_risk_flags(result_df: pd.DataFrame, scan_date) -> pd.DataFram
         axis=1,
     )
     return _ensure_premium_score_columns(result_df)
+
+
+def _has_signal_text(value) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _premium_eval_group(row: pd.Series) -> str:
+    risk_penalty = pd.to_numeric(row.get("risk_penalty", 0), errors="coerce")
+    premium_score = pd.to_numeric(row.get("premium_score", 0), errors="coerce")
+    risk_penalty = 0 if pd.isna(risk_penalty) else float(risk_penalty)
+    premium_score = 0 if pd.isna(premium_score) else float(premium_score)
+    negative = _has_signal_text(row.get("premium_negative_flags", "")) or risk_penalty > 0
+    positive = _has_signal_text(row.get("premium_positive_flags", "")) or premium_score > 0
+    if negative:
+        return "negative risk/fundamental flags"
+    if positive:
+        return "positive premium flags"
+    return "no tracked flags"
+
+
+def _forward_return(price_df: pd.DataFrame, scan_date, entry_close, horizon: int):
+    if price_df is None or price_df.empty or pd.isna(entry_close) or float(entry_close) <= 0:
+        return None
+    scan_ts = pd.to_datetime(scan_date, errors="coerce")
+    if pd.isna(scan_ts):
+        return None
+    df = price_df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date", "close"]).sort_values("date")
+    future = df[df["date"] > scan_ts]
+    if len(future) < horizon:
+        return None
+    exit_close = pd.to_numeric(future.iloc[horizon - 1].get("close"), errors="coerce")
+    if pd.isna(exit_close):
+        return None
+    return round((float(exit_close) - float(entry_close)) / float(entry_close) * 100, 2)
+
+
+def build_premium_trial_evaluation(history: list[dict], max_sessions: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build a cache-only Premium trial report from scan history and price cache."""
+    rows = []
+    selected = history[:max_sessions]
+    for rec in selected:
+        df = load_session_results(rec["id"])
+        if df.empty:
+            continue
+        df = _ensure_premium_score_columns(df)
+        scan_date = pd.to_datetime(rec["scanned_at"], errors="coerce")
+        if pd.isna(scan_date):
+            continue
+        for rank, (_, row) in enumerate(df.iterrows(), start=1):
+            rows.append({
+                "session_id": rec["id"],
+                "scanned_at": scan_date,
+                "scan_date": scan_date.date().isoformat(),
+                "rank": rank,
+                "stock_id": str(row.get("stock_id", "")),
+                "stock_name": row.get("stock_name", ""),
+                "industry": row.get("industry", ""),
+                "entry_close": pd.to_numeric(row.get("close"), errors="coerce"),
+                "base_score": pd.to_numeric(row.get("base_score"), errors="coerce"),
+                "premium_score": pd.to_numeric(row.get("premium_score"), errors="coerce"),
+                "risk_penalty": pd.to_numeric(row.get("risk_penalty"), errors="coerce"),
+                "final_score": pd.to_numeric(row.get("final_score", row.get("score")), errors="coerce"),
+                "premium_group": _premium_eval_group(row),
+                "premium_positive_flags": str(row.get("premium_positive_flags", "") or ""),
+                "premium_negative_flags": str(row.get("premium_negative_flags", "") or ""),
+                "premium_missing_fields": str(row.get("premium_missing_fields", "") or ""),
+            })
+
+    detail_df = pd.DataFrame(rows)
+    if detail_df.empty:
+        return detail_df, pd.DataFrame()
+
+    min_scan_date = detail_df["scanned_at"].min().date().isoformat()
+    price_map = load_prices_multi(sorted(detail_df["stock_id"].dropna().unique().tolist()), start_date=min_scan_date)
+    for horizon in [5, 10, 20]:
+        detail_df[f"return_{horizon}d"] = detail_df.apply(
+            lambda row: _forward_return(
+                price_map.get(row["stock_id"]),
+                row["scanned_at"],
+                row["entry_close"],
+                horizon,
+            ),
+            axis=1,
+        )
+
+    summary_rows = []
+    for group, group_df in detail_df.groupby("premium_group", sort=False):
+        item = {
+            "premium_group": group,
+            "count": int(len(group_df)),
+            "avg_final_score": round(pd.to_numeric(group_df["final_score"], errors="coerce").mean(), 2),
+            "avg_risk_penalty": round(pd.to_numeric(group_df["risk_penalty"], errors="coerce").mean(), 2),
+            "missing_rate": round(group_df["premium_missing_fields"].astype(str).str.len().gt(0).mean() * 100, 1),
+        }
+        for horizon in [5, 10, 20]:
+            col = f"return_{horizon}d"
+            returns = pd.to_numeric(group_df[col], errors="coerce").dropna()
+            item[f"avg_{horizon}d_return"] = round(returns.mean(), 2) if not returns.empty else None
+            item[f"win_rate_{horizon}d"] = round((returns > 0).mean() * 100, 1) if not returns.empty else None
+            item[f"samples_{horizon}d"] = int(len(returns))
+        summary_rows.append(item)
+
+    order = {"negative risk/fundamental flags": 0, "positive premium flags": 1, "no tracked flags": 2}
+    summary_df = pd.DataFrame(summary_rows).sort_values(
+        "premium_group",
+        key=lambda s: s.map(order).fillna(9),
+    ).reset_index(drop=True)
+    return detail_df, summary_df
+
+
+def render_premium_trial_evaluation(history: list[dict]):
+    st.markdown("### Premium 試用期評估")
+    st.caption("只讀 scan history 與 price cache，不呼叫 Premium API。")
+
+    if not history:
+        st.info("目前沒有 scan history，先執行並儲存幾次選股結果後再評估。")
+        return
+    c1, _ = st.columns([1, 3])
+    max_sessions = c1.slider("納入最近幾次掃描", min_value=1, max_value=min(30, len(history)), value=min(10, len(history)))
+    detail_df, summary_df = build_premium_trial_evaluation(history, max_sessions)
+
+    if detail_df.empty or summary_df.empty:
+        st.info("目前 scan history 沒有足夠資料可產生 Premium 評估。")
+        return
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("納入掃描", f"{max_sessions} 次")
+    metric_cols[1].metric("樣本數", f"{len(detail_df)} 筆")
+    metric_cols[2].metric("有負向/基本面訊號", f"{(detail_df['premium_group'] == 'negative risk/fundamental flags').sum()} 筆")
+    metric_cols[3].metric("有正向訊號", f"{(detail_df['premium_group'] == 'positive premium flags').sum()} 筆")
+
+    display_summary = summary_df.rename(columns={
+        "premium_group": "訊號分組",
+        "count": "樣本數",
+        "avg_final_score": "平均 final_score",
+        "avg_risk_penalty": "平均風險扣分",
+        "missing_rate": "缺資料率%",
+        "avg_5d_return": "5日平均報酬%",
+        "win_rate_5d": "5日勝率%",
+        "samples_5d": "5日樣本",
+        "avg_10d_return": "10日平均報酬%",
+        "win_rate_10d": "10日勝率%",
+        "samples_10d": "10日樣本",
+        "avg_20d_return": "20日平均報酬%",
+        "win_rate_20d": "20日勝率%",
+        "samples_20d": "20日樣本",
+    })
+    st.dataframe(display_summary, use_container_width=True, hide_index=True)
+
+    chart_df = summary_df.melt(
+        id_vars=["premium_group"],
+        value_vars=["avg_5d_return", "avg_10d_return", "avg_20d_return"],
+        var_name="horizon",
+        value_name="avg_return",
+    ).dropna(subset=["avg_return"])
+    if not chart_df.empty:
+        chart_df["horizon"] = chart_df["horizon"].map({
+            "avg_5d_return": "5D",
+            "avg_10d_return": "10D",
+            "avg_20d_return": "20D",
+        })
+        fig = px.bar(
+            chart_df,
+            x="premium_group",
+            y="avg_return",
+            color="horizon",
+            barmode="group",
+            title="訊號分組後續平均報酬",
+            labels={"premium_group": "訊號分組", "avg_return": "平均報酬%", "horizon": "期間"},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("查看評估明細", expanded=False):
+        detail_display = detail_df.sort_values(["scanned_at", "rank"], ascending=[False, True]).rename(columns={
+            "scan_date": "掃描日",
+            "rank": "排名",
+            "stock_id": "代碼",
+            "stock_name": "名稱",
+            "industry": "產業",
+            "entry_close": "掃描收盤",
+            "final_score": "final_score",
+            "risk_penalty": "risk_penalty",
+            "premium_group": "訊號分組",
+            "return_5d": "5日報酬%",
+            "return_10d": "10日報酬%",
+            "return_20d": "20日報酬%",
+            "premium_positive_flags": "正向 flags",
+            "premium_negative_flags": "負向 flags",
+            "premium_missing_fields": "缺資料欄位",
+        })
+        cols = [
+            "掃描日", "排名", "代碼", "名稱", "產業", "訊號分組",
+            "final_score", "risk_penalty", "掃描收盤",
+            "5日報酬%", "10日報酬%", "20日報酬%",
+            "正向 flags", "負向 flags", "缺資料欄位",
+        ]
+        st.dataframe(detail_display[[c for c in cols if c in detail_display.columns]], use_container_width=True, hide_index=True)
 
 
 def render_chart(stock_id: str, df: pd.DataFrame):
@@ -1506,6 +1706,8 @@ with tab_history:
     st.caption("每次掃描完成後自動儲存，最新紀錄在最上方")
 
     history = load_scan_history(limit=30)
+    render_premium_trial_evaluation(history)
+    st.markdown("---")
 
     if not history:
         st.info("尚無掃描紀錄，執行第一次掃描後會自動出現在這裡。")
