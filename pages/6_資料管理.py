@@ -1135,6 +1135,13 @@ with st.expander("🔧 手動補抓 & 基本面快取", expanded=False):
     if last_summary:
         st.caption(f"最近狀態：{last_summary}")
 
+    broker_mode = bool(prem_st.get("premium_broker_backfill_mode"))
+    broker_days = int(prem_st.get("premium_broker_backfill_days") or 30)
+    if broker_mode:
+        st.info(f"內建 Sponsor 主力券商背景補完執行中：回補最近 {broker_days} 個缺資料交易日。")
+    elif prem_st.get("premium_broker_backfill_completed_at"):
+        st.success("內建 Sponsor 主力券商背景補完已完成。")
+
     status_rows = _premium_cache_status_rows()
     st.dataframe(
         pd.DataFrame(status_rows),
@@ -1193,6 +1200,33 @@ with st.expander("🔧 手動補抓 & 基本面快取", expanded=False):
             else:
                 st.warning(f"主力券商補完未啟動：{result.get('reason', 'unknown')}")
             st.rerun()
+
+    st.markdown("**內建背景補完：Sponsor 主力券商**")
+    bg1, bg2, bg3 = st.columns([1, 1, 2])
+    with bg1:
+        bg_days = st.number_input(
+            "回補缺資料交易日數",
+            min_value=1,
+            max_value=90,
+            value=broker_days,
+            step=1,
+            key="premium_broker_backfill_days_input",
+        )
+    with bg2:
+        if not broker_mode:
+            if st.button("啟動內建背景補完", type="primary", use_container_width=True):
+                worker.enable_premium_broker_backfill(days=int(bg_days))
+                if not worker.running:
+                    worker.start()
+                st.rerun()
+        else:
+            if st.button("停止內建背景補完", type="secondary", use_container_width=True):
+                worker.disable_premium_broker_backfill()
+                st.rerun()
+    with bg3:
+        st.caption(
+            "這會交給 app 內建 PrefetchWorker 背景執行；可關閉頁面，狀態會由上方 Premium 指標更新。"
+        )
 
 # ══ 區塊 5：維護操作 ══════════════════════════════════════════════
 with st.expander("🔨 維護操作（重建資料庫）", expanded=False):

@@ -524,3 +524,21 @@ LINE 只推明確風險，避免噪音。
   - portfolio: 11 stocks completed, 0 errors
   - recent candidates: 23 stocks completed, 0 errors
   - observed cache after backfill: `risk_flags_cache` 31 stocks, `holding_shares_cache` 31 stocks, `broker_main_force_cache` 18 stocks, `fundamental_cache` 2489 stocks
+
+## Known Issues / Need Confirmation
+
+- Shareholding transfer source pending: `TaiwanStockShareholdingTransfer` is not reliable in the current FinMind API tests, so insider transfer alerts remain cache/display-ready but the automated source needs confirmation before enabling production backfill.
+
+## Progress Update - 2026-04-20 Sponsor backfill throughput
+
+- Updated Sponsor Premium throttling from the previous conservative 40/min client cap to an account-limit based cap, with Sponsor defaulting to 6000/h ~= 100/min.
+- Reduced the full-market Premium fixed interval to 0.05s so the shared sliding-window limiter and worker hourly quota checks are the primary brakes.
+- Premium full-market backfill now waits for the next hourly quota window and resumes after 429 instead of ending the batch.
+- Restarted date-first broker-main-force backfill with the updated worker; observed broker writes reached 100/min with 0 recorded errors in the initial check.
+
+## Progress Update - 2026-04-20 Built-in backfill worker
+
+- Moved Sponsor broker-main-force catch-up into the built-in `PrefetchWorker` loop instead of relying on an external one-shot script.
+- Added persistent `app_settings` controls for built-in broker backfill enabled/disabled state and target missing-date count.
+- Added Data Management controls to start/stop the built-in Sponsor broker backfill and display its active/completed state.
+- Verified the production Streamlit worker is writing broker-main-force cache from the app process at roughly 96-100 attempts/minute with 0 recorded errors.

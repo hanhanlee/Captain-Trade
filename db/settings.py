@@ -82,3 +82,22 @@ def get_force_yahoo() -> bool:
 def set_force_yahoo(enabled: bool) -> None:
     """設定是否強制使用 Yahoo Finance（FinMind 異常時手動切換）"""
     set_setting("force_yahoo_finance", "true" if enabled else "false")
+
+
+def get_premium_broker_backfill_enabled() -> bool:
+    return get_setting("premium_broker_backfill_enabled", "false").lower() == "true"
+
+
+def set_premium_broker_backfill_enabled(enabled: bool) -> None:
+    set_setting("premium_broker_backfill_enabled", "true" if enabled else "false")
+
+
+def get_premium_broker_backfill_days() -> int:
+    try:
+        return max(1, int(get_setting("premium_broker_backfill_days", "30")))
+    except Exception:
+        return 30
+
+
+def set_premium_broker_backfill_days(days: int) -> None:
+    set_setting("premium_broker_backfill_days", str(max(1, int(days))))

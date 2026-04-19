@@ -27,7 +27,7 @@ HOURLY_LIMIT_TRADING      = 100   # 交易時間每小時上限
 HOURLY_LIMIT_SPONSOR      = 6000  # Sponsor 帳號盤後/重建可用額度
 FETCH_INTERVAL_SEC        = 5.8   # 正常模式每次請求間隔（秒）≈ 620 次/小時，讓上限當煞車
 FETCH_INTERVAL_REBUILD    = 2.0   # 重建模式間隔（秒）；讓 429 來當剎車
-PREMIUM_FULL_MARKET_INTERVAL_SEC = 0.5  # 全市場 Premium 基礎補完，讓 6000/h 硬限制當煞車
+PREMIUM_FULL_MARKET_INTERVAL_SEC = 0.05  # Sponsor backfill: keep fixed sleep minimal; shared limiters do the throttling.
 STALE_DAYS                = 5     # 快取幾天未更新視為過期
 RATE_LIMIT_PAUSE_MIN      = 20    # 遇到 429 後暫停幾分鐘（一般模式）
 PREFETCH_DAYS             = 400   # 一般預抓天數（涵蓋回測需求：365天 + 60天指標暖身）
@@ -96,6 +96,9 @@ class PrefetchWorker:
         self.premium_current: str = ""
         self.premium_last_completed_at: datetime | None = None
         self.premium_last_summary: str = ""
+        self.premium_broker_backfill_mode: bool = False
+        self.premium_broker_backfill_days: int = 30
+        self.premium_broker_backfill_completed_at: datetime | None = None
         self.rate_limit_count: int = 0
         self.rebuild_mode: bool = False
         self.rebuild_completed_at: datetime | None = None  # 重建完成時間
@@ -168,6 +171,54 @@ class PrefetchWorker:
         self._resume_event.set()
         self._wake_event.set()
         logger.info("PrefetchWorker 手動恢復")
+
+    def enable_premium_broker_backfill(self, days: int = 30):
+        """Enable built-in date-first Sponsor broker backfill in the worker loop."""
+        self.premium_broker_backfill_mode = True
+        self.premium_broker_backfill_days = max(1, int(days))
+        self.premium_broker_backfill_completed_at = None
+        try:
+            from db.settings import (
+                set_premium_broker_backfill_days,
+                set_premium_broker_backfill_enabled,
+            )
+            set_premium_broker_backfill_days(self.premium_broker_backfill_days)
+            set_premium_broker_backfill_enabled(True)
+        except Exception:
+            pass
+        self.premium_last_summary = (
+            f"broker backfill enabled: {self.premium_broker_backfill_days} dates"
+        )
+        self._wake_event.set()
+
+    def disable_premium_broker_backfill(self):
+        """Disable built-in Sponsor broker backfill."""
+        self.premium_broker_backfill_mode = False
+        try:
+            from db.settings import set_premium_broker_backfill_enabled
+            set_premium_broker_backfill_enabled(False)
+        except Exception:
+            pass
+        self.premium_last_summary = "broker backfill disabled"
+        self._wake_event.set()
+
+    def _sync_premium_broker_backfill_setting(self):
+        try:
+            from db.settings import (
+                get_premium_broker_backfill_days,
+                get_premium_broker_backfill_enabled,
+            )
+            enabled = get_premium_broker_backfill_enabled()
+            self.premium_broker_backfill_days = get_premium_broker_backfill_days()
+            if enabled and not self.premium_broker_backfill_mode:
+                self.premium_broker_backfill_mode = True
+                self.premium_last_summary = (
+                    f"broker backfill enabled: {self.premium_broker_backfill_days} dates"
+                )
+            elif not enabled and self.premium_broker_backfill_mode:
+                self.premium_broker_backfill_mode = False
+        except Exception:
+            pass
 
     def enable_rebuild_mode(self):
         """啟用全速重建模式：額度開放至 600 次/小時，不受交易時間限制"""
@@ -347,7 +398,7 @@ class PrefetchWorker:
         next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return int((next_hour - now).total_seconds()) + 61
 
-    def _pause_for_rate_limit(self):
+    def _pause_for_rate_limit(self, until_next_hour: bool = False):
         """
         遇到 429：
         - 一般模式：暫停固定 RATE_LIMIT_PAUSE_MIN 分鐘
@@ -356,11 +407,14 @@ class PrefetchWorker:
         """
         self.rate_limit_count += 1
 
-        if self.rebuild_mode or self.backtest_rebuild_mode:
+        if until_next_hour or self.rebuild_mode or self.backtest_rebuild_mode:
             wait_sec = self._next_hour_seconds()
             self.paused_until = datetime.now() + timedelta(seconds=wait_sec)
             resume_at_str = self.paused_until.strftime("%H:%M:%S")
-            mode_label = "重建模式" if self.rebuild_mode else "回測重建模式"
+            if until_next_hour:
+                mode_label = "Premium backfill"
+            else:
+                mode_label = "重建模式" if self.rebuild_mode else "回測重建模式"
             logger.warning(
                 f"[{mode_label}] 收到 429（第 {self.rate_limit_count} 次），"
                 f"等待至下一整點 {resume_at_str}（{wait_sec//60} 分 {wait_sec%60} 秒後）"
@@ -874,9 +928,12 @@ class PrefetchWorker:
                     self.premium_done += 1
             except Exception as e:
                 if _is_429(e):
-                    self._pause_for_rate_limit()
-                    self.premium_last_summary = "stopped: rate_limit"
-                    break
+                    self._pause_for_rate_limit(until_next_hour=True)
+                    if self._stop_event.is_set():
+                        self.premium_last_summary = "stopped: worker stop requested"
+                        break
+                    self.premium_last_summary = "resumed after rate_limit"
+                    continue
                 self.premium_error += 1
             finally:
                 self.premium_queue_size = max(0, self.premium_queue_size - 1)
@@ -940,9 +997,12 @@ class PrefetchWorker:
                     self.premium_done += 1
             except Exception as e:
                 if _is_429(e):
-                    self._pause_for_rate_limit()
-                    self.premium_last_summary = "stopped: rate_limit"
-                    break
+                    self._pause_for_rate_limit(until_next_hour=True)
+                    if self._stop_event.is_set():
+                        self.premium_last_summary = "stopped: worker stop requested"
+                        break
+                    self.premium_last_summary = "resumed after rate_limit"
+                    continue
                 self.premium_error += 1
             finally:
                 self.premium_queue_size = max(0, self.premium_queue_size - 1)
@@ -1497,6 +1557,7 @@ class PrefetchWorker:
     def _run_loop(self):
         logger.info("PrefetchWorker 迴圈開始")
         while not self._stop_event.is_set():
+            self._sync_premium_broker_backfill_setting()
 
             # 重建模式（含回測）：跳過內部計數器，讓 API 的 429 來當限制
             if not self.rebuild_mode and not self.backtest_rebuild_mode:
@@ -1555,6 +1616,22 @@ class PrefetchWorker:
             # ── Yahoo Bridge：13:45 後補充今日收盤資料（每日一次）─────
             if self._should_run_yahoo_bridge():
                 self._run_yahoo_bridge_phase()
+                continue
+
+            if self.premium_broker_backfill_mode and not self._within_trading_hours():
+                result = self.prefetch_market_broker_by_date(
+                    days=self.premium_broker_backfill_days
+                )
+                if result.get("ok") and int(result.get("total") or 0) == 0:
+                    self.premium_broker_backfill_mode = False
+                    self.premium_broker_backfill_completed_at = datetime.now()
+                    try:
+                        from db.settings import set_premium_broker_backfill_enabled
+                        set_premium_broker_backfill_enabled(False)
+                    except Exception:
+                        pass
+                    self.premium_last_summary = "broker backfill complete: no missing targets"
+                self._wait_with_wake(5)
                 continue
 
             # ── 一般模式：抓取近期價格資料 ─────────────────────────
@@ -1717,6 +1794,9 @@ class PrefetchWorker:
             "premium_current":      self.premium_current,
             "premium_last_completed_at": self.premium_last_completed_at,
             "premium_last_summary": self.premium_last_summary,
+            "premium_broker_backfill_mode": self.premium_broker_backfill_mode,
+            "premium_broker_backfill_days": self.premium_broker_backfill_days,
+            "premium_broker_backfill_completed_at": self.premium_broker_backfill_completed_at,
             "current_stock":        self.current_stock,
             "last_fetch_at":        self.last_fetch_at,
             "paused_for_market":    self._within_trading_hours(),

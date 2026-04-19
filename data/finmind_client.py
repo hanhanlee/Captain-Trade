@@ -280,8 +280,16 @@ def _requests_per_minute() -> int:
     enabled = bool(settings["premium_enabled"])
     state = get_premium_state()
 
-    if enabled and tier in {"backer", "sponsor", "auto"} and state.quota_pct >= 0.15:
-        return 40
+    if enabled and state.quota_pct >= 0.15:
+        api_limit = int(state.api_request_limit or 0)
+        if tier == "sponsor":
+            # Sponsor is 6000/h. Use the shared sliding-window limiter as the
+            # primary brake so long backfills can fill the hourly quota.
+            return max(40, min(100, (api_limit or 6000) // 60))
+        if tier == "auto" and api_limit >= 6000:
+            return max(40, min(100, api_limit // 60))
+        if tier in {"backer", "auto"}:
+            return 40
     return 8
 
 
@@ -1458,6 +1466,26 @@ def get_cached_holding_shares(
     from db.holding_shares_cache import load_holding_shares
 
     return load_holding_shares(stock_id=stock_id, start_date=start_date, end_date=end_date)
+
+
+def get_kbar_latest(stock_id: str) -> float | None:
+    """
+    取得今日最新一根分K的收盤價（盤中現價）。
+    FinMind TaiwanStockKBar 每分鐘一筆，取最後一根的 Close。
+    非交易時間或 API 回空則回傳 None。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    df = _get("TaiwanStockKBar", stock_id=stock_id, start_date=today)
+    if df.empty:
+        return None
+    close_col = next(
+        (c for c in df.columns if c.lower() == "close"),
+        None,
+    )
+    if close_col is None:
+        return None
+    series = pd.to_numeric(df[close_col], errors="coerce").dropna()
+    return float(series.iloc[-1]) if not series.empty else None
 
 
 def get_batch_prices(stock_ids: list, days: int = 120) -> dict[str, pd.DataFrame]:
