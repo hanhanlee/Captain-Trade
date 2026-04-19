@@ -4,10 +4,9 @@
 """
 import streamlit as st
 from db.database import init_db
+from modules.auth import require_login
 from version import __version__
 
-# 初始化資料庫
-init_db()
 
 st.set_page_config(
     page_title="台股交易輔助工具",
@@ -15,6 +14,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+require_login()
+
+# 資料庫初始化
+init_db()
 
 
 # ── 啟動背景預抓取（每次 App 啟動只建立一次）────────────────────

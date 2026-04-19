@@ -40,7 +40,7 @@ def _build_status_table(
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", width=14)
     table.add_column(min_width=16)
-    table.add_column(style="dim")
+    table.add_column(style="dim", no_wrap=True)
 
     for svc in [streamlit.status(), caddy.status(), funnel.status()]:
         pid_str = f"PID {svc.pid}" if svc.pid else ""
@@ -52,7 +52,8 @@ def _build_status_table(
     table.add_row("Local", Text(st_url, style="link " + st_url), "")
 
     if public_url:
-        table.add_row("Public", Text(public_url, style="bold yellow"), "")
+        pub_text = Text(public_url, style="bold yellow", no_wrap=True)
+        table.add_row("Public", pub_text, "")
 
     from datetime import datetime
     title = f"[bold]SROCK[/bold]  [dim]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]"
@@ -74,7 +75,7 @@ def watch_status(cfg: Config) -> None:
     funnel = FunnelService(cfg)
 
     try:
-        with Live(console=console, refresh_per_second=0.5, screen=False) as live:
+        with Live(console=console, refresh_per_second=1, screen=True) as live:
             while True:
                 public_url = funnel.public_url() if funnel.status().running else None
                 live.update(_build_status_table(streamlit, caddy, funnel, public_url))

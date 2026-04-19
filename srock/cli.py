@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import time
 import webbrowser
 from enum import Enum
 from pathlib import Path
@@ -77,6 +78,46 @@ def _run_step(label: str, fn, *args, **kwargs) -> bool:
             return False
 
 
+def _start_caddy(caddy) -> None:
+    """Start Caddy with in-place status line instead of a silent spinner."""
+    _LINE = 60
+    t0 = time.monotonic()
+    console.print(f"  [dim]{'launching caddy run...':<{_LINE}}[/dim]", end="\r")
+
+    def _on_wait(elapsed: float) -> None:
+        msg = f"waiting for port {caddy.cfg.auth_port}... {elapsed:.0f}s"
+        console.print(f"  [dim]{msg:<{_LINE}}[/dim]", end="\r")
+
+    try:
+        result = caddy.start(on_wait=_on_wait)
+        elapsed = time.monotonic() - t0
+        console.print(f"{' ' * (_LINE + 4)}", end="\r")  # clear line
+        _ok(f"{result}  ({elapsed:.1f}s)")
+    except Exception as e:
+        console.print(f"{' ' * (_LINE + 4)}", end="\r")
+        _fail(str(e))
+
+
+def _start_tunnel(funnel) -> None:
+    """Start Cloudflare Tunnel with in-place status line."""
+    _LINE = 60
+    t0 = time.monotonic()
+    console.print(f"  [dim]{'launching cloudflared tunnel...':<{_LINE}}[/dim]", end="\r")
+
+    def _on_wait(elapsed: float) -> None:
+        msg = f"waiting for tunnel URL... {elapsed:.0f}s"
+        console.print(f"  [dim]{msg:<{_LINE}}[/dim]", end="\r")
+
+    try:
+        result = funnel.start(on_wait=_on_wait)
+        elapsed = time.monotonic() - t0
+        console.print(f"{' ' * (_LINE + 4)}", end="\r")  # clear line
+        _ok(f"{result}  ({elapsed:.1f}s)")
+    except Exception as e:
+        console.print(f"{' ' * (_LINE + 4)}", end="\r")
+        _fail(str(e))
+
+
 def _ask_password(confirm: bool = True) -> str:
     pw = getpass.getpass("Password: ")
     if confirm:
@@ -126,11 +167,11 @@ def up(
 
     if profile in (Profile.full, Profile.protected):
         _step("Auth Proxy (Caddy)")
-        _run_step("啟動 Caddy...", caddy.start)
+        _start_caddy(caddy)
 
     if profile == Profile.full:
-        _step("Tailscale Funnel")
-        _run_step("啟動 Funnel...", funnel.start)
+        _step("Cloudflare Tunnel")
+        _start_tunnel(funnel)
 
     console.rule()
     print_status(cfg)
@@ -185,9 +226,9 @@ def restart(
 
     _run_step("啟動 Streamlit...", streamlit.start)
     if profile in (Profile.full, Profile.protected):
-        _run_step("啟動 Caddy...", caddy.start)
+        _start_caddy(caddy)
     if profile == Profile.full:
-        _run_step("啟動 Funnel...", funnel.start)
+        _start_tunnel(funnel)
 
     console.rule()
     print_status(cfg)
@@ -273,14 +314,14 @@ def start_streamlit():
 def start_caddy():
     """啟動 Caddy Auth Proxy。"""
     cfg = load_config()
-    _run_step("啟動 Caddy...", CaddyService(cfg).start)
+    _start_caddy(CaddyService(cfg))
 
 
 @start_app.command("funnel")
 def start_funnel():
-    """啟動 Tailscale Funnel。"""
+    """啟動 Cloudflare Tunnel。"""
     cfg = load_config()
-    _run_step("啟動 Funnel...", FunnelService(cfg).start)
+    _start_tunnel(FunnelService(cfg))
 
 
 @stop_app.command("streamlit")

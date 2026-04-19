@@ -112,7 +112,13 @@ class CaddyService:
             ),
         )
 
-    def start(self) -> str:
+    def start(self, on_wait=None) -> str:
+        """Start Caddy auth proxy.
+
+        on_wait: optional callable(elapsed_sec) called every ~5s while polling.
+        """
+        import psutil as _psutil
+
         if is_port_open(self.cfg.auth_port):
             return f"Auth proxy already running on port {self.cfg.auth_port}"
         if not self.cfg.caddy_exe.exists():
@@ -124,41 +130,78 @@ class CaddyService:
             )
 
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
-        # 清除 stale pid
         self._kill_stale_pid()
+        self._kill_caddy_admin()
+        time.sleep(0.3)
 
-        rc, out = run_capture(
-            [str(self.cfg.caddy_exe), "start",
+        pid = start_background(
+            [str(self.cfg.caddy_exe), "run",
              "--config", str(self.cfg.caddyfile),
              "--adapter", "caddyfile"],
             cwd=ROOT,
+            stdout_log=self.cfg.runtime_dir / "caddy.out.log",
+            stderr_log=self.cfg.runtime_dir / "caddy.err.log",
+            pid_file=self.cfg.caddy_pid_file,
         )
-        if rc != 0:
-            raise RuntimeError(f"Caddy failed to start:\n{out}")
 
-        if wait_port_open(self.cfg.auth_port, timeout=25):
-            pid = get_pid_on_port(self.cfg.auth_port)
-            self.cfg.caddy_pid_file.write_text(str(pid), encoding="ascii")
-            return f"Auth proxy started — PID {pid}, port {self.cfg.auth_port}"
+        # quick check: did caddy die immediately (config error)?
+        time.sleep(0.5)
+        try:
+            if not _psutil.Process(pid).is_running():
+                raise RuntimeError(self._read_caddy_err())
+        except _psutil.NoSuchProcess:
+            raise RuntimeError(self._read_caddy_err())
+
+        # poll until port open
+        timeout = 30
+        deadline = time.monotonic() + timeout
+        last_report = time.monotonic()
+        while time.monotonic() < deadline:
+            if is_port_open(self.cfg.auth_port):
+                actual_pid = get_pid_on_port(self.cfg.auth_port)
+                if actual_pid:
+                    self.cfg.caddy_pid_file.write_text(str(actual_pid), encoding="ascii")
+                return f"Auth proxy started — PID {actual_pid}, port {self.cfg.auth_port}"
+            now = time.monotonic()
+            if on_wait and now - last_report >= 3:
+                on_wait(now - (deadline - timeout))
+                last_report = now
+            time.sleep(0.3)
+
         raise TimeoutError(
-            f"Auth proxy did not start within 25s.\n{out}"
+            f"Auth proxy did not open port {self.cfg.auth_port} within {timeout}s.\n"
+            + self._read_caddy_err()
         )
+
+    def _read_caddy_err(self) -> str:
+        log = self.cfg.runtime_dir / "caddy.err.log"
+        if log.exists():
+            return log.read_text(encoding="utf-8", errors="replace")[-600:]
+        return "(no log)"
+
+    _CADDY_ADMIN_PORT = 2019
 
     def stop(self) -> str:
         if not is_port_open(self.cfg.auth_port):
             self._kill_stale_pid()
+            self._kill_caddy_admin()
             return "Auth proxy is not running"
         pid = get_pid_on_port(self.cfg.auth_port)
         kill_on_port(self.cfg.auth_port)
         self._kill_stale_pid()
+        self._kill_caddy_admin()
         self.cfg.caddy_pid_file.unlink(missing_ok=True)
         return f"Auth proxy stopped (was PID {pid})"
 
     def restart(self) -> str:
         msg_stop = self.stop()
-        time.sleep(0.5)
+        time.sleep(1.0)
         msg_start = self.start()
         return "\n".join([msg_stop, msg_start])
+
+    def _kill_caddy_admin(self) -> None:
+        if is_port_open(self._CADDY_ADMIN_PORT):
+            kill_on_port(self._CADDY_ADMIN_PORT)
 
     def _kill_stale_pid(self) -> None:
         if not self.cfg.caddy_pid_file.exists():
@@ -178,76 +221,125 @@ class CaddyService:
 # ── Tailscale Funnel ───────────────────────────────────────────
 
 class FunnelService:
+    """Cloudflare Quick Tunnel — no account needed, URL rotates each restart."""
+
+    _URL_PATTERN = __import__("re").compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
     @property
     def name(self) -> str:
-        return "Funnel"
+        return "Tunnel"
 
-    def _find_tailscale(self) -> str:
-        import shutil
-        ts = shutil.which("tailscale")
-        if ts:
-            return ts
-        default = r"C:\Program Files\Tailscale\tailscale.exe"
-        if Path(default).exists():
-            return default
-        raise FileNotFoundError(
-            "tailscale CLI not found. Install Tailscale or add to PATH."
-        )
+    def _exe(self) -> Path:
+        return ROOT / "tools/cloudflared/cloudflared.exe"
 
-    def status(self) -> ServiceStatus:
+    def _pid_file(self) -> Path:
+        return self.cfg.runtime_dir / "cloudflared.pid"
+
+    def _url_file(self) -> Path:
+        return self.cfg.runtime_dir / "cloudflared_url.txt"
+
+    def _out_log(self) -> Path:
+        return self.cfg.runtime_dir / "cloudflared.out.log"
+
+    def _err_log(self) -> Path:
+        return self.cfg.runtime_dir / "cloudflared.err.log"
+
+    def _running_pid(self) -> int | None:
+        import psutil as _psutil
+        pid_file = self._pid_file()
+        if not pid_file.exists():
+            return None
         try:
-            ts = self._find_tailscale()
-            rc, out = run_capture([ts, "funnel", "status"])
-            active = "https" in out.lower() and "off" not in out.lower()
-            return ServiceStatus(
-                name=self.name,
-                running=active,
-                pid=None,
-                port=self.cfg.funnel_https_port,
-                detail=out.split("\n")[0] if out else "",
-            )
-        except FileNotFoundError as e:
-            return ServiceStatus(
-                name=self.name, running=False, pid=None,
-                port=None, detail=str(e),
-            )
-
-    def start(self) -> str:
-        ts = self._find_tailscale()
-        target = f"http://127.0.0.1:{self.cfg.auth_port}"
-        rc, out = run_capture(
-            [ts, "funnel", "--bg",
-             f"--https={self.cfg.funnel_https_port}", target]
-        )
-        if rc != 0:
-            raise RuntimeError(f"Funnel start failed:\n{out}")
-        return f"Funnel started → {target}"
-
-    def stop(self) -> str:
-        ts = self._find_tailscale()
-        rc, out = run_capture(
-            [ts, "funnel", f"--https={self.cfg.funnel_https_port}", "off"]
-        )
-        if rc != 0 and "handler does not exist" not in out:
-            raise RuntimeError(f"Funnel stop failed:\n{out}")
-        return "Funnel stopped"
-
-    def public_url(self) -> str | None:
-        try:
-            import json
-            ts = self._find_tailscale()
-            rc, out = run_capture([ts, "status", "--json"])
-            if rc != 0 or not out:
-                return None
-            data = json.loads(out)
-            dns = data.get("Self", {}).get("DNSName", "").rstrip(".")
-            if dns:
-                port = self.cfg.funnel_https_port
-                suffix = "" if port == 443 else f":{port}"
-                return f"https://{dns}{suffix}"
+            pid = int(pid_file.read_text().strip())
+            proc = _psutil.Process(pid)
+            if proc.is_running() and "cloudflared" in proc.name().lower():
+                return pid
         except Exception:
             pass
+        pid_file.unlink(missing_ok=True)
+        return None
+
+    def status(self) -> ServiceStatus:
+        pid = self._running_pid()
+        url = self.public_url()
+        return ServiceStatus(
+            name=self.name,
+            running=pid is not None,
+            pid=pid,
+            port=443,
+            detail=url or ("running, URL pending…" if pid else ""),
+        )
+
+    def start(self, on_wait=None) -> str:
+        if self._running_pid():
+            url = self.public_url()
+            return f"Tunnel already running → {url or '(URL pending)'}"
+
+        exe = self._exe()
+        if not exe.exists():
+            raise FileNotFoundError(f"cloudflared not found: {exe}")
+
+        self._url_file().unlink(missing_ok=True)
+        # truncate old log so URL search doesn't pick up stale URL
+        self._err_log().write_text("", encoding="utf-8")
+
+        start_background(
+            [str(exe), "tunnel", "--url", f"http://127.0.0.1:{self.cfg.streamlit_port}"],
+            cwd=ROOT,
+            stdout_log=self._out_log(),
+            stderr_log=self._err_log(),
+            pid_file=self._pid_file(),
+        )
+
+        deadline = time.monotonic() + 30
+        last_report = time.monotonic()
+        while time.monotonic() < deadline:
+            url = self._scan_url_from_logs()
+            if url:
+                self._url_file().write_text(url, encoding="utf-8")
+                return f"Tunnel started → {url}"
+            now = time.monotonic()
+            if on_wait and now - last_report >= 3:
+                on_wait(now - (deadline - 30))
+                last_report = now
+            time.sleep(0.5)
+
+        return "Tunnel started (URL still pending)"
+
+    def stop(self) -> str:
+        pid = self._running_pid()
+        if pid is None:
+            self._url_file().unlink(missing_ok=True)
+            return "Tunnel is not running"
+        try:
+            import psutil as _psutil
+            _psutil.Process(pid).terminate()
+        except Exception:
+            pass
+        self._pid_file().unlink(missing_ok=True)
+        self._url_file().unlink(missing_ok=True)
+        return f"Tunnel stopped (was PID {pid})"
+
+    def public_url(self) -> str | None:
+        url_file = self._url_file()
+        if url_file.exists():
+            url = url_file.read_text().strip()
+            if url:
+                return url
+        return self._scan_url_from_logs()
+
+    def _scan_url_from_logs(self) -> str | None:
+        for log in (self._err_log(), self._out_log()):
+            if log.exists():
+                try:
+                    m = self._URL_PATTERN.search(
+                        log.read_text(encoding="utf-8", errors="replace")
+                    )
+                    if m:
+                        return m.group(0)
+                except Exception:
+                    pass
         return None
