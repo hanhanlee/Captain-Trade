@@ -10,7 +10,7 @@ import time
 from sqlalchemy import text
 
 from data.data_source import DataSourceManager, FALLBACK_WARNING
-from modules.portfolio import run_portfolio_check, AlertLevel
+from modules.portfolio import run_portfolio_check, AlertLevel, StockAlert
 from modules.portfolio_io import (
     STANDARD_COLUMNS,
     holdings_to_export_df,
@@ -129,6 +129,101 @@ def append_holdings(df: pd.DataFrame):
                 notes=row.get("notes", "") or "",
             ))
         sess.commit()
+
+
+def collect_premium_portfolio_alerts(stats_list: list[dict], price_data: dict) -> tuple[list[StockAlert], dict[str, list[StockAlert]]]:
+    """Read cache-only Premium signals for current holdings and convert them to alerts."""
+    try:
+        from data.finmind_client import get_cached_holding_shares, get_cached_risk_flags
+        from db.broker_cache import load_broker_main_force
+    except Exception:
+        return [], {}
+
+    premium_alerts: list[StockAlert] = []
+    by_stock: dict[str, list[StockAlert]] = {}
+
+    def _add_alert(stat: dict, level: str, reason: str):
+        alert = StockAlert(
+            stock_id=stat["stock_id"],
+            stock_name=stat.get("stock_name", ""),
+            level=level,
+            reason=f"[Premium] {reason}",
+            current_price=float(stat.get("close") or 0),
+            cost_price=float(stat.get("cost_price") or 0),
+            pnl_pct=float(stat.get("pnl_pct") or 0),
+        )
+        premium_alerts.append(alert)
+        by_stock.setdefault(stat["stock_id"], []).append(alert)
+
+    for stat in stats_list:
+        sid = stat["stock_id"]
+        df = price_data.get(sid)
+        if df is None or df.empty or "date" not in df.columns:
+            continue
+
+        dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+        if dates.empty:
+            continue
+        latest_date = dates.max().date().isoformat()
+        lookback_start = (pd.Timestamp(latest_date) - pd.Timedelta(days=180)).date().isoformat()
+
+        try:
+            risk_df = get_cached_risk_flags(stock_id=sid, start_date=latest_date, end_date=latest_date)
+        except Exception:
+            risk_df = pd.DataFrame()
+        if risk_df is not None and not risk_df.empty and "flag_type" in risk_df.columns:
+            for flag_type in risk_df["flag_type"].astype(str).dropna().unique():
+                level = AlertLevel.DANGER if flag_type == "suspended" else AlertLevel.WARNING
+                _add_alert(stat, level, f"official risk flag: {flag_type}")
+
+        try:
+            holding_df = get_cached_holding_shares(stock_id=sid, start_date=lookback_start, end_date=latest_date)
+        except Exception:
+            holding_df = pd.DataFrame()
+        if holding_df is not None and not holding_df.empty:
+            hdf = holding_df.copy()
+            hdf["date"] = pd.to_datetime(hdf["date"], errors="coerce")
+            hdf = hdf.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+            if len(hdf) >= 2:
+                latest = hdf.iloc[-1]
+                prev = hdf.iloc[-2]
+
+                def _delta(col: str):
+                    if pd.isna(latest.get(col)) or pd.isna(prev.get(col)):
+                        return None
+                    return float(latest[col]) - float(prev[col])
+
+                d400 = _delta("above_400_pct")
+                d1000 = _delta("above_1000_pct")
+                d10 = _delta("below_10_pct")
+                if d400 is not None and d400 < 0:
+                    _add_alert(stat, AlertLevel.WARNING, f"400+ lots holder ratio down {d400:+.2f}pp")
+                if d1000 is not None and d1000 < 0:
+                    _add_alert(stat, AlertLevel.WARNING, f"1000+ lots holder ratio down {d1000:+.2f}pp")
+                if d10 is not None and d10 > 0:
+                    _add_alert(stat, AlertLevel.WARNING, f"small-holder ratio up {d10:+.2f}pp")
+
+        try:
+            broker_dates = [
+                d.date().isoformat()
+                for d in pd.to_datetime(df["date"], errors="coerce").dropna().tail(30)
+            ]
+            broker_df = load_broker_main_force(sid, broker_dates)
+        except Exception:
+            broker_df = pd.DataFrame()
+        if broker_df is not None and not broker_df.empty:
+            bdf = broker_df.copy().sort_values("date").reset_index(drop=True)
+            latest_broker = bdf.iloc[-1]
+            net = pd.to_numeric(latest_broker.get("net"), errors="coerce")
+            reversal = pd.to_numeric(latest_broker.get("reversal_flag"), errors="coerce")
+            if pd.notna(reversal) and bool(reversal):
+                _add_alert(stat, AlertLevel.WARNING, "broker main-force reversal")
+            elif pd.notna(net) and net < 0:
+                _add_alert(stat, AlertLevel.WARNING, f"broker main-force net sell {abs(float(net)):,.0f}")
+
+    priority = {AlertLevel.DANGER: 0, AlertLevel.WARNING: 1, AlertLevel.INFO: 2}
+    premium_alerts.sort(key=lambda a: priority.get(a.level, 9))
+    return premium_alerts, by_stock
 
 
 # ── K 線圖 ───────────────────────────────────────────────────
@@ -301,8 +396,16 @@ with tab_monitor:
             # 若本輪一筆都抓不到，不覆蓋既有結果，避免誤顯示成「無警示」
             if price_data:
                 stats_list, all_alerts = run_portfolio_check(holdings, price_data)
+                premium_alerts, premium_by_stock = collect_premium_portfolio_alerts(stats_list, price_data)
+                if premium_alerts:
+                    for stat in stats_list:
+                        stat["alerts"].extend(premium_by_stock.get(stat["stock_id"], []))
+                    all_alerts.extend(premium_alerts)
+                    priority = {AlertLevel.DANGER: 0, AlertLevel.WARNING: 1, AlertLevel.INFO: 2}
+                    all_alerts.sort(key=lambda a: priority.get(a.level, 9))
                 st.session_state["portfolio_stats"] = stats_list
                 st.session_state["portfolio_alerts"] = all_alerts
+                st.session_state["portfolio_premium_alerts"] = premium_alerts
                 st.session_state["portfolio_prices"] = price_data
                 st.session_state["portfolio_failed_ids"] = failed_ids
                 st.session_state["portfolio_fallback_mode"] = dsm.fallback_mode if dsm is not None else False
@@ -311,6 +414,7 @@ with tab_monitor:
 
         stats_list = st.session_state.get("portfolio_stats", [])
         all_alerts = st.session_state.get("portfolio_alerts", [])
+        premium_alerts = st.session_state.get("portfolio_premium_alerts", [])
         price_data = st.session_state.get("portfolio_prices", {})
         failed_ids = st.session_state.get("portfolio_failed_ids", [])
         fallback_mode = st.session_state.get("portfolio_fallback_mode", False)
@@ -338,6 +442,12 @@ with tab_monitor:
                 st.warning(f"🟡 **{a.stock_id} {a.stock_name}** — {a.reason}　現價 {a.current_price} 元　損益 {a.pnl_pct:+.1f}%")
         if not danger_alerts and not warn_alerts:
             st.success("✅ 所有持股目前無警示")
+
+        if premium_alerts:
+            with st.expander(f"Premium 風險摘要 ({len(premium_alerts)} 則)", expanded=False):
+                for a in premium_alerts:
+                    label = LEVEL_LABEL.get(a.level, "Premium")
+                    st.write(f"{label} **{a.stock_id} {a.stock_name}** - {a.reason}")
 
         # LINE 推播
         if notify_btn:

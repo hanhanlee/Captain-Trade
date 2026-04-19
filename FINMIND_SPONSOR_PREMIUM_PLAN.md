@@ -499,3 +499,12 @@ LINE 只推明確風險，避免噪音。
 - User validation passed for the `render_premium_summary()` draft.
 - Step 2-11 is complete for the current scope: individual-stock Premium summary now groups positive flags, negative flags, and missing fields without extra Premium API calls.
 - Manual update remains deferred until the full FinMind Premium plan is complete.
+
+## Progress Update - 2026-04-19 Step 2-12 completed
+
+- Added cache-only Premium alerts to `pages/2_持股監控.py`.
+- Portfolio monitor now reads cached official risk flags, cached holding-share ratios, and broker main-force cache for current holdings.
+- Premium alerts are converted into the existing `StockAlert` flow, so screen warnings, alert count, and LINE notification reuse the current portfolio alert behavior.
+- No new batch Premium API calls are introduced by the portfolio monitor alert section.
+- Validation note: `AlertLevel` values are string class constants and `StockAlert.level` stores those same string values, so Premium alert priority sorting uses matching dictionary keys.
+- User validation passed for the portfolio Premium alert draft.
