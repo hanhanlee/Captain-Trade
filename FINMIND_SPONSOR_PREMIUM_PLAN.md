@@ -510,3 +510,17 @@ LINE 只推明確風險，避免噪音。
 - The report calculates cached forward returns after 5, 10, and 20 trading days, plus win rate, sample count, average final score, average risk penalty, and missing-data rate.
 - Added a detail expander for per-stock scan date, rank, Premium group, forward returns, and Premium flag fields.
 - User validation passed for the Premium trial evaluation report.
+
+## Progress Update - 2026-04-19 production premium backfill
+
+- Added manual Sponsor Premium backfill controls to `pages/6_資料管理.py` under the manual cache tools section.
+- Added `PrefetchWorker.prefetch_portfolio_premium()` for current portfolio holdings.
+- Added `PrefetchWorker.prefetch_candidate_premium()` for recent scan-history candidates.
+- Backfill scope:
+  - portfolio holdings: risk flags, holding shares, broker main force, fundamentals
+  - recent candidates: risk flags, holding shares, fundamentals, and broker main force for the highest-priority subset
+- Runtime guard follows the existing Premium safety rules: disabled/free/degraded/quota-low states stop Premium-only fetching.
+- Production backfill was run after Sponsor activation on 2026-04-19:
+  - portfolio: 11 stocks completed, 0 errors
+  - recent candidates: 23 stocks completed, 0 errors
+  - observed cache after backfill: `risk_flags_cache` 31 stocks, `holding_shares_cache` 31 stocks, `broker_main_force_cache` 18 stocks, `fundamental_cache` 2489 stocks

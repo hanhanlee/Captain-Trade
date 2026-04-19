@@ -87,6 +87,13 @@ class PrefetchWorker:
         self.queue_size: int = 0
         self.fund_queue_size: int = 0            # 待抓取基本面資料股票數
         self.paused_until: datetime | None = None
+        self.premium_queue_size: int = 0
+        self.premium_initial_queue_size: int = 0
+        self.premium_done: int = 0
+        self.premium_error: int = 0
+        self.premium_current: str = ""
+        self.premium_last_completed_at: datetime | None = None
+        self.premium_last_summary: str = ""
         self.rate_limit_count: int = 0
         self.rebuild_mode: bool = False
         self.rebuild_completed_at: datetime | None = None  # 重建完成時間
@@ -444,6 +451,184 @@ class PrefetchWorker:
                 return "rate_limit"
             logger.debug(f"抓取基本面 {stock_id} 失敗：{e}")
             return "error"
+
+    def _premium_runtime_ok(self, min_quota_pct: float = 0.15) -> tuple[bool, str]:
+        try:
+            from data.finmind_client import get_premium_state, refresh_finmind_user_info
+            try:
+                state = refresh_finmind_user_info(force=False)
+            except Exception:
+                state = get_premium_state()
+            if not state.user_enabled:
+                return False, "premium_enabled=false"
+            if str(state.tier).lower() not in {"backer", "sponsor", "auto"}:
+                return False, f"tier={state.tier}"
+            if state.degraded:
+                return False, f"degraded: {state.last_error}"
+            if float(state.quota_pct or 0) < min_quota_pct:
+                return False, f"quota_pct={state.quota_pct:.0%}"
+            return True, "ok"
+        except Exception as e:
+            return False, str(e)
+
+    def _recent_price_dates(self, stock_id: str, count: int = 30) -> list[str]:
+        try:
+            from db.price_cache import load_prices
+            df = load_prices(stock_id, lookback_days=max(count + 10, 40))
+            if not df.empty and "date" in df.columns:
+                dates = [d.date().isoformat() for d in df["date"].dropna().tail(count)]
+                if dates:
+                    return dates
+        except Exception:
+            pass
+        latest = _latest_trading_day()
+        dates: list[str] = []
+        d = latest
+        while len(dates) < count:
+            if d.weekday() < 5:
+                dates.append(d.isoformat())
+            d -= timedelta(days=1)
+        return sorted(dates)
+
+    def _prefetch_one_premium_stock(
+        self,
+        stock_id: str,
+        *,
+        include_broker: bool,
+        include_fundamental: bool,
+    ) -> dict:
+        from data.finmind_client import (
+            get_broker_main_force_series,
+            get_holding_shares,
+            get_stock_risk_flags,
+            smart_get_fundamentals,
+        )
+
+        latest = _latest_trading_day()
+        latest_s = latest.isoformat()
+        start_180 = (latest - timedelta(days=180)).isoformat()
+        result = {"stock_id": stock_id, "ok": [], "error": []}
+
+        tasks = [
+            ("risk_flags", lambda: get_stock_risk_flags(stock_id=stock_id, start_date=latest_s, end_date=latest_s)),
+            ("holding_shares", lambda: get_holding_shares(stock_id=stock_id, start_date=start_180, end_date=latest_s)),
+        ]
+        if include_fundamental:
+            tasks.append(("fundamentals", lambda: smart_get_fundamentals(stock_id)))
+        if include_broker:
+            tasks.append(("broker_main_force", lambda: get_broker_main_force_series(stock_id, self._recent_price_dates(stock_id, count=30))))
+
+        for name, fn in tasks:
+            try:
+                fn()
+                result["ok"].append(name)
+                self._record_request()
+            except Exception as e:
+                if _is_429(e):
+                    raise
+                result["error"].append(f"{name}: {e}")
+        return result
+
+    def prefetch_portfolio_premium(self) -> dict:
+        ok, reason = self._premium_runtime_ok()
+        if not ok:
+            return {"ok": False, "reason": reason, "done": 0, "error": 0}
+
+        try:
+            from db.database import get_session
+            from db.models import Portfolio
+            with get_session() as sess:
+                stock_ids = [str(r.stock_id) for r in sess.query(Portfolio).all()]
+        except Exception as e:
+            return {"ok": False, "reason": str(e), "done": 0, "error": 0}
+
+        return self._run_premium_prefetch(
+            sorted(dict.fromkeys(s for s in stock_ids if s)),
+            scope="portfolio",
+            broker_ids=None,
+            include_fundamental=True,
+        )
+
+    def _recent_candidate_ids(self, sessions: int = 5, top_n: int = 20) -> list[str]:
+        try:
+            from db.scan_history import load_scan_history, load_session_results
+            ids: list[str] = []
+            for rec in load_scan_history(limit=sessions):
+                df = load_session_results(rec["id"])
+                if df.empty or "stock_id" not in df.columns:
+                    continue
+                ids.extend(str(sid) for sid in df["stock_id"].dropna().head(top_n))
+            return list(dict.fromkeys(ids))
+        except Exception as e:
+            logger.warning(f"premium candidate list failed: {e}")
+            return []
+
+    def prefetch_candidate_premium(self, sessions: int = 5, top_n: int = 20, broker_top_n: int = 10) -> dict:
+        ok, reason = self._premium_runtime_ok()
+        if not ok:
+            return {"ok": False, "reason": reason, "done": 0, "error": 0}
+        stock_ids = self._recent_candidate_ids(sessions=sessions, top_n=top_n)
+        return self._run_premium_prefetch(
+            stock_ids,
+            scope="candidate",
+            broker_ids=set(stock_ids[:broker_top_n]),
+            include_fundamental=True,
+        )
+
+    def _run_premium_prefetch(
+        self,
+        stock_ids: list[str],
+        *,
+        scope: str,
+        broker_ids: set[str] | None,
+        include_fundamental: bool,
+    ) -> dict:
+        self.premium_initial_queue_size = len(stock_ids)
+        self.premium_queue_size = len(stock_ids)
+        self.premium_done = 0
+        self.premium_error = 0
+        self.premium_last_summary = f"{scope} premium prefetch running"
+
+        for sid in stock_ids:
+            ok, reason = self._premium_runtime_ok()
+            if not ok:
+                self.premium_last_summary = f"stopped: {reason}"
+                break
+            self.premium_current = f"{scope}:{sid}"
+            try:
+                result = self._prefetch_one_premium_stock(
+                    sid,
+                    include_broker=(broker_ids is None or sid in broker_ids),
+                    include_fundamental=include_fundamental,
+                )
+                if result["error"]:
+                    self.premium_error += 1
+                else:
+                    self.premium_done += 1
+            except Exception as e:
+                if _is_429(e):
+                    self._pause_for_rate_limit()
+                    self.premium_last_summary = "stopped: rate_limit"
+                    break
+                self.premium_error += 1
+            finally:
+                self.premium_queue_size = max(0, self.premium_queue_size - 1)
+                self.premium_current = ""
+                self._wait_with_wake(1.0)
+
+        self.premium_last_completed_at = datetime.now()
+        if not self.premium_last_summary.startswith("stopped:"):
+            self.premium_last_summary = (
+                f"{scope} premium done: {self.premium_done} ok, {self.premium_error} error"
+            )
+        return {
+            "ok": True,
+            "scope": scope,
+            "total": len(stock_ids),
+            "done": self.premium_done,
+            "error": self.premium_error,
+            "summary": self.premium_last_summary,
+        }
 
     def _get_backtest_stale_stocks(self) -> list[str]:
         """
@@ -1192,6 +1377,13 @@ class PrefetchWorker:
             "total_fetched":        self.total_fetched,
             "queue_size":           self.queue_size,
             "fund_queue_size":      self.fund_queue_size,
+            "premium_queue_size":   self.premium_queue_size,
+            "premium_initial_queue_size": self.premium_initial_queue_size,
+            "premium_done":         self.premium_done,
+            "premium_error":        self.premium_error,
+            "premium_current":      self.premium_current,
+            "premium_last_completed_at": self.premium_last_completed_at,
+            "premium_last_summary": self.premium_last_summary,
             "current_stock":        self.current_stock,
             "last_fetch_at":        self.last_fetch_at,
             "paused_for_market":    self._within_trading_hours(),

@@ -1029,6 +1029,49 @@ with st.expander("🔧 手動補抓 & 基本面快取", expanded=False):
         st.success("基本面快取已清除，背景工作器將在下次閒置時自動重新填充")
         st.rerun()
 
+    st.markdown("---")
+    st.markdown("**Sponsor Premium 資料補完**")
+    st.caption(
+        "非交易日或收盤後使用。持股會補齊風險旗標、籌碼分布、主力券商與基本面；"
+        "最近候選股會優先補最近掃描結果，讓選股雷達與個股分析更快有 Premium 訊號。"
+    )
+    prem_st = worker.status()
+    pc1, pc2, pc3, pc4 = st.columns(4)
+    pc1.metric("待補 Premium", f"{prem_st.get('premium_queue_size', 0)} 檔")
+    pc2.metric("已完成", f"{prem_st.get('premium_done', 0)} 檔")
+    pc3.metric("錯誤", f"{prem_st.get('premium_error', 0)} 檔")
+    pc4.metric("目前處理", prem_st.get("premium_current") or "閒置")
+
+    last_summary = prem_st.get("premium_last_summary")
+    if last_summary:
+        st.caption(f"最近狀態：{last_summary}")
+
+    pp1, pp2 = st.columns(2)
+    with pp1:
+        if st.button("補齊持股 Premium 資料", type="primary", use_container_width=True):
+            with st.spinner("正在補齊持股 Premium 資料..."):
+                result = worker.prefetch_portfolio_premium()
+            if result.get("ok"):
+                st.success(
+                    f"持股 Premium 補完完成：{result.get('done', 0)} 檔成功，"
+                    f"{result.get('error', 0)} 檔錯誤。"
+                )
+            else:
+                st.warning(f"持股 Premium 補完未啟動：{result.get('reason', 'unknown')}")
+            st.rerun()
+    with pp2:
+        if st.button("補齊最近候選 Premium 資料", use_container_width=True):
+            with st.spinner("正在補齊最近候選 Premium 資料..."):
+                result = worker.prefetch_candidate_premium(sessions=5, top_n=20, broker_top_n=10)
+            if result.get("ok"):
+                st.success(
+                    f"候選股 Premium 補完完成：{result.get('done', 0)} 檔成功，"
+                    f"{result.get('error', 0)} 檔錯誤。"
+                )
+            else:
+                st.warning(f"候選股 Premium 補完未啟動：{result.get('reason', 'unknown')}")
+            st.rerun()
+
 # ══ 區塊 5：維護操作 ══════════════════════════════════════════════
 with st.expander("🔨 維護操作（重建資料庫）", expanded=False):
     # 全速重建
