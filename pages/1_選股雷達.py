@@ -98,6 +98,97 @@ def _format_heat_distance(row) -> str:
     return f"差 {pct:.2f}%{yuan}"
 
 
+def _render_strategy_condition_reference(
+    *,
+    strategy_version: str,
+    ma_breakout_mode: str,
+    overheat_atr_mult: float,
+    inst_mode: str,
+    inst_selection: list,
+    strict_days: int,
+    agg_mode: str,
+    agg_days: int,
+    include_institutional: bool,
+    require_institutional: bool,
+) -> None:
+    """Render the built-in strategy conditions for the current scanner settings."""
+    if inst_mode == "個別法人皆須買超":
+        inst_label = "、".join(inst_selection) if inst_selection else "三大法人"
+        inst_desc = f"{inst_label}各自連續 {strict_days} 日買超"
+        inst_score = "+7"
+        inst_note = "保留原本嚴格邏輯"
+    else:
+        inst_desc = (
+            f"三大法人近 {agg_days} 日累計合計買超"
+            if agg_mode == "rolling_sum"
+            else f"三大法人連續 {agg_days} 日每日合計買超"
+        )
+        inst_score = "+4 / +7"
+        inst_note = "合計買超 +4；若外資與投信同步買超再 +3"
+    inst_type = (
+        "**必要**（額外強制過濾）"
+        if include_institutional and require_institutional and inst_selection
+        else "加分"
+    )
+    strategy_label = "v4 領先攻擊版" if strategy_version == "v4" else "v3 均線突破版"
+
+    if strategy_version == "v4":
+        ma_desc = (
+            "今日三線齊穿，昨日全在線下"
+            if ma_breakout_mode == "strict"
+            else "今日站上三線，昨日曾在任一均線下方"
+        )
+        overheat_label = (
+            f"股價 < MA20 + {overheat_atr_mult:g} × ATR(14)"
+            if overheat_atr_mult > 0
+            else "ATR 過熱防護停用"
+        )
+        overheat_note = (
+            "動態門檻排除過熱股，較固定乖離率更合理"
+            if overheat_atr_mult > 0
+            else "目前設定為 0，不用過熱門檻排除"
+        )
+        st.markdown(f"""
+#### 篩選條件（{strategy_label}）
+
+| 條件 | 類型 | 分數 | 說明 |
+|------|------|------|------|
+| 第一天站上 5/10/20MA | 必要 | +35 | {ma_desc} |
+| 均線糾結度 < 3%（昨日）| 必要 | +20 | 突破前一天三線緊貼，確認盤整後突破 |
+| 量能 > 前五日均量 × 1.5 倍 | 必要 | +15 | 突破時量能明顯超越近期均量，確認有效性 |
+| {overheat_label} | 必要 | +10 | {overheat_note} |
+| 相對強度 RS > 80 | 必要 | +10 | 個股明顯領先大盤，確認為真正強勢股 |
+| 突破 60 日收盤新高 | 必要 | +10 | 確認為真實突破，而非盤整區間反彈 |
+| 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
+| 布林頻寬縮減（vs 20日前） | 加分 | +10 | 盤整極致後的變盤第一天 |
+| 投信第一天買超 | 加分 | +10 | 法人資金剛開始表態的訊號 |
+| 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
+| {inst_desc} | {inst_type} | {inst_score} | {inst_note} |
+| 融資減少 / 籌碼集中 | 加分 | +5 | 散戶下車、主力上車 |
+""")
+    else:
+        st.markdown(f"""
+#### 篩選條件（{strategy_label}）
+
+| 條件 | 類型 | 分數 | 說明 |
+|------|------|------|------|
+| 站上 MA20 | 必要 | +20 | 今日收盤高於 20 日均線 |
+| MA20 向上 | 必要 | +15 | 近 5 日 MA20 持續上升 |
+| 量增（前五日均量 × 1.3）| 必要 | +20 | 成交量超越近期均量，確認有效性 |
+| 布林正常（不低於下軌）| 必要 | +10 | 收盤不破布林下軌，避免弱勢股 |
+| MACD 黃金交叉 | 必要（擇一）| +15 | DIF 上穿 DEA，或 MACD 在零軸上方 |
+| RSI 健康區（50–70）| 必要（擇一）| +10 | RSI 在多頭健康區間，尚未超買 |
+| 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
+| {inst_desc} | {inst_type} | {inst_score} | {inst_note} |
+| 週線多頭 | 加分 | +10 | 週MA10 向上且收盤站上 |
+| 相對強勢 RS > 70 | 加分 | +8 | 個股表現領先大盤 |
+| 多頭排列 MA5 > MA10 > MA20 | 加分 | +5 | 短中長均線同向向上 |
+| 量能優質（上漲量佔比 ≥ 60%）| 加分 | +7 | 近 10 日漲日成交量比重高 |
+| 突破 60 日收盤新高 | 加分 | +8 | 突破近期壓力區 |
+| 融資減少 / 籌碼集中 | 加分 | +3 | 散戶下車、主力上車 |
+""")
+
+
 def _attach_cached_risk_flags(result_df: pd.DataFrame, scan_date) -> pd.DataFrame:
     """Attach cached Premium risk flags without calling FinMind during scans."""
     result_df = _ensure_premium_score_columns(result_df)
@@ -758,6 +849,21 @@ with st.sidebar:
             st.caption(f"目前基本面模式：`{_fund_mode_label}`（off/warn/penalty/exclude 由 config.toml 控制）")
             st.caption("💡 首次啟用時需從 API 抓財報資料，建議先讓背景工作器預先填充")
 
+    with st.expander("📌 目前策略的必要條件詳情", expanded=False):
+        st.caption("這些是策略內建條件，會和你另外選的流動性、族群、基本面條件一起影響掃描結果。")
+        _render_strategy_condition_reference(
+            strategy_version=strategy_version,
+            ma_breakout_mode=ma_breakout_mode,
+            overheat_atr_mult=float(overheat_atr_mult or 0),
+            inst_mode=inst_mode,
+            inst_selection=inst_selection,
+            strict_days=strict_days,
+            agg_mode=agg_mode,
+            agg_days=agg_days,
+            include_institutional=include_institutional,
+            require_institutional=require_institutional,
+        )
+
     st.markdown("---")
 
     # ── 儲存自訂模式 ───────────────────────────────────────────
@@ -1299,61 +1405,18 @@ with tab_scan:
                 st.info("資料庫中尚無基準日之後的價格資料，無法計算後續盤勢。")
 
     else:
-        if inst_mode == "個別法人皆須買超":
-            _inst_label = "、".join(inst_selection) if inst_selection else "三大法人"
-            _inst_desc = f"{_inst_label}各自連續 {strict_days} 日買超"
-            _inst_score = "+7"
-            _inst_note = "保留原本嚴格邏輯"
-        else:
-            _inst_desc = (
-                f"三大法人近 {agg_days} 日累計合計買超"
-                if agg_mode == "rolling_sum"
-                else f"三大法人連續 {agg_days} 日每日合計買超"
-            )
-            _inst_score = "+4 / +7"
-            _inst_note = "合計買超 +4；若外資與投信同步買超再 +3"
-        _inst_type = "**必要**（額外強制過濾）" if (include_institutional and require_institutional and inst_selection) else "加分"
-        _strategy_label = "v4 領先攻擊版" if strategy_version == "v4" else "v3 均線突破版"
-        if strategy_version == "v4":
-            st.markdown(f"""
-        #### 篩選條件（{_strategy_label}）
-
-        | 條件 | 類型 | 分數 | 說明 |
-        |------|------|------|------|
-        | 第一天站上 5/10/20MA | 必要 | +35 | 今日三線齊穿，昨日全在線下 |
-        | 均線糾結度 < 3%（昨日）| 必要 | +20 | 突破前一天三線緊貼，確認盤整後突破 |
-        | 量能 > 前五日均量 × 1.5 倍 | 必要 | +15 | 突破時量能明顯超越近期均量，確認有效性 |
-        | 股價 < MA20 + 3.5 × ATR(14) | 必要 | +10 | 動態門檻排除過熱股，較固定乖離率更合理 |
-        | 相對強度 RS > 80 | 必要 | +10 | 個股明顯領先大盤，確認為真正強勢股 |
-        | 突破 60 日收盤新高 | 必要 | +10 | 確認為真實突破，而非盤整區間反彈 |
-        | 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
-        | 布林頻寬縮減（vs 20日前） | 加分 | +10 | 盤整極致後的變盤第一天 |
-        | 投信第一天買超 | 加分 | +10 | 法人資金剛開始表態的訊號 |
-        | 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
-        | {_inst_desc} | {_inst_type} | {_inst_score} | {_inst_note} |
-        | 融資減少 / 籌碼集中 | 加分 | +5 | 散戶下車、主力上車 |
-        """)
-        else:
-            st.markdown(f"""
-        #### 篩選條件（{_strategy_label}）
-
-        | 條件 | 類型 | 分數 | 說明 |
-        |------|------|------|------|
-        | 站上 MA20 | 必要 | +20 | 今日收盤高於 20 日均線 |
-        | MA20 向上 | 必要 | +15 | 近 5 日 MA20 持續上升 |
-        | 量增（前五日均量 × 1.3）| 必要 | +20 | 成交量超越近期均量，確認有效性 |
-        | 布林正常（不低於下軌）| 必要 | +10 | 收盤不破布林下軌，避免弱勢股 |
-        | MACD 黃金交叉 | 必要（擇一）| +15 | DIF 上穿 DEA，或 MACD 在零軸上方 |
-        | RSI 健康區（50–70）| 必要（擇一）| +10 | RSI 在多頭健康區間，尚未超買 |
-        | 主力連續 3 日買超 | 必要 | +10 | 三大法人合計淨買超連續 3 個交易日為正 |
-        | {_inst_desc} | {_inst_type} | {_inst_score} | {_inst_note} |
-        | 週線多頭 | 加分 | +10 | 週MA10 向上且收盤站上 |
-        | 相對強勢 RS > 70 | 加分 | +8 | 個股表現領先大盤 |
-        | 多頭排列 MA5 > MA10 > MA20 | 加分 | +5 | 短中長均線同向向上 |
-        | 量能優質（上漲量佔比 ≥ 60%）| 加分 | +7 | 近 10 日漲日成交量比重高 |
-        | 突破 60 日收盤新高 | 加分 | +8 | 突破近期壓力區 |
-        | 融資減少 / 籌碼集中 | 加分 | +3 | 散戶下車、主力上車 |
-        """)
+        _render_strategy_condition_reference(
+            strategy_version=strategy_version,
+            ma_breakout_mode=ma_breakout_mode,
+            overheat_atr_mult=float(overheat_atr_mult or 0),
+            inst_mode=inst_mode,
+            inst_selection=inst_selection,
+            strict_days=strict_days,
+            agg_mode=agg_mode,
+            agg_days=agg_days,
+            include_institutional=include_institutional,
+            require_institutional=require_institutional,
+        )
 
 
 # ══ Tab：篩選漏斗 ════════════════════════════════════════════
