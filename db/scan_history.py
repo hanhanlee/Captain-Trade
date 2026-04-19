@@ -80,7 +80,36 @@ def load_session_results(session_id: int) -> pd.DataFrame:
         row = sess.query(ScanSession).filter(ScanSession.id == session_id).first()
         if not row or not row.results_json:
             return pd.DataFrame()
-        return pd.DataFrame(json.loads(row.results_json))
+        return _normalize_score_columns(pd.DataFrame(json.loads(row.results_json)))
+
+
+def _normalize_score_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Backfill Premium score columns for scan sessions saved before Step 2-10."""
+    if df.empty:
+        return df
+    df = df.copy()
+    if "base_score" not in df.columns:
+        df["base_score"] = pd.to_numeric(df.get("score", 0), errors="coerce").fillna(0)
+    else:
+        df["base_score"] = pd.to_numeric(df["base_score"], errors="coerce").fillna(0)
+    for col in ["premium_score", "risk_penalty"]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    for col in ["premium_positive_flags", "premium_negative_flags", "premium_missing_fields"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
+    if "final_score" not in df.columns:
+        df["final_score"] = (
+            df["base_score"] + df["premium_score"] - df["risk_penalty"]
+        ).clip(lower=0).round(1)
+    else:
+        df["final_score"] = pd.to_numeric(df["final_score"], errors="coerce").fillna(
+            df["base_score"] + df["premium_score"] - df["risk_penalty"]
+        ).clip(lower=0).round(1)
+    df["score"] = df["final_score"]
+    return df
 
 
 def delete_scan_session(session_id: int):

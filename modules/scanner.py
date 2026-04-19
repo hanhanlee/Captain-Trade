@@ -905,9 +905,16 @@ def run_scan(
         vol_ma5 = df[vol_col].rolling(5).mean().iloc[-1] if vol_col else 0
         volume_ratio = round(vol_now / vol_ma5, 2) if vol_ma5 and vol_ma5 > 0 else 0
 
-        final_score = sig.score_v3() if strategy_version == "v3" else sig.score()
+        base_score = sig.score_v3() if strategy_version == "v3" else sig.score()
         if is_overheated and overheat_action == "penalty":
-            final_score = max(final_score - 10, 0)
+            base_score = max(base_score - 10, 0)
+
+        premium_score = 0
+        risk_penalty = int(fundamental_penalty) if fundamental_mode == "penalty" else 0
+        premium_positive_flags: list[str] = []
+        premium_negative_flags: list[str] = list(fundamental_flags)
+        premium_missing_fields: list[str] = list(fundamental_missing)
+        final_score = max(base_score + premium_score - risk_penalty, 0)
 
         results.append({
             "stock_id": stock_id,
@@ -916,6 +923,10 @@ def run_scan(
             "close": close,
             "change_pct": change_pct,
             "volume_ratio": volume_ratio,
+            "base_score": round(base_score, 1),
+            "premium_score": round(premium_score, 1),
+            "risk_penalty": int(risk_penalty),
+            "final_score": round(final_score, 1),
             "score": round(final_score, 1),
             "rs_score": sig.rs_score,
             "bias_ratio": round(sig.ma20_bias_ratio, 2),
@@ -939,6 +950,9 @@ def run_scan(
             "fundamental_penalty": int(fundamental_penalty),
             "fundamental_flags": "、".join(fundamental_flags),
             "fundamental_missing_fields": "、".join(fundamental_missing),
+            "premium_positive_flags": "、".join(premium_positive_flags),
+            "premium_negative_flags": "、".join(premium_negative_flags),
+            "premium_missing_fields": "、".join(premium_missing_fields),
             "inst_pass": bool(
                 sig.institutional_buy or sig.inst_total_buy or sig.foreign_trust_buy
             ),

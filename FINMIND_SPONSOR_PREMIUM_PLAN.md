@@ -473,3 +473,12 @@ LINE 只推明確風險，避免噪音。
 - Added Premium large-holder display to `pages/7_個股分析.py` after official risk flags.
 - Verified with `py_compile`, `init_db()` migration check, and a synthetic `_normalize_holding_shares()` sample.
 - Manual/reviewer validation passed; final manual update can be done after the full Premium plan is complete.
+
+## Progress Update - 2026-04-19 Step 2-10
+
+- Implemented scanner Premium score columns: `base_score`, `premium_score`, `risk_penalty`, `final_score`, `premium_positive_flags`, `premium_negative_flags`, and `premium_missing_fields`.
+- Kept `score` as a compatibility alias for `final_score` so existing UI, sorting, sector analysis, and history views continue to work.
+- Fundamental penalty mode now contributes to `risk_penalty` inside `run_scan()`; warn/exclude/off modes remain non-scoring except exclude filtering.
+- Cached official risk flags are applied after scan without calling Premium APIs, then `final_score` is recomputed and results are resorted.
+- Old scan history rows are backfilled with Premium score columns when loaded.
+- Next follow-up: add true positive `premium_score` sources from cached broker/holding-share signals after thresholds are finalized.

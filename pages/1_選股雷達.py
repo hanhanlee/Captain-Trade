@@ -43,11 +43,40 @@ _RISK_FLAG_PENALTIES = {
 }
 
 
+def _ensure_premium_score_columns(result_df: pd.DataFrame) -> pd.DataFrame:
+    """Keep old scan history and new Premium scoring columns compatible."""
+    if result_df is None or result_df.empty:
+        return result_df
+
+    result_df = result_df.copy()
+    if "base_score" not in result_df.columns:
+        source = result_df["score"] if "score" in result_df.columns else 0
+        result_df["base_score"] = pd.to_numeric(source, errors="coerce").fillna(0)
+    else:
+        result_df["base_score"] = pd.to_numeric(result_df["base_score"], errors="coerce").fillna(0)
+
+    for col in ["premium_score", "risk_penalty"]:
+        if col not in result_df.columns:
+            result_df[col] = 0
+        result_df[col] = pd.to_numeric(result_df[col], errors="coerce").fillna(0)
+
+    for col in ["premium_positive_flags", "premium_negative_flags", "premium_missing_fields"]:
+        if col not in result_df.columns:
+            result_df[col] = ""
+        result_df[col] = result_df[col].fillna("").astype(str)
+
+    result_df["final_score"] = (
+        result_df["base_score"] + result_df["premium_score"] - result_df["risk_penalty"]
+    ).clip(lower=0).round(1)
+    result_df["score"] = result_df["final_score"]
+    return result_df.sort_values("score", ascending=False).reset_index(drop=True)
+
+
 def _attach_cached_risk_flags(result_df: pd.DataFrame, scan_date) -> pd.DataFrame:
     """Attach cached Premium risk flags without calling FinMind during scans."""
-    result_df = result_df.copy()
+    result_df = _ensure_premium_score_columns(result_df)
     result_df["premium_flags"] = ""
-    result_df["risk_penalty"] = 0
+    result_df["official_risk_penalty"] = 0
 
     if result_df.empty or "stock_id" not in result_df.columns or scan_date is None:
         return result_df
@@ -80,8 +109,23 @@ def _attach_cached_risk_flags(result_df: pd.DataFrame, scan_date) -> pd.DataFram
 
     sid_series = result_df["stock_id"].astype(str)
     result_df["premium_flags"] = sid_series.map(flags_by_stock).fillna("")
-    result_df["risk_penalty"] = sid_series.map(penalty_by_stock).fillna(0).astype(int)
-    return result_df
+    result_df["official_risk_penalty"] = sid_series.map(penalty_by_stock).fillna(0).astype(int)
+    result_df["risk_penalty"] = (
+        pd.to_numeric(result_df["risk_penalty"], errors="coerce").fillna(0)
+        + result_df["official_risk_penalty"]
+    ).astype(int)
+
+    has_flag = result_df["premium_flags"].astype(str).str.len() > 0
+    result_df.loc[has_flag, "premium_negative_flags"] = result_df.loc[has_flag].apply(
+        lambda row: "、".join(
+            x for x in [
+                str(row.get("premium_negative_flags", "") or ""),
+                str(row.get("premium_flags", "") or ""),
+            ] if x
+        ),
+        axis=1,
+    )
+    return _ensure_premium_score_columns(result_df)
 
 
 def render_chart(stock_id: str, df: pd.DataFrame):
@@ -886,7 +930,8 @@ with tab_scan:
 
     # ── 顯示結果 ──────────────────────────────────────────────
     if "scan_results" in st.session_state:
-        result_df = st.session_state["scan_results"]
+        result_df = _ensure_premium_score_columns(st.session_state["scan_results"])
+        st.session_state["scan_results"] = result_df
 
         if "scan_results" not in st.session_state or not st.session_state.get("_just_scanned"):
             st.info(f"上次掃描結果（{len(result_df)} 檔）")
