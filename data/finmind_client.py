@@ -59,6 +59,9 @@ _PREMIUM_DATASETS = {
     "TaiwanStockHoldingSharesPer",
     "TaiwanStockDispositionSecuritiesPeriod",
     "TaiwanStockSuspended",
+    "TaiwanStockShareholdingTransfer",
+    "TaiwanStockAttentionSecuritiesPeriod",
+    "TaiwanStockTreasuryShares",
     "TaiwanStockPriceLimit",
     "TaiwanStockKBar",
     "TaiwanStockPriceTick",
@@ -1187,7 +1190,9 @@ def fetch_risk_flags_from_finmind(
     datasets = [
         ("TaiwanStockDispositionSecuritiesPeriod", "disposition"),
         ("TaiwanStockSuspended", "suspended"),
-        ("TaiwanStockPriceLimit", "price_limit"),
+        ("TaiwanStockShareholdingTransfer", "shareholding_transfer"),
+        ("TaiwanStockAttentionSecuritiesPeriod", "attention"),
+        ("TaiwanStockTreasuryShares", "treasury_shares"),
     ]
     normalized: list[dict] = []
     for dataset, flag_type in datasets:
@@ -1224,7 +1229,17 @@ def get_stock_risk_flags(
 
     end = end_date or start_date
     cached = pd.DataFrame() if force_refresh else load_risk_flags(stock_id, start_date, end)
+    cache_satisfies = False
     if not force_refresh and not cached.empty:
+        try:
+            cached_types = set(cached.get("flag_type", pd.Series(dtype=str)).astype(str))
+            requested_days = (
+                pd.Timestamp(end).normalize() - pd.Timestamp(start_date).normalize()
+            ).days + 1
+            cache_satisfies = requested_days <= 1 or bool(cached_types - {"price_limit"})
+        except Exception:
+            cache_satisfies = False
+    if cache_satisfies:
         return cached
 
     try:

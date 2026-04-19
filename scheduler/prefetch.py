@@ -24,8 +24,10 @@ logger = logging.getLogger(__name__)
 # ── 可調整參數 ─────────────────────────────────────────────────
 HOURLY_LIMIT_OFFPEAK      = 600   # 盤後/非交易時間每小時上限（用滿 FinMind 全額度）
 HOURLY_LIMIT_TRADING      = 100   # 交易時間每小時上限
+HOURLY_LIMIT_SPONSOR      = 6000  # Sponsor 帳號盤後/重建可用額度
 FETCH_INTERVAL_SEC        = 5.8   # 正常模式每次請求間隔（秒）≈ 620 次/小時，讓上限當煞車
 FETCH_INTERVAL_REBUILD    = 2.0   # 重建模式間隔（秒）；讓 429 來當剎車
+PREMIUM_FULL_MARKET_INTERVAL_SEC = 0.5  # 全市場 Premium 基礎補完，讓 6000/h 硬限制當煞車
 STALE_DAYS                = 5     # 快取幾天未更新視為過期
 RATE_LIMIT_PAUSE_MIN      = 20    # 遇到 429 後暫停幾分鐘（一般模式）
 PREFETCH_DAYS             = 400   # 一般預抓天數（涵蓋回測需求：365天 + 60天指標暖身）
@@ -104,6 +106,7 @@ class PrefetchWorker:
         self.initial_queue_size: int = 0         # 本次啟動時的初始待更新數量（進度條分母）
         self._skip_stocks: set = set()           # 無資料或抓了也不更新的股票，永久跳過
         self._error_counts: dict = {}            # 連續 error 次數；超過門檻後暫時跳過
+        self._request_lock = threading.Lock()    # 保護 _record_request 並發安全
         self._resume_event = threading.Event()
         self._wake_event = threading.Event()     # 模式切換 / 手動操作時喚醒背景迴圈
         self._stop_event   = threading.Event()
@@ -307,10 +310,24 @@ class PrefetchWorker:
         except Exception as e:
             logger.warning(f"記錄首筆更新時間失敗：{e}")
 
+    def _account_hourly_limit(self) -> int:
+        try:
+            from data.finmind_client import get_premium_state, refresh_finmind_user_info
+            try:
+                state = refresh_finmind_user_info(force=False)
+            except Exception:
+                state = get_premium_state()
+            if state.user_enabled and str(state.tier).lower() == "sponsor":
+                return int(state.api_request_limit or HOURLY_LIMIT_SPONSOR)
+        except Exception:
+            pass
+        return HOURLY_LIMIT_OFFPEAK
+
     def _current_hourly_limit(self) -> int:
+        account_limit = self._account_hourly_limit()
         if self.rebuild_mode or self.backtest_rebuild_mode:
-            return 600     # 重建模式：全速
-        return HOURLY_LIMIT_TRADING if self._within_trading_hours() else HOURLY_LIMIT_OFFPEAK
+            return account_limit     # 重建模式：全速
+        return HOURLY_LIMIT_TRADING if self._within_trading_hours() else account_limit
 
     def _hour_count(self) -> int:
         cutoff = datetime.now() - timedelta(hours=1)
@@ -319,9 +336,10 @@ class PrefetchWorker:
         return len(self._hour_window)
 
     def _record_request(self):
-        self._hour_window.append(datetime.now())
-        self.hour_fetched = len(self._hour_window)
-        self.total_fetched += 1
+        with self._request_lock:
+            self._hour_window.append(datetime.now())
+            self.hour_fetched = len(self._hour_window)
+            self.total_fetched += 1
 
     def _next_hour_seconds(self) -> int:
         """計算距離下一個整點還有幾秒（加 61 秒緩衝）"""
@@ -490,6 +508,45 @@ class PrefetchWorker:
             d -= timedelta(days=1)
         return sorted(dates)
 
+    def _save_premium_fetch_status(
+        self,
+        stock_id: str,
+        dataset: str,
+        as_of_date: str,
+        status: str,
+        note: str = "",
+    ) -> None:
+        try:
+            from db.database import get_session
+            from sqlalchemy import text
+            with get_session() as sess:
+                sess.execute(text("""
+                    CREATE TABLE IF NOT EXISTS premium_fetch_status (
+                        stock_id TEXT NOT NULL,
+                        dataset TEXT NOT NULL,
+                        as_of_date TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        note TEXT,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY (stock_id, dataset, as_of_date)
+                    )
+                """))
+                sess.execute(text("""
+                    INSERT OR REPLACE INTO premium_fetch_status
+                    (stock_id, dataset, as_of_date, status, note, fetched_at)
+                    VALUES (:stock_id, :dataset, :as_of_date, :status, :note, :fetched_at)
+                """), {
+                    "stock_id": stock_id,
+                    "dataset": dataset,
+                    "as_of_date": as_of_date,
+                    "status": status,
+                    "note": note[:200],
+                    "fetched_at": datetime.now().isoformat(timespec="seconds"),
+                })
+                sess.commit()
+        except Exception as e:
+            logger.debug(f"premium fetch status save failed {stock_id} {dataset}: {e}")
+
     def _prefetch_one_premium_stock(
         self,
         stock_id: str,
@@ -518,15 +575,27 @@ class PrefetchWorker:
         if include_broker:
             tasks.append(("broker_main_force", lambda: get_broker_main_force_series(stock_id, self._recent_price_dates(stock_id, count=30))))
 
-        for name, fn in tasks:
-            try:
-                fn()
-                result["ok"].append(name)
-                self._record_request()
-            except Exception as e:
-                if _is_429(e):
-                    raise
-                result["error"].append(f"{name}: {e}")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
+            futures = {ex.submit(fn): name for name, fn in tasks}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    value = fut.result()
+                    no_data = bool(getattr(value, "empty", False))
+                    self._save_premium_fetch_status(
+                        stock_id,
+                        name,
+                        latest_s,
+                        "no_data" if no_data else "ok",
+                    )
+                    result["ok"].append(name)
+                    self._record_request()
+                except Exception as e:
+                    self._save_premium_fetch_status(stock_id, name, latest_s, "error", str(e))
+                    if _is_429(e):
+                        raise
+                    result["error"].append(f"{name}: {e}")
         return result
 
     def prefetch_portfolio_premium(self) -> dict:
@@ -575,6 +644,260 @@ class PrefetchWorker:
             include_fundamental=True,
         )
 
+    def prefetch_market_premium(self) -> dict:
+        ok, reason = self._premium_runtime_ok(min_quota_pct=0.25)
+        if not ok:
+            return {"ok": False, "reason": reason, "done": 0, "error": 0}
+
+        try:
+            from data.finmind_client import get_stock_list
+            df = get_stock_list()
+            stock_ids = sorted(
+                dict.fromkeys(str(sid) for sid in df.get("stock_id", []) if str(sid).strip())
+            )
+        except Exception as e:
+            return {"ok": False, "reason": str(e), "done": 0, "error": 0}
+
+        stock_ids = self._filter_market_premium_missing(stock_ids)
+        return self._run_premium_prefetch(
+            stock_ids,
+            scope="market",
+            broker_ids=set(),
+            include_fundamental=False,
+            stock_interval_sec=PREMIUM_FULL_MARKET_INTERVAL_SEC,
+        )
+
+    def _filter_market_premium_missing(self, stock_ids: list[str]) -> list[str]:
+        latest_s = _latest_trading_day().isoformat()
+        try:
+            from db.database import get_session
+            from sqlalchemy import text
+            with get_session() as sess:
+                sess.execute(text("""
+                    CREATE TABLE IF NOT EXISTS premium_fetch_status (
+                        stock_id TEXT NOT NULL,
+                        dataset TEXT NOT NULL,
+                        as_of_date TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        note TEXT,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY (stock_id, dataset, as_of_date)
+                    )
+                """))
+                sess.commit()
+                risk_ids = {
+                    str(r[0])
+                    for r in sess.execute(
+                        text("SELECT DISTINCT stock_id FROM risk_flags_cache WHERE date = :d"),
+                        {"d": latest_s},
+                    ).all()
+                    if r[0]
+                }
+                holding_ids = {
+                    str(r[0])
+                    for r in sess.execute(
+                        text("SELECT DISTINCT stock_id FROM holding_shares_cache WHERE date = :d"),
+                        {"d": latest_s},
+                    ).all()
+                    if r[0]
+                }
+                risk_attempted = {
+                    str(r[0])
+                    for r in sess.execute(
+                        text("""
+                            SELECT DISTINCT stock_id
+                            FROM premium_fetch_status
+                            WHERE dataset = 'risk_flags'
+                              AND as_of_date = :d
+                              AND status IN ('ok', 'no_data')
+                        """),
+                        {"d": latest_s},
+                    ).all()
+                    if r[0]
+                }
+                holding_attempted = {
+                    str(r[0])
+                    for r in sess.execute(
+                        text("""
+                            SELECT DISTINCT stock_id
+                            FROM premium_fetch_status
+                            WHERE dataset = 'holding_shares'
+                              AND as_of_date = :d
+                              AND status IN ('ok', 'no_data')
+                        """),
+                        {"d": latest_s},
+                    ).all()
+                    if r[0]
+                }
+            risk_ids |= risk_attempted
+            holding_ids |= holding_attempted
+            missing = [sid for sid in stock_ids if sid not in risk_ids or sid not in holding_ids]
+            self.premium_last_summary = f"market premium missing targets: {len(missing)}/{len(stock_ids)}"
+            return missing
+        except Exception as e:
+            logger.warning(f"market premium missing filter failed: {e}")
+            return stock_ids
+
+    def _market_broker_dates(self, days: int = 1) -> list[str]:
+        try:
+            from db.database import get_session
+            from sqlalchemy import text
+            with get_session() as sess:
+                rows = sess.execute(text("""
+                    SELECT DISTINCT date
+                    FROM price_cache
+                    ORDER BY date DESC
+                    LIMIT :limit
+                """), {"limit": max(int(days), 1)}).all()
+            dates = [str(r[0])[:10] for r in rows if r[0]]
+            if dates:
+                return dates
+        except Exception:
+            pass
+
+        dates: list[str] = []
+        d = _latest_trading_day()
+        while len(dates) < max(int(days), 1):
+            if d.weekday() < 5:
+                dates.append(d.isoformat())
+            d -= timedelta(days=1)
+        return dates
+
+    def _filter_market_broker_missing(self, stock_ids: list[str], trade_date: str) -> list[str]:
+        try:
+            from db.database import get_session
+            from sqlalchemy import text
+            with get_session() as sess:
+                sess.execute(text("""
+                    CREATE TABLE IF NOT EXISTS premium_fetch_status (
+                        stock_id TEXT NOT NULL,
+                        dataset TEXT NOT NULL,
+                        as_of_date TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        note TEXT,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY (stock_id, dataset, as_of_date)
+                    )
+                """))
+                sess.commit()
+                cached_ids = {
+                    str(r[0])
+                    for r in sess.execute(
+                        text("SELECT DISTINCT stock_id FROM broker_main_force_cache WHERE date = :d"),
+                        {"d": trade_date},
+                    ).all()
+                    if r[0]
+                }
+                attempted_ids = {
+                    str(r[0])
+                    for r in sess.execute(
+                        text("""
+                            SELECT DISTINCT stock_id
+                            FROM premium_fetch_status
+                            WHERE dataset = 'broker_main_force'
+                              AND as_of_date = :d
+                              AND status IN ('ok', 'no_data')
+                        """),
+                        {"d": trade_date},
+                    ).all()
+                    if r[0]
+                }
+            done_ids = cached_ids | attempted_ids
+            return [sid for sid in stock_ids if sid not in done_ids]
+        except Exception as e:
+            logger.warning(f"market broker missing filter failed {trade_date}: {e}")
+            return stock_ids
+
+    def _prefetch_one_broker_date(self, stock_id: str, trade_date: str) -> str:
+        try:
+            from data.finmind_client import get_broker_main_force_series
+            df = get_broker_main_force_series(stock_id, [trade_date])
+            status = "no_data" if getattr(df, "empty", True) else "ok"
+            self._save_premium_fetch_status(stock_id, "broker_main_force", trade_date, status)
+            self._record_request()
+            return status
+        except Exception as e:
+            self._save_premium_fetch_status(stock_id, "broker_main_force", trade_date, "error", str(e))
+            if _is_429(e):
+                raise
+            return "error"
+
+    def prefetch_market_broker_by_date(self, days: int = 1) -> dict:
+        ok, reason = self._premium_runtime_ok(min_quota_pct=0.25)
+        if not ok:
+            return {"ok": False, "reason": reason, "done": 0, "error": 0}
+
+        try:
+            from data.finmind_client import get_stock_list
+            df = get_stock_list()
+            stock_ids = sorted(
+                dict.fromkeys(str(sid) for sid in df.get("stock_id", []) if str(sid).strip())
+            )
+        except Exception as e:
+            return {"ok": False, "reason": str(e), "done": 0, "error": 0}
+
+        candidate_dates = self._market_broker_dates(days=max(days * 90, 90))
+        dates: list[str] = []
+        targets: list[tuple[str, str]] = []
+        for trade_date in candidate_dates:
+            missing_ids = self._filter_market_broker_missing(stock_ids, trade_date)
+            if not missing_ids:
+                continue
+            dates.append(trade_date)
+            targets.extend((trade_date, sid) for sid in missing_ids)
+            if len(dates) >= max(int(days), 1):
+                break
+
+        self.premium_initial_queue_size = len(targets)
+        self.premium_queue_size = len(targets)
+        self.premium_done = 0
+        self.premium_error = 0
+        self.premium_last_summary = f"market broker backfill running: {len(targets)} targets"
+
+        for trade_date, sid in targets:
+            while self._hour_count() >= self._current_hourly_limit():
+                wait_sec = self._next_hour_seconds()
+                self.premium_last_summary = f"waiting quota reset: {wait_sec // 60}m"
+                self._wait_with_wake(wait_sec)
+                if self._stop_event.is_set():
+                    self.premium_last_summary = "stopped: worker stop requested"
+                    break
+            if self.premium_last_summary.startswith("stopped:"):
+                break
+
+            self.premium_current = f"broker:{trade_date}:{sid}"
+            try:
+                status = self._prefetch_one_broker_date(sid, trade_date)
+                if status == "error":
+                    self.premium_error += 1
+                else:
+                    self.premium_done += 1
+            except Exception as e:
+                if _is_429(e):
+                    self._pause_for_rate_limit()
+                    self.premium_last_summary = "stopped: rate_limit"
+                    break
+                self.premium_error += 1
+            finally:
+                self.premium_queue_size = max(0, self.premium_queue_size - 1)
+                self.premium_current = ""
+                self._wait_with_wake(PREMIUM_FULL_MARKET_INTERVAL_SEC)
+
+        self.premium_last_completed_at = datetime.now()
+        if not self.premium_last_summary.startswith("stopped:"):
+            self.premium_last_summary = (
+                f"market broker done: {self.premium_done} ok/no-data, {self.premium_error} error"
+            )
+        return {
+            "ok": True,
+            "scope": "market_broker",
+            "dates": dates,
+            "total": len(targets),
+            "done": self.premium_done,
+            "error": self.premium_error,
+            "summary": self.premium_last_summary,
+        }
+
     def _run_premium_prefetch(
         self,
         stock_ids: list[str],
@@ -582,6 +905,7 @@ class PrefetchWorker:
         scope: str,
         broker_ids: set[str] | None,
         include_fundamental: bool,
+        stock_interval_sec: float = 1.0,
     ) -> dict:
         self.premium_initial_queue_size = len(stock_ids)
         self.premium_queue_size = len(stock_ids)
@@ -593,6 +917,15 @@ class PrefetchWorker:
             ok, reason = self._premium_runtime_ok()
             if not ok:
                 self.premium_last_summary = f"stopped: {reason}"
+                break
+            while self._hour_count() >= self._current_hourly_limit():
+                wait_sec = self._next_hour_seconds()
+                self.premium_last_summary = f"waiting quota reset: {wait_sec // 60}m"
+                self._wait_with_wake(wait_sec)
+                if self._stop_event.is_set():
+                    self.premium_last_summary = "stopped: worker stop requested"
+                    break
+            if self.premium_last_summary.startswith("stopped:"):
                 break
             self.premium_current = f"{scope}:{sid}"
             try:
@@ -614,7 +947,7 @@ class PrefetchWorker:
             finally:
                 self.premium_queue_size = max(0, self.premium_queue_size - 1)
                 self.premium_current = ""
-                self._wait_with_wake(1.0)
+                self._wait_with_wake(stock_interval_sec)
 
         self.premium_last_completed_at = datetime.now()
         if not self.premium_last_summary.startswith("stopped:"):

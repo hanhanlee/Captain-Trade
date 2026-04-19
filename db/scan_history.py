@@ -2,10 +2,32 @@
 掃描歷史紀錄的存取 helper
 """
 import json
+import math
 from datetime import datetime
 import pandas as pd
 from .database import get_session
 from .models import ScanSession
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """Handle numpy scalars, NaN/Inf, and other non-standard JSON types."""
+    def default(self, obj):
+        try:
+            import numpy as np
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                v = float(obj)
+                return None if (math.isnan(v) or math.isinf(v)) else v
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, np.bool_):
+                return bool(obj)
+        except ImportError:
+            pass
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return None
+        return super().default(obj)
 
 
 def save_scan_session(
@@ -22,7 +44,11 @@ def save_scan_session(
     """
     儲存一次掃描結果，回傳 session id
     """
-    results_list = result_df.to_dict("records") if not result_df.empty else []
+    results_json = (
+        result_df.to_json(orient="records", force_ascii=False, date_format="iso")
+        if not result_df.empty else "[]"
+    )
+    result_count = 0 if result_df.empty else len(result_df)
 
     session_obj = ScanSession(
         scanned_at=datetime.now(),
@@ -33,15 +59,20 @@ def save_scan_session(
         require_weekly=require_weekly,
         min_rs=min_rs,
         include_institutional=include_institutional,
-        result_count=len(results_list),
-        results_json=json.dumps(results_list, ensure_ascii=False),
-        top_sectors_json=json.dumps(top_sectors, ensure_ascii=False),
+        result_count=result_count,
+        results_json=results_json,
+        top_sectors_json=json.dumps(top_sectors, ensure_ascii=False, cls=_SafeEncoder),
     )
 
-    with get_session() as sess:
-        sess.add(session_obj)
-        sess.commit()
-        return session_obj.id
+    try:
+        with get_session() as sess:
+            sess.add(session_obj)
+            sess.commit()
+            return session_obj.id
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"save_scan_session 失敗：{e}", exc_info=True)
+        raise
 
 
 def load_scan_history(limit: int = 20) -> list[dict]:

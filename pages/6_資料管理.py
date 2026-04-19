@@ -21,6 +21,95 @@ init_db()
 
 st.set_page_config(page_title="資料管理", page_icon="🗄️", layout="wide")
 
+
+def _premium_cache_status_rows() -> list[dict]:
+    def _stock_ids_from_table(sess, table: str) -> set[str]:
+        try:
+            rows = sess.execute(_sqla_text(f"SELECT DISTINCT stock_id FROM {table}")).all()
+            return {str(r[0]) for r in rows if r[0]}
+        except Exception:
+            return set()
+
+    def _summary(sess, table: str, date_col: str) -> dict:
+        try:
+            row = sess.execute(_sqla_text(
+                f"""
+                SELECT COUNT(*) AS rows,
+                       COUNT(DISTINCT stock_id) AS stocks,
+                       MIN({date_col}) AS start_date,
+                       MAX({date_col}) AS end_date
+                FROM {table}
+                """
+            )).mappings().first()
+            return dict(row or {})
+        except Exception:
+            return {"rows": 0, "stocks": 0, "start_date": None, "end_date": None}
+
+    def _coverage(cached_ids: set[str], target_ids: set[str]) -> str:
+        if not target_ids:
+            return "-"
+        hit = len(cached_ids & target_ids)
+        return f"{hit}/{len(target_ids)} ({hit / len(target_ids):.0%})"
+
+    def _status_ids(sess, dataset: str, status: str) -> set[str]:
+        try:
+            rows = sess.execute(_sqla_text("""
+                SELECT DISTINCT stock_id
+                FROM premium_fetch_status
+                WHERE dataset = :dataset
+                  AND status = :status
+            """), {"dataset": dataset, "status": status}).all()
+            return {str(r[0]) for r in rows if r[0]}
+        except Exception:
+            return set()
+
+    portfolio_ids: set[str] = set()
+    candidate_ids: set[str] = set()
+    try:
+        from db.models import Portfolio
+        with get_session() as sess:
+            portfolio_ids = {str(r.stock_id) for r in sess.query(Portfolio).all() if r.stock_id}
+    except Exception:
+        portfolio_ids = set()
+
+    try:
+        from db.scan_history import load_scan_history, load_session_results
+        ids: list[str] = []
+        for rec in load_scan_history(limit=5):
+            df = load_session_results(rec["id"])
+            if not df.empty and "stock_id" in df.columns:
+                ids.extend(str(sid) for sid in df["stock_id"].dropna().head(20))
+        candidate_ids = set(dict.fromkeys(ids))
+    except Exception:
+        candidate_ids = set()
+
+    configs = [
+        ("官方風險旗標", "risk_flags_cache", "risk_flags", "date", "僅有事件股票會有資料"),
+        ("大戶持股分布", "holding_shares_cache", "holding_shares", "date", "180 日籌碼分布"),
+        ("主力券商", "broker_main_force_cache", "broker_main_force", "date", "近 30 個交易日"),
+        ("基本面", "fundamental_cache", "fundamentals", "fetched_at", "基本面快取"),
+    ]
+
+    rows: list[dict] = []
+    with get_session() as sess:
+        for label, table, dataset, date_col, note in configs:
+            s = _summary(sess, table, date_col)
+            cached_ids = _stock_ids_from_table(sess, table)
+            no_data_ids = _status_ids(sess, dataset, "no_data")
+            attempted_ids = cached_ids | no_data_ids
+            rows.append({
+                "資料集": label,
+                "筆數": int(s.get("rows") or 0),
+                "股票數": int(s.get("stocks") or 0),
+                "無資料": len(no_data_ids),
+                "最早資料": str(s.get("start_date") or "-")[:10],
+                "最新資料": str(s.get("end_date") or "-")[:16],
+                "持股覆蓋": _coverage(attempted_ids, portfolio_ids),
+                "候選股覆蓋": _coverage(attempted_ids, candidate_ids),
+                "說明": note,
+            })
+    return rows
+
 # ══ 自訂 CSS（使用 Streamlit CSS 變數，自動適配 Light/Dark）══════
 st.markdown("""
 <style>
@@ -1046,7 +1135,15 @@ with st.expander("🔧 手動補抓 & 基本面快取", expanded=False):
     if last_summary:
         st.caption(f"最近狀態：{last_summary}")
 
-    pp1, pp2 = st.columns(2)
+    status_rows = _premium_cache_status_rows()
+    st.dataframe(
+        pd.DataFrame(status_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption("全市場補完只補官方風險旗標與大戶持股分布；主力券商資料量很大，仍以持股與高優先候選股為主。")
+    pp1, pp2, pp3, pp4 = st.columns(4)
     with pp1:
         if st.button("補齊持股 Premium 資料", type="primary", use_container_width=True):
             with st.spinner("正在補齊持股 Premium 資料..."):
@@ -1070,6 +1167,31 @@ with st.expander("🔧 手動補抓 & 基本面快取", expanded=False):
                 )
             else:
                 st.warning(f"候選股 Premium 補完未啟動：{result.get('reason', 'unknown')}")
+            st.rerun()
+    with pp3:
+        if st.button("補齊全市場 Premium 基礎資料", use_container_width=True):
+            with st.spinner("正在補齊全市場 Premium 基礎資料，這可能需要 40-60 分鐘..."):
+                result = worker.prefetch_market_premium()
+            if result.get("ok"):
+                st.success(
+                    f"全市場 Premium 基礎補完完成：{result.get('done', 0)} 檔成功，"
+                    f"{result.get('error', 0)} 檔錯誤。"
+                )
+            else:
+                st.warning(f"全市場 Premium 基礎補完未啟動：{result.get('reason', 'unknown')}")
+            st.rerun()
+    with pp4:
+        if st.button("補齊最近 1 日主力券商", use_container_width=True):
+            with st.spinner("正在補齊最近交易日全市場主力券商，下一輪可再往前補..."):
+                result = worker.prefetch_market_broker_by_date(days=1)
+            if result.get("ok"):
+                dates = ", ".join(result.get("dates") or [])
+                st.success(
+                    f"主力券商補完完成（{dates}）：{result.get('done', 0)} 筆成功/無資料，"
+                    f"{result.get('error', 0)} 筆錯誤。"
+                )
+            else:
+                st.warning(f"主力券商補完未啟動：{result.get('reason', 'unknown')}")
             st.rerun()
 
 # ══ 區塊 5：維護操作 ══════════════════════════════════════════════

@@ -119,6 +119,27 @@ def load_institutional(stock_id: str, days: int = 10) -> pd.DataFrame:
     return df
 
 
+def load_institutional_for_date(stock_id: str, target_date, days: int = 14) -> pd.DataFrame:
+    """歷史掃描專用：讀取截至 target_date 的法人快取（不呼叫 live API）。"""
+    target = pd.Timestamp(target_date).strftime("%Y-%m-%d")
+    start = (pd.Timestamp(target_date) - pd.Timedelta(days=days * 2)).strftime("%Y-%m-%d")
+    with get_session() as sess:
+        rows = sess.execute(
+            text("""
+                SELECT date, name, buy, sell, net
+                FROM inst_cache
+                WHERE stock_id = :sid AND date >= :start AND date <= :target
+                ORDER BY date ASC
+            """),
+            {"sid": stock_id, "start": start, "target": target},
+        ).fetchall()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["date", "name", "buy", "sell", "net"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 def get_inst_cache_stats() -> dict:
     """回傳快取統計資訊（供資料管理頁面顯示）"""
     with get_session() as sess:

@@ -40,6 +40,13 @@ LEVEL_LABEL = {
 
 
 # ── DB 操作 ─────────────────────────────────────────────────
+def _fmt_price(value) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
 def load_holdings() -> list:
     with get_session() as sess:
         rows = sess.query(Portfolio).all()
@@ -155,6 +162,44 @@ def collect_premium_portfolio_alerts(stats_list: list[dict], price_data: dict) -
         premium_alerts.append(alert)
         by_stock.setdefault(stat["stock_id"], []).append(alert)
 
+    def _active_official_flags(risk_df: pd.DataFrame, latest_date: str) -> list[tuple[str, dict]]:
+        if risk_df is None or risk_df.empty or "flag_type" not in risk_df.columns:
+            return []
+        latest_ts = pd.Timestamp(latest_date)
+        active: list[tuple[str, dict]] = []
+        for _, row in risk_df.iterrows():
+            flag_type = str(row.get("flag_type", "") or "")
+            if flag_type == "price_limit":
+                continue
+            detail = row.get("detail") or {}
+            if not isinstance(detail, dict):
+                detail = {}
+
+            if flag_type == "disposition":
+                start = pd.to_datetime(detail.get("period_start") or row.get("date"), errors="coerce")
+                end = pd.to_datetime(detail.get("period_end") or row.get("date"), errors="coerce")
+                if pd.notna(start) and pd.notna(end) and start <= latest_ts <= end:
+                    active.append((flag_type, detail))
+            elif flag_type == "suspended":
+                start = pd.to_datetime(row.get("date"), errors="coerce")
+                end = pd.to_datetime(detail.get("resumption_date") or row.get("date"), errors="coerce")
+                if pd.notna(start) and pd.notna(end) and start <= latest_ts <= end:
+                    active.append((flag_type, detail))
+            elif flag_type == "treasury_shares":
+                start = pd.to_datetime(
+                    detail.get("plan_buyback_start_date") or detail.get("start_date") or row.get("date"),
+                    errors="coerce",
+                )
+                end = pd.to_datetime(
+                    detail.get("plan_buyback_end_date") or detail.get("end_date") or row.get("date"),
+                    errors="coerce",
+                )
+                if pd.notna(start) and pd.notna(end) and start <= latest_ts <= end:
+                    active.append((flag_type, detail))
+            else:
+                active.append((flag_type, detail))
+        return active
+
     for stat in stats_list:
         sid = stat["stock_id"]
         df = price_data.get(sid)
@@ -166,15 +211,44 @@ def collect_premium_portfolio_alerts(stats_list: list[dict], price_data: dict) -
             continue
         latest_date = dates.max().date().isoformat()
         lookback_start = (pd.Timestamp(latest_date) - pd.Timedelta(days=180)).date().isoformat()
+        risk_lookback_start = (pd.Timestamp(latest_date) - pd.Timedelta(days=60)).date().isoformat()
 
         try:
-            risk_df = get_cached_risk_flags(stock_id=sid, start_date=latest_date, end_date=latest_date)
+            risk_df = get_cached_risk_flags(stock_id=sid, start_date=risk_lookback_start, end_date=latest_date)
         except Exception:
             risk_df = pd.DataFrame()
-        if risk_df is not None and not risk_df.empty and "flag_type" in risk_df.columns:
-            for flag_type in risk_df["flag_type"].astype(str).dropna().unique():
-                level = AlertLevel.DANGER if flag_type == "suspended" else AlertLevel.WARNING
-                _add_alert(stat, level, f"official risk flag: {flag_type}")
+        _FLAG_LABELS = {
+            "disposition": "官方處置股",
+            "suspended": "官方停止買賣",
+            "shareholding_transfer": "內部人申報轉讓",
+            "attention": "官方注意股",
+            "treasury_shares": "實施庫藏股",
+        }
+        for flag_type, detail in _active_official_flags(risk_df, latest_date):
+            if flag_type in _FLAG_LABELS:
+                level = (
+                    AlertLevel.DANGER if flag_type == "suspended"
+                    else AlertLevel.INFO if flag_type == "treasury_shares"
+                    else AlertLevel.WARNING
+                )
+                suffix = ""
+                if flag_type == "disposition":
+                    suffix = f"（{detail.get('measure') or detail.get('condition') or '處置期間內'}）"
+                elif flag_type == "shareholding_transfer":
+                    shares = detail.get("target_transfer_shares")
+                    method = detail.get("transfer_methods") or detail.get("transfer_method")
+                    suffix = f"（{method or '申報轉讓'}"
+                    if shares not in (None, ""):
+                        suffix += f"，{shares} 張"
+                    suffix += "）"
+                elif flag_type == "attention":
+                    suffix = f"（{detail.get('reason') or '注意交易資訊'}）"
+                elif flag_type == "treasury_shares":
+                    shares = detail.get("plan_buyback_shares")
+                    suffix = f"（計畫買回 {shares} 張）" if shares not in (None, "") else "（庫藏股執行期間）"
+                _add_alert(stat, level, f"{_FLAG_LABELS[flag_type]}{suffix}")
+            else:
+                _add_alert(stat, AlertLevel.WARNING, f"官方風險旗標：{flag_type}")
 
         try:
             holding_df = get_cached_holding_shares(stock_id=sid, start_date=lookback_start, end_date=latest_date)
@@ -197,11 +271,11 @@ def collect_premium_portfolio_alerts(stats_list: list[dict], price_data: dict) -
                 d1000 = _delta("above_1000_pct")
                 d10 = _delta("below_10_pct")
                 if d400 is not None and d400 < 0:
-                    _add_alert(stat, AlertLevel.WARNING, f"400+ lots holder ratio down {d400:+.2f}pp")
+                    _add_alert(stat, AlertLevel.WARNING, f"大戶(400張+)比例下降 {d400:+.2f}pp")
                 if d1000 is not None and d1000 < 0:
-                    _add_alert(stat, AlertLevel.WARNING, f"1000+ lots holder ratio down {d1000:+.2f}pp")
+                    _add_alert(stat, AlertLevel.WARNING, f"大戶(1000張+)比例下降 {d1000:+.2f}pp")
                 if d10 is not None and d10 > 0:
-                    _add_alert(stat, AlertLevel.WARNING, f"small-holder ratio up {d10:+.2f}pp")
+                    _add_alert(stat, AlertLevel.WARNING, f"散戶(10張以下)比例上升 {d10:+.2f}pp")
 
         try:
             broker_dates = [
@@ -217,16 +291,43 @@ def collect_premium_portfolio_alerts(stats_list: list[dict], price_data: dict) -
             net = pd.to_numeric(latest_broker.get("net"), errors="coerce")
             reversal = pd.to_numeric(latest_broker.get("reversal_flag"), errors="coerce")
             if pd.notna(reversal) and bool(reversal):
-                _add_alert(stat, AlertLevel.WARNING, "broker main-force reversal")
+                _add_alert(stat, AlertLevel.WARNING, "主力反手訊號")
             elif pd.notna(net) and net < 0:
-                _add_alert(stat, AlertLevel.WARNING, f"broker main-force net sell {abs(float(net)):,.0f}")
+                _add_alert(stat, AlertLevel.WARNING, f"主力淨賣超 {abs(float(net)):,.0f} 張")
 
     priority = {AlertLevel.DANGER: 0, AlertLevel.WARNING: 1, AlertLevel.INFO: 2}
     premium_alerts.sort(key=lambda a: priority.get(a.level, 9))
     return premium_alerts, by_stock
 
 
-# ── K 線圖 ───────────────────────────────────────────────────
+# ── Premium 警示重算 ─────────────────────────────────────────
+def _recompute_premium_alerts(
+    stats_list: list[dict],
+    all_alerts: list[StockAlert],
+    price_data: dict,
+) -> tuple[list[dict], list[StockAlert], list[StockAlert]]:
+    """Refresh Premium alerts from local cache without touching price/API fetches."""
+    base_alerts = [
+        a for a in all_alerts
+        if not str(getattr(a, "reason", "")).startswith("[Premium]")
+    ]
+    for stat in stats_list:
+        stat["alerts"] = [
+            a for a in stat.get("alerts", [])
+            if not str(getattr(a, "reason", "")).startswith("[Premium]")
+        ]
+
+    premium_alerts, premium_by_stock = collect_premium_portfolio_alerts(stats_list, price_data)
+    if premium_alerts:
+        for stat in stats_list:
+            stat["alerts"].extend(premium_by_stock.get(stat["stock_id"], []))
+
+    all_alerts = base_alerts + premium_alerts
+    priority = {AlertLevel.DANGER: 0, AlertLevel.WARNING: 1, AlertLevel.INFO: 2}
+    all_alerts.sort(key=lambda a: priority.get(a.level, 9))
+    return stats_list, all_alerts, premium_alerts
+
+
 def render_holding_chart(stock_id: str, df: pd.DataFrame, cost_price: float,
                           stop_loss: float = None, take_profit: float = None):
     from modules.indicators import sma, macd, bollinger_bands, rsi
@@ -288,13 +389,13 @@ def render_holding_chart(stock_id: str, df: pd.DataFrame, cost_price: float,
 
     # 成本線
     fig.add_hline(y=cost_price, line_dash="dash", line_color="#9b59b6",
-                  annotation_text=f"成本 {cost_price}", row=1, col=1)
+                  annotation_text=f"成本 {_fmt_price(cost_price)}", row=1, col=1)
     if stop_loss:
         fig.add_hline(y=stop_loss, line_dash="dot", line_color="#e74c3c",
-                      annotation_text=f"停損 {stop_loss}", row=1, col=1)
+                      annotation_text=f"停損 {_fmt_price(stop_loss)}", row=1, col=1)
     if take_profit:
         fig.add_hline(y=take_profit, line_dash="dot", line_color="#27ae60",
-                      annotation_text=f"停利 {take_profit}", row=1, col=1)
+                      annotation_text=f"停利 {_fmt_price(take_profit)}", row=1, col=1)
 
     fig.add_trace(go.Scatter(x=df["date"], y=df["macd"], name="DIF",
                               line=dict(color="#e74c3c", width=1)), row=2, col=1)
@@ -328,12 +429,18 @@ with tab_monitor:
                 "🏖️ 休市模式啟用中：持股監控只讀取本機快取，不會連線更新報價。",
                 icon=None,
             )
-        col_refresh, col_notify = st.columns([2, 1])
+        col_refresh, col_premium, col_notify = st.columns([1.4, 1.2, 1])
         with col_refresh:
             clicked_refresh = st.button(
                 "🔄 更新報價" if not market_closed_mode else "🔄 重新讀取快取",
                 type="primary",
                 use_container_width=True,
+            )
+        with col_premium:
+            premium_recheck_btn = st.button(
+                "重檢 Premium 風險",
+                use_container_width=True,
+                help="只讀本機 Premium cache，不抓報價、不打 FinMind API",
             )
         with col_notify:
             notify_btn = st.button("📲 推播警示到 LINE", use_container_width=True)
@@ -396,13 +503,11 @@ with tab_monitor:
             # 若本輪一筆都抓不到，不覆蓋既有結果，避免誤顯示成「無警示」
             if price_data:
                 stats_list, all_alerts = run_portfolio_check(holdings, price_data)
-                premium_alerts, premium_by_stock = collect_premium_portfolio_alerts(stats_list, price_data)
-                if premium_alerts:
-                    for stat in stats_list:
-                        stat["alerts"].extend(premium_by_stock.get(stat["stock_id"], []))
-                    all_alerts.extend(premium_alerts)
-                    priority = {AlertLevel.DANGER: 0, AlertLevel.WARNING: 1, AlertLevel.INFO: 2}
-                    all_alerts.sort(key=lambda a: priority.get(a.level, 9))
+                stats_list, all_alerts, premium_alerts = _recompute_premium_alerts(
+                    stats_list,
+                    all_alerts,
+                    price_data,
+                )
                 st.session_state["portfolio_stats"] = stats_list
                 st.session_state["portfolio_alerts"] = all_alerts
                 st.session_state["portfolio_premium_alerts"] = premium_alerts
@@ -418,6 +523,18 @@ with tab_monitor:
         price_data = st.session_state.get("portfolio_prices", {})
         failed_ids = st.session_state.get("portfolio_failed_ids", [])
         fallback_mode = st.session_state.get("portfolio_fallback_mode", False)
+
+        # Premium 風險重檢只讀本機 cache，避免每次 rerun 都卡住頁面。
+        if premium_recheck_btn and stats_list and price_data:
+            stats_list, all_alerts, premium_alerts = _recompute_premium_alerts(
+                stats_list,
+                all_alerts,
+                price_data,
+            )
+            st.session_state["portfolio_stats"] = stats_list
+            st.session_state["portfolio_alerts"] = all_alerts
+            st.session_state["portfolio_premium_alerts"] = premium_alerts
+            st.toast("Premium 風險已從本機 cache 重新檢查")
 
         if fallback_mode:
             st.warning(FALLBACK_WARNING)
@@ -436,10 +553,10 @@ with tab_monitor:
 
         if danger_alerts:
             for a in danger_alerts:
-                st.error(f"🔴 **{a.stock_id} {a.stock_name}** — {a.reason}　現價 {a.current_price} 元　損益 {a.pnl_pct:+.1f}%")
+                st.error(f"🔴 **{a.stock_id} {a.stock_name}** — {a.reason}　現價 {a.current_price:.2f} 元　損益 {a.pnl_pct:+.1f}%")
         if warn_alerts:
             for a in warn_alerts:
-                st.warning(f"🟡 **{a.stock_id} {a.stock_name}** — {a.reason}　現價 {a.current_price} 元　損益 {a.pnl_pct:+.1f}%")
+                st.warning(f"🟡 **{a.stock_id} {a.stock_name}** — {a.reason}　現價 {a.current_price:.2f} 元　損益 {a.pnl_pct:+.1f}%")
         if not danger_alerts and not warn_alerts:
             st.success("✅ 所有持股目前無警示")
 
@@ -448,6 +565,15 @@ with tab_monitor:
                 for a in premium_alerts:
                     label = LEVEL_LABEL.get(a.level, "Premium")
                     st.write(f"{label} **{a.stock_id} {a.stock_name}** - {a.reason}")
+                st.caption(
+                    "已檢查：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股、"
+                    "大戶持股分布、主力券商反手/賣超。"
+                )
+        else:
+            with st.expander("Premium 風險檢查範圍", expanded=False):
+                st.write("已檢查：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股。")
+                st.write("已檢查：大戶持股分布、主力券商反手/賣超。")
+                st.caption("每日漲跌停價 price_limit 只是參考價，不列為風險警示。")
 
         # LINE 推播
         if notify_btn:
@@ -460,7 +586,7 @@ with tab_monitor:
                     emoji = "🔴" if a.level == AlertLevel.DANGER else "🟡"
                     lines.append(f"\n{emoji} {a.stock_id} {a.stock_name}")
                     lines.append(f"   {a.reason}")
-                    lines.append(f"   現價 {a.current_price} 元  損益 {a.pnl_pct:+.1f}%")
+                    lines.append(f"   現價 {a.current_price:.2f} 元  損益 {a.pnl_pct:+.1f}%")
                 ok = send_multicast("\n".join(lines))
                 st.toast("警示已群播到 LINE" if ok else "LINE 群播失敗", icon="📲" if ok else "❌")
 
@@ -489,12 +615,12 @@ with tab_monitor:
                     "代碼": s["stock_id"],
                     "名稱": s["stock_name"],
                     "股數": s["shares"],
-                    "成本": s["cost_price"],
-                    "現價": s["close"],
+                    "成本": round(float(s["cost_price"]), 2),
+                    "現價": round(float(s["close"]), 2),
                     "損益(元)": s["pnl"],
                     "損益%": s["pnl_pct"],
                     "高點回撤%": s["drawdown_from_high"],
-                    "MA20": s["ma20"],
+                    "MA20": round(float(s["ma20"]), 2) if s["ma20"] is not None else None,
                     "警示": "、".join(alert_labels) if alert_labels else "—",
                 })
 
@@ -505,7 +631,17 @@ with tab_monitor:
                     return "color:#e74c3c" if val > 0 else ("color:#27ae60" if val < 0 else "")
                 return ""
 
-            styled = df_display.style.applymap(color_pnl, subset=["損益(元)", "損益%", "高點回撤%"])
+            styled = (
+                df_display.style
+                .applymap(color_pnl, subset=["損益(元)", "損益%", "高點回撤%"])
+                .format({
+                    "成本": "{:.2f}",
+                    "現價": "{:.2f}",
+                    "MA20": "{:.2f}",
+                    "損益%": "{:+.2f}",
+                    "高點回撤%": "{:+.2f}",
+                }, na_rep="-")
+            )
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
             # 個股圖表
@@ -704,7 +840,7 @@ with tab_manage:
         for h in holdings:
             col1, col2 = st.columns([6, 2])
             with col1:
-                st.write(f"{h['stock_id']} {h['stock_name']} | {h['shares']} 股 | 成本 {h['cost_price']} 元")
+                st.write(f"{h['stock_id']} {h['stock_name']} | {h['shares']} 股 | 成本 {_fmt_price(h['cost_price'])} 元")
             with col2:
                 if st.button("刪除", key=f"del_{h['id']}", type="secondary", use_container_width=True):
                     delete_holding(h["id"])

@@ -315,7 +315,7 @@ def analyze_stock(
             sig.bb_bandwidth_shrink = bool(bw_now < bw_20ago)
 
     # 6. [v4] 投信第一天買超（昨日 ≤ 0，今日 > 0）
-    if isinstance(inst_buying, dict):
+    if isinstance(inst_buying, dict) and inst_buying:
         recent_inst = inst_buying.get("recent_inst_net", pd.DataFrame())
         if (not recent_inst.empty
                 and "投信" in recent_inst.columns

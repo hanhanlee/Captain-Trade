@@ -115,6 +115,34 @@ def get_margin(stock_id: str, days: int = 5) -> pd.DataFrame:
     return df
 
 
+def load_margin_for_date(stock_id: str, target_date, days: int = 14) -> pd.DataFrame:
+    """讀取截至 target_date 的融資融券快取；歷史模式使用，不呼叫 live API。"""
+    target = pd.Timestamp(target_date).strftime("%Y-%m-%d")
+    start = (pd.Timestamp(target_date) - pd.Timedelta(days=days * 2)).strftime("%Y-%m-%d")
+    with get_session() as sess:
+        rows = sess.execute(
+            text("""
+                SELECT date, margin_buy, margin_sell, margin_balance,
+                       short_buy, short_sell, short_balance
+                FROM margin_cache
+                WHERE stock_id = :sid AND date >= :start AND date <= :target
+                ORDER BY date ASC
+            """),
+            {"sid": stock_id, "start": start, "target": target},
+        ).fetchall()
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=[
+        "date",
+        "MarginPurchaseBuy", "MarginPurchaseSell", "MarginPurchaseTodayBalance",
+        "ShortSaleBuy", "ShortSaleSell", "ShortSaleTodayBalance",
+    ])
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 def get_stocks_needing_margin(all_ids: list[str], target_date: date | None = None) -> list[str]:
     """
     回傳今日尚無融資快取的股票清單。

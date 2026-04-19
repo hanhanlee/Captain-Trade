@@ -34,13 +34,17 @@ st.set_page_config(page_title="選股雷達", page_icon="🔍", layout="wide")
 _RISK_FLAG_LABELS = {
     "disposition": "處置",
     "suspended": "暫停交易",
-    "price_limit": "漲跌幅限制",
+    "shareholding_transfer": "申報轉讓",
+    "attention": "注意股",
+    "treasury_shares": "庫藏股",
 }
 
 _RISK_FLAG_PENALTIES = {
     "disposition": 10,
     "suspended": 0,
-    "price_limit": 0,
+    "shareholding_transfer": 5,
+    "attention": 5,
+    "treasury_shares": 0,
 }
 
 
@@ -103,6 +107,8 @@ def _attach_cached_risk_flags(result_df: pd.DataFrame, scan_date) -> pd.DataFram
         penalty = 0
         for _, flag in group.iterrows():
             flag_type = str(flag.get("flag_type", "") or "")
+            if flag_type == "price_limit":
+                continue
             labels.append(_RISK_FLAG_LABELS.get(flag_type, flag_type or "風險旗標"))
             penalty += _RISK_FLAG_PENALTIES.get(flag_type, 0)
         flags_by_stock[sid] = "、".join(dict.fromkeys(labels))
@@ -904,7 +910,18 @@ with tab_scan:
                         if _is_hist_scan and "date" in df.columns:
                             df = df[df["date"] <= pd.Timestamp(_active_scan_date)]
                         price_data[sid] = df
-                    # 法人資料：cache_only 下不抓
+                    # 歷史掃描：從 inst_cache 讀取截至掃描日的法人資料
+                    if _is_hist_scan:
+                        from db.inst_cache import load_institutional_for_date
+                        idf = load_institutional_for_date(sid, _active_scan_date, days=14)
+                        if not idf.empty:
+                            inst_data[sid] = summarize_institutional_signal(
+                                idf,
+                                selected_institutions=inst_selection or None,
+                                strict_days=strict_days,
+                                agg_mode=agg_mode,
+                                agg_days=agg_days,
+                            )
                 else:
                     from db.price_cache import get_cached_dates
                     from datetime import date as _date, timedelta as _td
@@ -935,10 +952,22 @@ with tab_scan:
                             df = df[df["date"] <= pd.Timestamp(_active_scan_date)]
                         price_data[sid] = df
 
-                    # 法人資料：備援模式下 dsm.institutional_available 為 False，自動跳過
-                    if (not _disable_non_price_extras
-                            and dsm.institutional_available):
+                    # 法人資料
+                    if not _disable_non_price_extras and dsm.institutional_available:
+                        # 當日掃描：呼叫 live API
                         idf = dsm.get_institutional(sid, days=10)
+                        if not idf.empty:
+                            inst_data[sid] = summarize_institutional_signal(
+                                idf,
+                                selected_institutions=inst_selection or None,
+                                strict_days=strict_days,
+                                agg_mode=agg_mode,
+                                agg_days=agg_days,
+                            )
+                    elif _is_hist_scan:
+                        # 歷史掃描：從 inst_cache 讀取截至掃描日的資料
+                        from db.inst_cache import load_institutional_for_date
+                        idf = load_institutional_for_date(sid, _active_scan_date, days=14)
                         if not idf.empty:
                             inst_data[sid] = summarize_institutional_signal(
                                 idf,
@@ -1027,13 +1056,16 @@ with tab_scan:
             fundamental_filter = {}
 
         with st.spinner("計算指標，篩選中..."):
-            use_inst = (dsm.institutional_available
-                        and not _disable_non_price_extras)
+            use_inst = bool(inst_data) or (
+                dsm.institutional_available and not _disable_non_price_extras
+            )
             if not use_inst:
                 st.warning(
                     "目前無法取得法人資料；v3/v4 都需要「主力連續 3 日買超」作為必要條件，"
                     "本次掃描可能不會產生入選結果。"
                 )
+            elif _is_hist_scan and inst_data:
+                st.caption(f"歷史掃描：從本機快取讀取 {len(inst_data)} 檔法人資料（截至 {_active_scan_date}）")
             result_df, sector_info, debug_info = run_scan(
                 price_data=price_data,
                 stock_info=stock_list,
@@ -1116,17 +1148,20 @@ with tab_scan:
                 else "不過濾"
             )
 
-            save_scan_session(
-                result_df=result_df,
-                scan_mode=scan_mode,
-                min_price=min_price,
-                vol_filter=vol_filter_str,
-                sector_filter=sector_filter_str,
-                require_weekly=require_weekly,
-                min_rs=float(min_rs),
-                include_institutional=use_inst,
-                top_sectors=sector_info,
-            )
+            try:
+                save_scan_session(
+                    result_df=result_df,
+                    scan_mode=scan_mode,
+                    min_price=min_price,
+                    vol_filter=vol_filter_str,
+                    sector_filter=sector_filter_str,
+                    require_weekly=require_weekly,
+                    min_rs=float(min_rs),
+                    include_institutional=use_inst,
+                    top_sectors=sector_info,
+                )
+            except Exception as _save_err:
+                st.warning(f"⚠️ 掃描結果未能儲存至歷史紀錄：{_save_err}")
 
     # ── 顯示結果 ──────────────────────────────────────────────
     if "scan_results" in st.session_state:

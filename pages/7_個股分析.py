@@ -40,15 +40,20 @@ def _load_df(stock_id: str) -> pd.DataFrame | None:
 def _load_inst(
     stock_id: str,
     *,
+    target_date=None,
     selected_institutions: list | None = None,
     strict_days: int = 3,
     agg_mode: str = "rolling_sum",
     agg_days: int = 5,
 ) -> dict:
-    """載入三大法人資料並彙整；失敗回傳空 dict"""
+    """載入三大法人資料並彙整；快取優先，失敗回傳空 dict"""
     try:
-        from data.finmind_client import get_institutional_investors, summarize_institutional_signal
-        idf = get_institutional_investors(stock_id, days=10)
+        from data.finmind_client import smart_get_institutional, summarize_institutional_signal
+        if target_date is not None:
+            from db.inst_cache import load_institutional_for_date
+            idf = load_institutional_for_date(stock_id, target_date, days=14)
+        else:
+            idf = smart_get_institutional(stock_id, days=10)
         if idf.empty:
             return {}
         return summarize_institutional_signal(
@@ -132,7 +137,7 @@ def _color(passed: bool) -> str:
     return "#27ae60" if passed else "#e74c3c"
 
 
-def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
+def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: bool = False):
     """v4 條件逐項評分卡"""
     latest = df.iloc[-1]
     prev   = df.iloc[-2] if len(df) >= 2 else latest
@@ -232,9 +237,13 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
             "rule": "今日收盤 > 過去 60 個交易日最高收盤",
         },
         {
-            "name": "主力連續買超 3 天以上",
+            "name": "三大法人連續買超 3 天以上",
             "pass": sig.main_force_buy_3d,
-            "detail": "三大法人合計淨買超最近 3 個交易日皆為正（需載入法人資料）",
+            "detail": (
+                "三大法人合計淨買超：近 3 個交易日未全部為正"
+                if has_inst else
+                "未載入法人資料（請勾選「載入法人買賣超」）"
+            ),
             "rule": "三大法人合計買賣超 > 0，且連續至少 3 個交易日",
         },
     ]
@@ -344,7 +353,7 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict"):
     )
 
 
-def render_scorecard_v3(sig, df: pd.DataFrame):
+def render_scorecard_v3(sig, df: pd.DataFrame, has_inst: bool = False):
     """v3 條件逐項評分卡"""
     latest = df.iloc[-1]
     prev   = df.iloc[-2] if len(df) >= 2 else latest
@@ -445,9 +454,13 @@ def render_scorecard_v3(sig, df: pd.DataFrame):
             "rule": "MACD 黃金交叉（DIF由下往上穿越DEA 或 DIF>DEA>0）OR RSI在50–70健康區",
         },
         {
-            "name": "主力連續買超 3 天以上",
+            "name": "三大法人連續買超 3 天以上",
             "pass": sig.main_force_buy_3d,
-            "detail": "三大法人合計淨買超最近 3 個交易日皆為正（需載入法人資料）",
+            "detail": (
+                "三大法人合計淨買超：近 3 個交易日未全部為正"
+                if has_inst else
+                "未載入法人資料（請勾選「載入法人買賣超」）"
+            ),
             "rule": "三大法人合計買賣超 > 0，且連續至少 3 個交易日",
         },
     ]
@@ -522,7 +535,11 @@ def render_scorecard_v3(sig, df: pd.DataFrame):
             "name": "法人買超",
             "pass": sig.institutional_buy,
             "score": 7,
-            "detail": "近期三大法人合計買超（需載入法人資料）",
+            "detail": (
+                "外資、投信、自營各自連續買超條件未達成"
+                if has_inst else
+                "未載入法人資料（請勾選「載入法人買賣超」）"
+            ),
         },
         {
             "name": "融資減少 / 籌碼集中",
@@ -803,9 +820,9 @@ def render_official_risk_flags(stock_id: str, analysis_date, is_historical: bool
 
     with st.expander("🛡️ 官方風險旗標（Premium）", expanded=False):
         c1, c2, c3 = st.columns(3)
-        c1.metric("Tier", state.tier.upper())
-        c2.metric("Premium", "啟用" if state.user_enabled else "未啟用")
-        c3.metric("Runtime", "降級" if state.degraded else "正常")
+        c1.metric("方案", state.tier.upper())
+        c2.metric("Premium 啟用", "是" if state.user_enabled else "否")
+        c3.metric("運作狀態", "降級" if state.degraded else "正常")
 
         if not state.user_enabled or state.tier == "free":
             st.info("Premium 未啟用，僅顯示本機快取；不會呼叫 FinMind Premium API。")
@@ -818,31 +835,36 @@ def render_official_risk_flags(stock_id: str, analysis_date, is_historical: bool
                 st.caption("歷史模式：僅查詢分析基準日的旗標資料。此區塊只供檢視，不影響回測或評分。")
             flags = get_stock_risk_flags(stock_id=stock_id, start_date=d, end_date=d)
 
-        if flags is None or flags.empty:
-            st.success(f"{d} 無官方風險旗標快取或回傳資料。")
-            return
+    if flags is None or flags.empty:
+        st.success(f"{d} 無官方風險旗標快取或回傳資料。")
+        return
+    if "flag_type" in flags.columns:
+        flags = flags[flags["flag_type"].astype(str) != "price_limit"].copy()
+    if flags.empty:
+        st.success(f"{d} 無官方風險旗標快取或回傳資料。")
+        return
 
-        rows = []
-        for _, row in flags.iterrows():
-            detail = row.get("detail") or {}
-            reason = ""
-            if isinstance(detail, dict):
-                reason = (
-                    detail.get("reason")
-                    or detail.get("處置原因")
-                    or detail.get("note")
-                    or detail.get("name")
-                    or ""
-                )
-                detail_text = json.dumps(detail, ensure_ascii=False, default=str)
-            else:
-                detail_text = str(detail)
-            rows.append({
-                "日期": pd.Timestamp(row["date"]).date().isoformat() if pd.notna(row.get("date")) else "",
-                "旗標": row.get("flag_type", ""),
-                "原因/摘要": reason,
-                "原始資料": detail_text,
-            })
+    rows = []
+    for _, row in flags.iterrows():
+        detail = row.get("detail") or {}
+        reason = ""
+        if isinstance(detail, dict):
+            reason = (
+                detail.get("reason")
+                or detail.get("處置原因")
+                or detail.get("note")
+                or detail.get("name")
+                or ""
+            )
+            detail_text = json.dumps(detail, ensure_ascii=False, default=str)
+        else:
+            detail_text = str(detail)
+        rows.append({
+            "日期": pd.Timestamp(row["date"]).date().isoformat() if pd.notna(row.get("date")) else "",
+            "旗標": row.get("flag_type", ""),
+            "原因/摘要": reason,
+            "原始資料": detail_text,
+        })
 
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
@@ -961,7 +983,7 @@ def render_premium_summary(
             get_premium_state,
         )
     except Exception as exc:
-        st.caption(f"Premium summary unavailable: {exc}")
+        st.caption(f"Premium 摘要無法載入：{exc}")
         return
 
     state = get_premium_state()
@@ -981,27 +1003,44 @@ def render_premium_summary(
         reversal = pd.to_numeric(latest_broker.get("reversal_flag"), errors="coerce")
         if pd.notna(net):
             if net > 0:
-                positive.append(f"Broker main-force net buy {net:,.0f}")
+                positive.append(f"主力淨買超 {net:,.0f} 張")
             elif net < 0:
-                negative.append(f"Broker main-force net sell {abs(net):,.0f}")
+                negative.append(f"主力淨賣超 {abs(net):,.0f} 張")
         if pd.notna(concentration) and concentration >= 50:
-            positive.append(f"Top-5 broker buy concentration {concentration:.1f}%")
+            positive.append(f"前5大買超集中度 {concentration:.1f}%")
         if pd.notna(streak) and int(streak) >= 3:
-            positive.append(f"Broker net-buy streak {int(streak)} days")
+            positive.append(f"主力連續買超 {int(streak)} 日")
         if pd.notna(reversal) and bool(reversal):
-            negative.append("Broker reversal flag")
+            negative.append("主力反手訊號")
     elif not is_historical:
-        missing.append("broker_main_force")
+        missing.append("券商分點主力（無資料）")
 
     try:
         risk_df = get_cached_risk_flags(stock_id=stock_id, start_date=d, end_date=d)
     except Exception:
         risk_df = pd.DataFrame()
+    _FLAG_LABELS = {
+        "disposition": "官方處置股",
+        "suspended": "官方停止買賣",
+        "shareholding_transfer": "內部人申報轉讓",
+        "attention": "官方注意股",
+        "treasury_shares": "實施庫藏股",
+    }
     if risk_df is not None and not risk_df.empty:
+        has_real_risk_flag = False
         for flag_type in risk_df["flag_type"].astype(str).dropna().unique():
-            negative.append(f"Official risk flag: {flag_type}")
+            if flag_type == "price_limit":
+                continue
+            has_real_risk_flag = True
+            label = _FLAG_LABELS.get(flag_type, f"官方風險旗標：{flag_type}")
+            if flag_type == "treasury_shares":
+                positive.append(label)
+            else:
+                negative.append(label)
+        if not has_real_risk_flag:
+            positive.append("官方風險旗標無異常記錄")
     else:
-        positive.append("No cached official risk flag for analysis date")
+        positive.append("官方風險旗標無異常記錄")
 
     try:
         holding_df = get_cached_holding_shares(stock_id=stock_id, start_date=start, end_date=d)
@@ -1028,56 +1067,56 @@ def render_premium_summary(
             if d400 is not None and d400 != 0:
                 target = positive if d400 > 0 else negative
                 target.append(
-                    f"400+ lots holder ratio {'up' if d400 > 0 else 'down'} {d400:+.2f}pp"
+                    f"大戶(400張+)比例{'上升' if d400 > 0 else '下降'} {d400:+.2f}pp"
                 )
             if d1000 is not None and d1000 != 0:
                 target = positive if d1000 > 0 else negative
                 target.append(
-                    f"1000+ lots holder ratio {'up' if d1000 > 0 else 'down'} {d1000:+.2f}pp"
+                    f"大戶(1000張+)比例{'上升' if d1000 > 0 else '下降'} {d1000:+.2f}pp"
                 )
             if d10 is not None and d10 != 0:
                 target = negative if d10 > 0 else positive
                 target.append(
-                    f"Small-holder ratio {'up' if d10 > 0 else 'down'} {d10:+.2f}pp"
+                    f"散戶(10張以下)比例{'上升' if d10 > 0 else '下降'} {d10:+.2f}pp"
                 )
         else:
-            missing.append("holding_shares_cache")
+            missing.append("大戶持股比例（無快取）")
     else:
-        missing.append("holding_shares_cache")
+        missing.append("大戶持股比例（無快取）")
 
-    with st.expander("Premium summary", expanded=True):
+    with st.expander("Premium 訊號摘要", expanded=True):
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Tier", state.tier.upper())
-        c2.metric("Runtime", "Degraded" if state.degraded else "Normal")
-        c3.metric("Positive", len(positive))
-        c4.metric("Negative", len(negative))
+        c1.metric("方案", state.tier.upper())
+        c2.metric("運作狀態", "降級" if state.degraded else "正常")
+        c3.metric("正向訊號", len(positive))
+        c4.metric("負向訊號", len(negative))
         if state.degraded:
-            st.warning(state.last_error or "Premium runtime degraded")
+            st.warning(state.last_error or "Premium runtime 已降級")
         if not state.user_enabled or state.tier == "free":
-            st.caption("Premium is disabled; summary uses local cache and page-loaded data only.")
+            st.caption("Premium 未啟用；摘要僅使用本機快取與頁面資料。")
 
         s1, s2, s3 = st.columns(3)
         with s1:
-            st.markdown("**Positive flags**")
+            st.markdown("**正向訊號**")
             if positive:
                 for item in positive:
                     st.write(f"- {item}")
             else:
-                st.caption("None")
+                st.caption("無")
         with s2:
-            st.markdown("**Negative flags**")
+            st.markdown("**負向 / 風險訊號**")
             if negative:
                 for item in negative:
                     st.write(f"- {item}")
             else:
-                st.caption("None")
+                st.caption("無")
         with s3:
-            st.markdown("**Missing fields**")
+            st.markdown("**資料不足**")
             if missing:
                 for item in sorted(set(missing)):
                     st.write(f"- {item}")
             else:
-                st.caption("None")
+                st.caption("無")
 
 
 def render_custom_preset_checks(
@@ -1347,28 +1386,30 @@ except Exception:
 # 法人資料（選填）
 inst_buying = {}
 if load_inst:
-    if _is_hist:
-        st.info("歷史模式已自動忽略法人買賣超，評分卡只使用價格衍生條件。")
-        load_inst = False
-    else:
-        _preset_inst_selection = _custom_preset.get("sb_inst_selection") or None
-        _preset_strict_days = int(_custom_preset.get("sb_strict_days") or 3)
-        _preset_agg_mode_label = str(_custom_preset.get("sb_agg_mode_label") or "")
-        _preset_agg_mode = "rolling_sum" if _preset_agg_mode_label != "連續 N 日每日 > 0" else "consecutive"
-        _preset_agg_days = int(_custom_preset.get("sb_agg_days") or 5)
-        with st.spinner("載入法人資料..."):
-            inst_buying = _load_inst(
-                target_id,
-                selected_institutions=_preset_inst_selection,
-                strict_days=_preset_strict_days,
-                agg_mode=_preset_agg_mode,
-                agg_days=_preset_agg_days,
-            )
+    _preset_inst_selection = _custom_preset.get("sb_inst_selection") or None
+    _preset_strict_days = int(_custom_preset.get("sb_strict_days") or 3)
+    _preset_agg_mode_label = str(_custom_preset.get("sb_agg_mode_label") or "")
+    _preset_agg_mode = "rolling_sum" if _preset_agg_mode_label != "連續 N 日每日 > 0" else "consecutive"
+    _preset_agg_days = int(_custom_preset.get("sb_agg_days") or 5)
+    with st.spinner("載入法人資料..."):
+        inst_buying = _load_inst(
+            target_id,
+            target_date=_active_date if _is_hist else None,
+            selected_institutions=_preset_inst_selection,
+            strict_days=_preset_strict_days,
+            agg_mode=_preset_agg_mode,
+            agg_days=_preset_agg_days,
+        )
+    if _is_hist and not inst_buying:
+        st.caption("歷史模式未找到截至基準日的法人快取資料，因此法人條件仍顯示未載入。")
 
 broker_main_force = pd.DataFrame()
-if not _is_hist:
-    broker_dates = df["date"].tail(30).tolist()
-    try:
+broker_dates = df["date"].tail(30).tolist()
+try:
+    if _is_hist:
+        from db.broker_cache import load_broker_main_force
+        broker_main_force = load_broker_main_force(target_id, broker_dates)
+    else:
         from data.finmind_client import get_broker_main_force_series
         with st.spinner("載入券商分點主力買賣超..."):
             broker_main_force = get_broker_main_force_series(
@@ -1376,18 +1417,21 @@ if not _is_hist:
                 broker_dates,
                 top_n=15,
             )
-    except Exception as e:
-        st.caption(f"券商分點主力買賣超暫時無法載入：{e}")
+except Exception as e:
+    st.caption(f"券商分點主力買賣超暫時無法載入：{e}")
 
-# 融資資料（歷史模式下 API 只回傳近期資料，跳過以免誤判）
+# 融資資料；歷史模式只讀本機快取，避免混入今日 API 結果
 _margin_trend, _margin_latest, _margin_prev = "flat", 0, 0
-if not _is_hist:
-    try:
-        from data.finmind_client import get_margin_trading, compute_margin_trend
+try:
+    from data.finmind_client import get_margin_trading, compute_margin_trend
+    if _is_hist:
+        from db.margin_cache import load_margin_for_date
+        _mdf = load_margin_for_date(target_id, _active_date, days=14)
+    else:
         _mdf = get_margin_trading(target_id, days=5)
-        _margin_trend, _margin_latest, _margin_prev = compute_margin_trend(_mdf)
-    except Exception:
-        pass
+    _margin_trend, _margin_latest, _margin_prev = compute_margin_trend(_mdf)
+except Exception:
+    pass
 
 # 分析
 sig = analyze_stock(df, inst_buying=inst_buying, precomputed=True,
@@ -1454,12 +1498,13 @@ st.markdown("---")
 col_score, col_chart = st.columns([0.4, 0.6])
 
 with col_score:
+    _has_inst = bool(inst_buying)
     if _strategy == "v3 均線突破版":
         st.subheader("📋 v3 條件評分卡")
-        render_scorecard_v3(sig, df)
+        render_scorecard_v3(sig, df, has_inst=_has_inst)
     else:
         st.subheader("📋 v4 條件評分卡")
-        render_scorecard(sig, df, ma_mode=_ma_breakout_mode)
+        render_scorecard(sig, df, ma_mode=_ma_breakout_mode, has_inst=_has_inst)
 
 with col_chart:
     st.subheader("📈 日K線圖")
@@ -1629,7 +1674,7 @@ if _is_hist:
             _fig.add_hline(
                 y=_base_close, line_dash="dash",
                 line_color="rgba(255,255,255,0.4)",
-                annotation_text=f"基準收盤 {_base_close}",
+                annotation_text=f"基準收盤 {_base_close:.2f}",
             )
             _fig.update_layout(
                 height=320, template="plotly_dark",
