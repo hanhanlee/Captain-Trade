@@ -401,6 +401,25 @@ class PrefetchWorker:
             return account_limit     # 重建模式：全速
         return self._trading_hourly_limit() if self._within_trading_hours() else account_limit
 
+    def _normal_fetch_interval(self) -> float:
+        """
+        依帳號每小時額度動態計算正常抓取間隔，讓額度上限成為真正的煞車。
+        目標使用 85% 額度，剩餘 15% 留給手動操作與即時查詢。
+        最小 0.5 秒，避免對 API 過於激進。
+
+        範例：
+          Sponsor 盤後  6000/hr → 3600/(6000*0.85) ≈ 0.71s → ~5100/hr
+          Sponsor 盤中  3000/hr → 3600/(3000*0.85) ≈ 1.41s → ~2550/hr
+          Free 盤後      600/hr → 3600/(600*0.85)  ≈ 7.06s → ~510/hr
+          Free 盤中      100/hr → 額度上限計數器才是煞車，間隔無意義
+        """
+        if self.rebuild_mode:
+            return FETCH_INTERVAL_REBUILD
+        limit = self._current_hourly_limit()
+        if limit <= 0:
+            return FETCH_INTERVAL_SEC
+        return max(0.5, 3600.0 / (limit * 0.85))
+
     def _hour_count(self) -> int:
         cutoff = datetime.now() - timedelta(hours=1)
         while self._hour_window and self._hour_window[0] < cutoff:
@@ -506,7 +525,7 @@ class PrefetchWorker:
                         set_fetch_status(sid, new_status)
                         logger.debug(f"死股回收：{sid} 仍無資料 → {new_status}")
                     self._record_request()
-                    self._wait_with_wake(FETCH_INTERVAL_SEC)
+                    self._wait_with_wake(self._normal_fetch_interval())
                 except Exception as e:
                     if _is_429(e):
                         self._pause_for_rate_limit()
@@ -1480,7 +1499,7 @@ class PrefetchWorker:
                 self.inst_supplementary_done += 1
                 # 動態縮小分母
                 if result == "ok":
-                    self._wait_with_wake(FETCH_INTERVAL_SEC)
+                    self._wait_with_wake(self._normal_fetch_interval())
             elif result == "no_update":
                 self._inst_no_update.add(stock_id)
                 self.inst_supplementary_total = max(0, self.inst_supplementary_total - 1)
@@ -1513,7 +1532,7 @@ class PrefetchWorker:
                 self.last_fetch_at = datetime.now()
                 self.margin_supplementary_done += 1
                 if result == "ok":
-                    self._wait_with_wake(FETCH_INTERVAL_SEC)
+                    self._wait_with_wake(self._normal_fetch_interval())
             elif result == "no_update":
                 self._margin_no_update.add(stock_id)
                 self.margin_supplementary_total = max(0, self.margin_supplementary_total - 1)
@@ -1732,8 +1751,7 @@ class PrefetchWorker:
                             self.last_fetch_at = datetime.now()
                             self.fund_queue_size = max(0, self.fund_queue_size - 1)
                             logger.debug(f"基本面已抓 {stock_id}，本小時 {self.hour_fetched}，剩餘 {self.fund_queue_size}")
-                            interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
-                            self._wait_with_wake(interval)
+                            self._wait_with_wake(self._normal_fetch_interval())
                         elif result == "rate_limit":
                             fund_hit_rate_limit = True
                             break
@@ -1764,8 +1782,7 @@ class PrefetchWorker:
                     if stock_id in needs_update_set:
                         self.queue_size = max(0, self.queue_size - 1)
                     logger.debug(f"已抓 {stock_id}，本小時 {self.hour_fetched}，待更新 {self.queue_size}")
-                    interval = FETCH_INTERVAL_REBUILD if self.rebuild_mode else FETCH_INTERVAL_SEC
-                    self._wait_with_wake(interval)
+                    self._wait_with_wake(self._normal_fetch_interval())
 
                 elif result == "suspended":
                     # 同一天先暫停重試，隔天再由 _get_stale_stocks 放回待更新清單
