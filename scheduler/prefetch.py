@@ -4,9 +4,9 @@
 FinMind 免費帳號限制：每小時 600 次（註冊會員）
 
 策略：
-  - 交易時間（09:00–13:30）：每小時上限 100 次，保留額度給手動操作
-  - 盤後/非交易時間（13:35+）：每小時上限 600 次，全力更新資料庫
-  - 每 5.8 秒抓一檔（≈ 620 次/小時，讓 600 次上限當煞車）
+  - 交易時間（09:00–13:30）：Free 每小時上限 100 次；Sponsor 每小時上限 3000 次
+  - 盤後/非交易時間（13:35+）：依帳號額度全力更新資料庫
+  - 每 5.8 秒抓一檔（≈ 620 次/小時），實際由帳號額度上限煞車
   - 優先順序：① 完全無快取 → ② 快取 > 5 天舊 → ③ 其餘
   - 遇到 429：暫停 20 分鐘後自動恢復；可手動提前恢復
 
@@ -22,8 +22,9 @@ from collections import deque
 logger = logging.getLogger(__name__)
 
 # ── 可調整參數 ─────────────────────────────────────────────────
-HOURLY_LIMIT_OFFPEAK      = 600   # 盤後/非交易時間每小時上限（用滿 FinMind 全額度）
-HOURLY_LIMIT_TRADING      = 100   # 交易時間每小時上限
+HOURLY_LIMIT_OFFPEAK      = 600   # Free 盤後/非交易時間每小時上限
+HOURLY_LIMIT_TRADING_FREE = 100   # Free 交易時間每小時上限
+HOURLY_LIMIT_TRADING_SPONSOR = 3000  # Sponsor 交易時間每小時上限
 HOURLY_LIMIT_SPONSOR      = 6000  # Sponsor 帳號盤後/重建可用額度
 FETCH_INTERVAL_SEC        = 5.8   # 正常模式每次請求間隔（秒）≈ 620 次/小時，讓上限當煞車
 FETCH_INTERVAL_REBUILD    = 2.0   # 重建模式間隔（秒）；讓 429 來當剎車
@@ -117,7 +118,7 @@ class PrefetchWorker:
         # 自適應開始時間：收盤後首筆成功更新的學習記錄
         self._today_first_update_recorded: bool = False   # 當天已記錄過則不重複寫
         self._today_record_date: date | None = None       # 用於每日重置上方旗標
-        # Yahoo Bridge：13:45 後補充今日收盤資料
+        # Yahoo Bridge：13:45 到 FinMind 全速窗口前短暫補充今日收盤資料
         self._yahoo_bridge_date: date | None = None       # 已執行 Yahoo Bridge 的日期
         self.yahoo_bridge_count: int = 0                  # 今日 Yahoo Bridge 已補充股票數
         self.yahoo_bridge_total: int = 0                  # 待抓總檔數
@@ -129,6 +130,9 @@ class PrefetchWorker:
         self.last_attempt_at: datetime | None = None
         self.last_attempt_result: str = ""   # normal/cached/suspended/delisted/rate_limit/error/no_update/ok
         self.last_attempt_stock: str = ""    # stock_id 或帶前綴的標籤，如 "[法人] 2330"
+        # FinMind 遠端狀態確認
+        self.last_finmind_check_at: datetime | None = None   # 最後一次確認 FinMind 最新交易日的時間
+        self.finmind_latest_date: date | None = None         # 當時確認到的最新交易日
         # Supplementary 附加資料（法人 + 融資）
         self.inst_supplementary_total: int = 0
         self.inst_supplementary_done: int = 0
@@ -221,13 +225,13 @@ class PrefetchWorker:
             pass
 
     def enable_rebuild_mode(self):
-        """啟用全速重建模式：額度開放至 600 次/小時，不受交易時間限制"""
+        """啟用全速重建模式：額度開放至帳號可用上限，不受交易時間限制"""
         self.rebuild_mode = True
         self.rebuild_completed_at = None
         self.initial_queue_size = 0
         self.current_stock = "[重建] 建立清單中"
         self._wake_event.set()
-        logger.info("PrefetchWorker 進入全速重建模式（600次/小時）")
+        logger.info("PrefetchWorker 進入全速重建模式（%s次/小時）", self._account_hourly_limit())
 
     def disable_rebuild_mode(self):
         """停止重建模式，恢復正常限速"""
@@ -374,11 +378,28 @@ class PrefetchWorker:
             pass
         return HOURLY_LIMIT_OFFPEAK
 
+    def _sponsor_enabled(self) -> bool:
+        try:
+            from data.finmind_client import get_premium_state, refresh_finmind_user_info
+            try:
+                state = refresh_finmind_user_info(force=False)
+            except Exception:
+                state = get_premium_state()
+            return bool(state.user_enabled) and str(state.tier).lower() == "sponsor"
+        except Exception:
+            return False
+
+    def _trading_hourly_limit(self) -> int:
+        if not self._sponsor_enabled():
+            return HOURLY_LIMIT_TRADING_FREE
+        account_limit = self._account_hourly_limit()
+        return min(account_limit, HOURLY_LIMIT_TRADING_SPONSOR)
+
     def _current_hourly_limit(self) -> int:
         account_limit = self._account_hourly_limit()
         if self.rebuild_mode or self.backtest_rebuild_mode:
             return account_limit     # 重建模式：全速
-        return HOURLY_LIMIT_TRADING if self._within_trading_hours() else account_limit
+        return self._trading_hourly_limit() if self._within_trading_hours() else account_limit
 
     def _hour_count(self) -> int:
         cutoff = datetime.now() - timedelta(hours=1)
@@ -1112,7 +1133,10 @@ class PrefetchWorker:
             # 15:xx 試失敗（FinMind 尚未更新）的股票，18:xx 之後會自動重試
             suspended_today = set(get_suspended_stocks(today_only=True, recent_hours=3))
             summary = get_cache_summary()
-            cutoff = _latest_trading_day().isoformat()
+            _ltd = _latest_trading_day()
+            self.last_finmind_check_at = datetime.now()
+            self.finmind_latest_date = _ltd
+            cutoff = _ltd.isoformat()
 
             if summary.empty:
                 missing = sorted(all_ids - self._skip_stocks)
@@ -1144,14 +1168,20 @@ class PrefetchWorker:
         """判斷是否需要執行 Yahoo Bridge 補充今日收盤資料"""
         now = datetime.now()
         today = now.date()
+        from datetime import time as _time
 
         # 已在今日執行過
         if self._yahoo_bridge_date == today:
             return False
 
         # 13:45 之前不執行（收盤 13:30 + 15 分鐘 yfinance 延遲緩衝）
-        from datetime import time as _time
         if now.time() < _time(13, 45):
+            return False
+
+        # Yahoo Bridge 只作為早盤後、FinMind 尚未進入穩定盤後更新窗口的短暫橋接。
+        # 一旦到達工作器學習到的全速 FinMind 開始時間，就應回到 FinMind 補抓，
+        # 避免 16:00 之後仍大量打 Yahoo Finance。
+        if now.time() >= self._get_trading_end_time():
             return False
 
         # 週末不執行
@@ -1161,6 +1191,14 @@ class PrefetchWorker:
         # 手動休市模式不執行
         if self._is_market_holiday():
             return False
+
+        # 若 FinMind 已能確認今日為最新交易日，就不需要 Yahoo Bridge。
+        try:
+            if _latest_trading_day() >= today:
+                return False
+        except Exception:
+            # 查詢失敗時仍允許在早期橋接窗口使用 Yahoo。
+            pass
 
         return True
 
@@ -1183,7 +1221,8 @@ class PrefetchWorker:
 
     def _run_yahoo_bridge_phase(self):
         """
-        Yahoo Bridge 階段：13:45 之後批次從 Yahoo Finance 補充今日收盤資料。
+        Yahoo Bridge 階段：13:45 到 FinMind 全速窗口前，短暫從 Yahoo Finance
+        批次補充今日收盤資料。
         使用 INSERT OR IGNORE，確保後續 FinMind 資料可覆蓋，不影響法人/融資欄位。
         """
         today = date.today()
@@ -1613,25 +1652,9 @@ class PrefetchWorker:
                     self._wait_with_wake(5)
                 continue
 
-            # ── Yahoo Bridge：13:45 後補充今日收盤資料（每日一次）─────
+            # ── Yahoo Bridge：13:45 到 FinMind 全速窗口前補充今日收盤（每日一次）─────
             if self._should_run_yahoo_bridge():
                 self._run_yahoo_bridge_phase()
-                continue
-
-            if self.premium_broker_backfill_mode and not self._within_trading_hours():
-                result = self.prefetch_market_broker_by_date(
-                    days=self.premium_broker_backfill_days
-                )
-                if result.get("ok") and int(result.get("total") or 0) == 0:
-                    self.premium_broker_backfill_mode = False
-                    self.premium_broker_backfill_completed_at = datetime.now()
-                    try:
-                        from db.settings import set_premium_broker_backfill_enabled
-                        set_premium_broker_backfill_enabled(False)
-                    except Exception:
-                        pass
-                    self.premium_last_summary = "broker backfill complete: no missing targets"
-                self._wait_with_wake(5)
                 continue
 
             # ── 一般模式：抓取近期價格資料 ─────────────────────────
@@ -1670,6 +1693,23 @@ class PrefetchWorker:
                     continue
 
                 self._try_recover_dead_stocks()
+
+                # Premium broker backfill（OHLCV + supplementary 完成後才執行，避免堵住收盤資料更新）
+                if self.premium_broker_backfill_mode and not self._within_trading_hours():
+                    result = self.prefetch_market_broker_by_date(
+                        days=self.premium_broker_backfill_days
+                    )
+                    if result.get("ok") and int(result.get("total") or 0) == 0:
+                        self.premium_broker_backfill_mode = False
+                        self.premium_broker_backfill_completed_at = datetime.now()
+                        try:
+                            from db.settings import set_premium_broker_backfill_enabled
+                            set_premium_broker_backfill_enabled(False)
+                        except Exception:
+                            pass
+                        self.premium_last_summary = "broker backfill complete: no missing targets"
+                    self._wait_with_wake(5)
+                    continue
 
                 fund_ids = self._get_funds_needing_fetch()
                 self.fund_queue_size = len(fund_ids)
@@ -1822,6 +1862,8 @@ class PrefetchWorker:
             "last_attempt_at":             self.last_attempt_at,
             "last_attempt_result":         self.last_attempt_result,
             "last_attempt_stock":          self.last_attempt_stock,
+            "last_finmind_check_at":       self.last_finmind_check_at,
+            "finmind_latest_date":         self.finmind_latest_date,
             "inst_no_update_count":        len(self._inst_no_update),
             "margin_no_update_count":      len(self._margin_no_update),
             "inst_error_count":            len(self._inst_error),
@@ -1832,6 +1874,7 @@ class PrefetchWorker:
             "inst_supplementary_done":     self.inst_supplementary_done,
             "margin_supplementary_total":  self.margin_supplementary_total,
             "margin_supplementary_done":   self.margin_supplementary_done,
+            "supplementary_date":          self._supplementary_date,
             "supplementary_completed_at":  self.supplementary_completed_at,
         }
 

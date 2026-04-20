@@ -238,8 +238,8 @@ if new_fy:
 @st.cache_resource
 def _get_worker():
     try:
-        from scheduler.prefetch import get_worker
-        return get_worker()
+        from modules.worker_runtime import get_prefetch_worker
+        return get_prefetch_worker(auto_start=True)
     except Exception:
         return None
 
@@ -272,6 +272,8 @@ st.markdown('<div class="sec-header">系統狀態</div>', unsafe_allow_html=True
 # ── 狀態卡 ────────────────────────────────────────────────────────
 _cur_stock = s.get("current_stock", "")
 _yb_prog   = s.get("yahoo_bridge_in_progress", False)
+_hourly_limit = int(s.get("hourly_limit") or 0)
+_limit_text = f"{_hourly_limit:,} 次/小時" if _hourly_limit else "目前帳號上限"
 
 if s.get("backtest_rebuild_mode"):
     bt_q = s.get("backtest_queue_size", 0)
@@ -281,7 +283,7 @@ if s.get("backtest_rebuild_mode"):
     _sub  = f"待處理 {bt_q} 檔　完成後自動退出重建模式"
 elif s.get("rebuild_mode"):
     _cls, _icon = "error", "🔴"
-    _main = "全速重建模式 — API 額度全開（600 次/小時）"
+    _main = f"全速重建模式 — API 額度全開（{_limit_text}）"
     _sub  = "請勿進行手動掃描，避免額度衝突"
 elif not s["running"]:
     _cls, _icon = "error", "🔴"
@@ -297,7 +299,7 @@ elif s.get("pause_remaining_sec", 0) > 0:
 elif s["paused_for_market"]:
     _cls, _icon = "warn", "🟡"
     _main = "交易時間降速模式（09:00–盤後）"
-    _sub  = "每小時上限 100 次，保留額度給手動操作"
+    _sub  = f"每小時上限 {_limit_text}，保留額度給手動操作與即時查詢"
 else:
     _ltd          = s.get("latest_trading_day")
     _yb_done      = s.get("yahoo_bridge_done", False)
@@ -376,9 +378,11 @@ else:
         _sub  = f"核心資料由 Yahoo 補充（基準日 {_ltd}），法人/融資待 FinMind 上線後補充"
 
     elif _day_ctx["is_waiting_today"] and datetime.now().hour >= 15:
+        _fm_check_s = s.get("last_finmind_check_at")
+        _fm_check_disp = _fm_check_s.strftime("%H:%M:%S") if _fm_check_s else "—"
         _cls, _icon = "info", "🔵"
         _main = "等待 FinMind 更新今日資料"
-        _sub  = "FinMind 通常 15:30–19:00 發布，Worker 每輪自動重查，無需手動操作"
+        _sub  = f"FinMind 通常 15:30–19:00 發布，Worker 每輪自動重查　｜　最後確認 {_fm_check_disp}"
 
     elif _queue > 0:
         _cls, _icon = "ok", "🟢"
@@ -388,7 +392,7 @@ else:
     else:
         _cls, _icon = "ok", "🟢"
         _main = "工作器正常運行中"
-        _sub  = "盤後/非交易時間，每小時上限 600 次"
+        _sub  = f"目前每小時上限 {_limit_text}"
 
 st.markdown(f"""
 <div class="status-card {_cls}">
@@ -659,12 +663,44 @@ _w_inst_done  = s.get("inst_supplementary_done",   0)
 _w_inst_total = s.get("inst_supplementary_total",  0)
 _w_marg_done  = s.get("margin_supplementary_done", 0)
 _w_marg_total = s.get("margin_supplementary_total",0)
+_w_supp_date = s.get("supplementary_date")
+_w_supp_date_str = _w_supp_date.isoformat() if hasattr(_w_supp_date, "isoformat") else str(_w_supp_date or "")
+
+_inst_live = _w_inst_total > 0 and _w_supp_date_str == _ref_str
+_margin_live = _w_marg_total > 0 and _w_supp_date_str == _ref_str
+_inst_display_done = _w_inst_done if _inst_live else _inst_done_ref
+_inst_display_total = _w_inst_total if _inst_live else _inst_active
+_margin_display_done = _w_marg_done if _margin_live else _margin_done_ref
+_margin_display_total = _w_marg_total if _margin_live else _margin_active
+_inst_display_pending = max(_inst_display_total - _inst_display_done, 0)
+_margin_display_pending = max(_margin_display_total - _margin_display_done, 0)
+
+_worker_queue = int(s.get("queue_size") or 0)
+_last_fm_check = s.get("last_finmind_check_at")
+_fm_latest = s.get("finmind_latest_date")
+_fm_not_updated = (
+    _fm_latest is not None
+    and _fm_latest < date.today()
+    and not _ref_ctx.get("is_weekend")
+    and not _ref_ctx.get("manual_closed")
+)
+if _worker_queue > 0:
+    _ohlcv_sub = f"Worker 本輪待處理 {_worker_queue} 檔"
+elif _fm_not_updated and _last_fm_check:
+    _fm_check_str = _last_fm_check.strftime("%H:%M:%S")
+    _ohlcv_sub = f"FinMind 尚未更新今日資料　最後確認 {_fm_check_str}"
+elif _ohlcv_pending > 0 and s.get("running"):
+    _ohlcv_sub = "DB 仍有待更新，Worker 正在巡檢或建立下一輪清單"
+else:
+    _ohlcv_sub = "Worker 本輪無待處理"
 
 _ohlcv_cls  = "warn" if _ohlcv_pending > 20 else ("ok" if _ohlcv_pending == 0 else "")
-_inst_cls   = "warn" if (_inst_pending or 0) > 20 else ("ok" if (_inst_pending or 0) == 0 else "")
-_margin_cls = "warn" if (_margin_pending or 0) > 20 else ("ok" if (_margin_pending or 0) == 0 else "")
-_inst_val   = str(_inst_pending)   if _inst_pending   is not None else "—"
-_margin_val = str(_margin_pending) if _margin_pending is not None else "—"
+_inst_cls   = "warn" if _inst_display_pending > 20 else ("ok" if _inst_display_pending == 0 else "")
+_margin_cls = "warn" if _margin_display_pending > 20 else ("ok" if _margin_display_pending == 0 else "")
+_inst_val   = str(_inst_display_pending) if _inst_pending is not None or _inst_live else "—"
+_margin_val = str(_margin_display_pending) if _margin_pending is not None or _margin_live else "—"
+_inst_sub_prefix = "本輪已完成" if _inst_live else "DB 已完成"
+_margin_sub_prefix = "本輪已完成" if _margin_live else "DB 已完成"
 
 st.markdown(f"""
 <div style="font-size:10.5px; color:var(--text-color); opacity:0.42;
@@ -677,17 +713,17 @@ st.markdown(f"""
   <div class="metric-box {_ohlcv_cls}">
     <div class="mb-label">核心 OHLCV</div>
     <div class="mb-val">{_ohlcv_pending}</div>
-    <div class="mb-sub">Worker 快照 {s['queue_size']} 檔</div>
+    <div class="mb-sub">{_ohlcv_sub}</div>
   </div>
   <div class="metric-box {_inst_cls}">
     <div class="mb-label">法人資料</div>
     <div class="mb-val">{_inst_val}</div>
-    <div class="mb-sub">已完成 {_inst_done_ref} / {_inst_active} 檔</div>
+    <div class="mb-sub">{_inst_sub_prefix} {_inst_display_done} / {_inst_display_total} 檔</div>
   </div>
   <div class="metric-box {_margin_cls}">
     <div class="mb-label">融資融券</div>
     <div class="mb-val">{_margin_val}</div>
-    <div class="mb-sub">已完成 {_margin_done_ref} / {_margin_active} 檔</div>
+    <div class="mb-sub">{_margin_sub_prefix} {_margin_display_done} / {_margin_display_total} 檔</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -719,11 +755,11 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
     except Exception:
         _core_done = 0
 
-    # Worker supplementary 計數器比 DB date 查詢更即時（不受法人/融資發布時間落差影響）
-    _inst_done  = _inst_done_ref
-    _inst_total = _inst_active
-    _margin_done  = _margin_done_ref
-    _margin_total = _margin_active
+    # Worker supplementary 計數器比 DB date 查詢更即時；若本輪正在跑，進度條顯示本輪 done/total。
+    _inst_done  = _inst_display_done
+    _inst_total = _inst_display_total
+    _margin_done  = _margin_display_done
+    _margin_total = _margin_display_total
     _core_pct      = _core_done / _active_total if _active_total else 0
     _progress_ctx = _market_day_context(s.get("latest_trading_day"))
     _finmind_updated = _progress_ctx["is_today_data"]
@@ -741,7 +777,9 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
         st.progress(pct, text=text)
 
     _ohlcv_queue_left = s.get("queue_size", 0)
-    if _is_waiting_now:
+    if _inst_live or _margin_live:
+        _supp_note = "補抓中，依 Worker 本輪進度顯示"
+    elif _is_waiting_now:
         _supp_note = "⏳ 等待 FinMind 盤後更新（通常 17–19 時）"
     elif _progress_ctx["is_weekend"]:
         _supp_note = "非交易日，使用最近交易日資料"
@@ -754,8 +792,13 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
     else:
         _supp_note = ""
 
-    _pbar("核心資料（OHLCV）", _core_done, _active_total,
-          note="Yahoo Bridge 已補充" if s.get("yahoo_bridge_done") and not _finmind_updated else "")
+    _fm_check_note = s.get("last_finmind_check_at")
+    _ohlcv_note = (
+        "Yahoo Bridge 已補充" if s.get("yahoo_bridge_done") and not _finmind_updated
+        else (f"FinMind 尚未更新　最後確認 {_fm_check_note.strftime('%H:%M:%S')}"
+              if _fm_not_updated and _fm_check_note else "")
+    )
+    _pbar("核心資料（OHLCV）", _core_done, _active_total, note=_ohlcv_note)
     _pbar("法人資料",     _inst_done,   _inst_total,   note=_supp_note)
     _pbar("融資融券資料", _margin_done, _margin_total, note=_supp_note)
 
@@ -1232,7 +1275,7 @@ with st.expander("🔧 手動補抓 & 基本面快取", expanded=False):
 with st.expander("🔨 維護操作（重建資料庫）", expanded=False):
     # 全速重建
     st.markdown("**全速重建本機資料庫**")
-    st.caption("適用：首次安裝、資料庫損毀、長時間未更新。API 額度全開至 600 次/小時，建議睡前執行。")
+    st.caption(f"適用：首次安裝、資料庫損毀、長時間未更新。API 額度全開至 {_limit_text}，建議睡前執行。")
 
     is_rebuild    = s.get("rebuild_mode", False)
     completed_at  = s.get("rebuild_completed_at")
@@ -1246,7 +1289,7 @@ with st.expander("🔨 維護操作（重建資料庫）", expanded=False):
         if iq2 > 0:
             rp2 = min((iq2 - rq2) / iq2, 1.0)
             st.progress(rp2, text=f"全速重建進度：{iq2-rq2}/{iq2} 檔（{rp2*100:.0f}%）")
-        st.error("重建模式進行中，API 額度全開（600次/小時）— 請勿使用選股雷達等手動功能")
+        st.error(f"重建模式進行中，API 額度全開（{_limit_text}）— 請勿使用選股雷達等手動功能")
         if st.button("⏹ 停止重建模式，恢復正常限速", type="secondary"):
             if hasattr(worker, "disable_rebuild_mode"): worker.disable_rebuild_mode()
             else: worker.rebuild_mode = False
@@ -1258,7 +1301,7 @@ with st.expander("🔨 維護操作（重建資料庫）", expanded=False):
             if st.button("🔨 重建資料庫", type="secondary"):
                 st.session_state.rebuild_confirm = True; st.rerun()
         else:
-            st.warning("⚠️ 重建期間 API 全開（600次/小時），選股掃描會與背景搶額度。"
+            st.warning(f"⚠️ 重建期間 API 全開（{_limit_text}），選股掃描會與背景搶額度。"
                         "全市場約 950 檔，完整重建約需 1.5–2 小時。")
             rc1, rc2, _ = st.columns([1.2, 1, 5])
             if rc1.button("✅ 確認，全速重建", type="primary", use_container_width=True):
