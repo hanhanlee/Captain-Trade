@@ -26,6 +26,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
+FINMIND_STOCK_TICK_SNAPSHOT_API = "https://api.finmindtrade.com/api/v4/taiwan_stock_tick_snapshot"
 FINMIND_USER_INFO_API = "https://api.web.finmindtrade.com/v2/user_info"
 TOKEN = os.getenv("FINMIND_TOKEN", "")
 
@@ -65,6 +66,7 @@ _PREMIUM_DATASETS = {
     "TaiwanStockPriceLimit",
     "TaiwanStockKBar",
     "TaiwanStockPriceTick",
+    "taiwan_stock_tick_snapshot",
 }
 
 _FUNDAMENTAL_DATASETS = {
@@ -336,6 +338,46 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
         raise RuntimeError(f"FinMind API error: {data.get('msg', 'unknown')}")
 
     return pd.DataFrame(data.get("data", []))
+
+
+def get_realtime_stock_snapshot(stock_id: str) -> dict | None:
+    """
+    Fetch FinMind Sponsor real-time stock snapshot.
+
+    This endpoint is separate from /api/v4/data and updates about every 10
+    seconds according to FinMind's official documentation.
+    """
+    _premium_gate("taiwan_stock_tick_snapshot")
+    _wait_for_rate_limit()
+
+    if not TOKEN:
+        raise RuntimeError("FINMIND_TOKEN is not configured")
+
+    resp = requests.get(
+        FINMIND_STOCK_TICK_SNAPSHOT_API,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        params={"data_id": str(stock_id).strip()},
+        timeout=10,
+    )
+    if resp.status_code in (402, 403):
+        _set_premium_degraded(f"taiwan_stock_tick_snapshot HTTP {resp.status_code}")
+    resp.raise_for_status()
+
+    data = resp.json()
+    status = data.get("status")
+    if status is not None and str(status) != "200":
+        if status in (402, 403):
+            _set_premium_degraded(
+                f"taiwan_stock_tick_snapshot API status {status}: {data.get('msg', '')}"
+            )
+        raise RuntimeError(f"FinMind realtime API error: {data.get('msg', 'unknown')}")
+
+    rows = data.get("data", [])
+    if not rows:
+        return None
+    if isinstance(rows, dict):
+        return rows
+    return rows[0]
 
 
 STOCK_INFO_TTL_DAYS = 30  # 股票清單快取有效期（天）

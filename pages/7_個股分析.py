@@ -13,6 +13,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
+import time
 
 from db.database import init_db
 from db.price_cache import load_prices
@@ -65,6 +66,102 @@ def _load_inst(
         )
     except Exception:
         return {}
+
+
+def _as_float(value):
+    try:
+        if value in (None, ""):
+            return None
+        num = float(value)
+        if pd.isna(num):
+            return None
+        return num
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_price(value, digits: int = 2) -> str:
+    num = _as_float(value)
+    if num is None:
+        return "無資料"
+    return f"{num:.{digits}f}"
+
+
+def _fmt_volume(value) -> str:
+    num = _as_float(value)
+    if num is None:
+        return "無資料"
+    if num >= 1000:
+        return f"{num / 1000:.0f} 張"
+    return f"{num:.0f} 股"
+
+
+def _load_realtime_snapshot(stock_id: str, *, force: bool = False, ttl_sec: int = 30) -> tuple[dict | None, str]:
+    """
+    Load Sponsor real-time quote snapshot with a short Streamlit session TTL.
+    Avoids burning quota on every rerun while still allowing manual refresh.
+    """
+    cache_key = f"realtime_snapshot:{stock_id}"
+    now = time.time()
+    cached = st.session_state.get(cache_key)
+    if (
+        not force
+        and isinstance(cached, dict)
+        and now - float(cached.get("fetched_at", 0)) < ttl_sec
+    ):
+        return cached.get("data"), "cache"
+
+    try:
+        from data.finmind_client import get_realtime_stock_snapshot
+
+        data = get_realtime_stock_snapshot(stock_id)
+        st.session_state[cache_key] = {
+            "fetched_at": now,
+            "data": data,
+        }
+        return data, "live"
+    except Exception as exc:
+        if cached and isinstance(cached, dict):
+            return cached.get("data"), f"stale: {exc}"
+        return None, str(exc)
+
+
+def render_realtime_snapshot(stock_id: str, *, is_historical: bool = False) -> None:
+    if is_historical:
+        return
+
+    st.subheader("盤中即時資訊")
+    force = st.button("更新即時報價", key=f"refresh_realtime_{stock_id}")
+    snapshot, source = _load_realtime_snapshot(stock_id, force=force)
+
+    if not snapshot:
+        st.caption(f"目前無法取得 FinMind Sponsor 即時快照：{source}")
+        return
+
+    close = _as_float(snapshot.get("close"))
+    change_price = _as_float(snapshot.get("change_price"))
+    change_rate = _as_float(snapshot.get("change_rate"))
+    quote_time = str(snapshot.get("date") or "").strip()
+    source_label = "即時查詢" if source == "live" else "短暫快取"
+    if source.startswith("stale:"):
+        source_label = "沿用上一筆快取"
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("最新成交價", _fmt_price(close))
+    c2.metric(
+        "漲跌",
+        f"{change_rate:+.2f}%" if change_rate is not None else "無資料",
+        delta=f"{change_price:+.2f} 元" if change_price is not None else None,
+        delta_color="normal" if (change_price or 0) >= 0 else "inverse",
+    )
+    c3.metric("買 / 賣", f"{_fmt_price(snapshot.get('buy_price'))} / {_fmt_price(snapshot.get('sell_price'))}")
+    c4.metric("累積量", _fmt_volume(snapshot.get("total_volume")))
+
+    d1, d2, d3 = st.columns(3)
+    d1.metric("開盤", _fmt_price(snapshot.get("open")))
+    d2.metric("最高 / 最低", f"{_fmt_price(snapshot.get('high'))} / {_fmt_price(snapshot.get('low'))}")
+    d3.metric("量比", _fmt_price(snapshot.get("volume_ratio")))
+    st.caption(f"FinMind Sponsor 即時快照，來源：{source_label}" + (f"；資料時間：{quote_time}" if quote_time else ""))
 
 
 def _to_bool(value, default=False) -> bool:
@@ -1649,6 +1746,10 @@ if _heat["available"]:
     )
 else:
     v2.metric("ATR 過熱距離", "資料不足")
+
+st.markdown("---")
+
+render_realtime_snapshot(target_id, is_historical=_is_hist)
 
 st.markdown("---")
 
