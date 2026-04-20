@@ -403,22 +403,25 @@ class PrefetchWorker:
 
     def _normal_fetch_interval(self) -> float:
         """
-        依帳號每小時額度動態計算正常抓取間隔，讓額度上限成為真正的煞車。
-        目標使用 85% 額度，剩餘 15% 留給手動操作與即時查詢。
-        最小 0.5 秒，避免對 API 過於激進。
+        盤後：最小 0.1s sleep，讓每小時額度計數器當唯一煞車。
+          FinMind 網路延遲 ~0.5s + 0.1s sleep ≈ 0.6s/檔 → ~6000/hr 自然到頂
+          Sponsor 6000/hr：2000 檔約 20 分鐘跑完
 
-        範例：
-          Sponsor 盤後  6000/hr → 3600/(6000*0.85) ≈ 0.71s → ~5100/hr
-          Sponsor 盤中  3000/hr → 3600/(3000*0.85) ≈ 1.41s → ~2550/hr
-          Free 盤後      600/hr → 3600/(600*0.85)  ≈ 7.06s → ~510/hr
-          Free 盤中      100/hr → 額度上限計數器才是煞車，間隔無意義
+        交易時間：目標使用 85% 額度，留 15% 給手動操作與即時查詢。
+          Sponsor 3000/hr → ~1.41s → ~2550/hr
+          Free      100/hr → 額度計數器才是煞車
+
+        重建模式：使用 FETCH_INTERVAL_REBUILD（讓 429 當煞車）
         """
         if self.rebuild_mode:
             return FETCH_INTERVAL_REBUILD
-        limit = self._current_hourly_limit()
-        if limit <= 0:
-            return FETCH_INTERVAL_SEC
-        return max(0.5, 3600.0 / (limit * 0.85))
+        if self._within_trading_hours():
+            limit = self._current_hourly_limit()
+            if limit <= 0:
+                return FETCH_INTERVAL_SEC
+            return max(0.5, 3600.0 / (limit * 0.85))
+        # 盤後/非交易時間：全速，額度計數器自然收斂
+        return 0.1
 
     def _hour_count(self) -> int:
         cutoff = datetime.now() - timedelta(hours=1)
