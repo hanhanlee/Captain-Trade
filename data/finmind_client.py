@@ -508,65 +508,57 @@ def _get_broker_trading_daily_report_raw(stock_id: str, trade_date: str) -> pd.D
 
 
 def _get_broker_trading_daily_report_secid_agg_raw(
-    stock_id: str,
+    data_id: str,
     start_date: str,
     end_date: str = "",
     securities_trader_id: str | None = None,
 ) -> pd.DataFrame:
-    """
-    Fetch sponsor broker SecId aggregation through dedicated special endpoint.
+    """Fetch sponsor broker SecId aggregation from the dedicated special endpoint.
     
     Official endpoint: /api/v4/taiwan_stock_trading_daily_report_secid_agg
-    Parameters: stock_id, start_date, end_date (optional), securities_trader_id (optional)
-    """
-    _check_premium("TaiwanStockTradingDailyReportSecIdAgg")
     
-    params = {
-        "stock_id": str(stock_id).strip(),
-        "start_date": str(start_date)[:10],
-    }
+    Args:
+        data_id: Stock ID (replaces generic "stock_id" param name to match official docs)
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD), optional
+        securities_trader_id: Specific securities trader ID, optional
+    """
+    _premium_gate("TaiwanStockTradingDailyReportSecIdAgg")
+    _wait_for_rate_limit()
+
+    if not TOKEN:
+        raise RuntimeError("FINMIND_TOKEN is not configured")
+
+    params = {"data_id": str(data_id).strip(), "start_date": str(start_date)[:10]}
     if end_date:
         params["end_date"] = str(end_date)[:10]
     if securities_trader_id:
         params["securities_trader_id"] = str(securities_trader_id).strip()
-    
-    headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
-    
-    try:
-        resp = requests.get(
-            FINMIND_BROKER_DAILY_REPORT_SECID_AGG_API,
-            params=params,
-            headers=headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        
-        if data.get("status") == 200 and data.get("data"):
-            df = pd.DataFrame(data["data"])
-            _record_request(_REQUEST_KIND_DATA)
-            return df
-        else:
-            logger.warning(
-                "TaiwanStockTradingDailyReportSecIdAgg returned empty or error: %s",
-                data.get("message", "unknown"),
+
+    _note_http_request(kind=_REQUEST_KIND_DATA)
+    resp = requests.get(
+        FINMIND_BROKER_DAILY_REPORT_SECID_AGG_API,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        params=params,
+        timeout=30,
+    )
+    if resp.status_code in (402, 403):
+        _set_premium_degraded(f"TaiwanStockTradingDailyReportSecIdAgg HTTP {resp.status_code}")
+    resp.raise_for_status()
+
+    data = resp.json()
+    status = data.get("status")
+    if status is not None and str(status) != "200":
+        if status in (402, 403):
+            _set_premium_degraded(
+                f"TaiwanStockTradingDailyReportSecIdAgg API status "
+                f"{status}: {data.get('msg', '')}"
             )
-            return pd.DataFrame()
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            _record_rate_limit_hit()
-            raise RateLimitError(str(e))
-        logger.warning(
-            "TaiwanStockTradingDailyReportSecIdAgg HTTP error: %s",
-            e,
+        raise RuntimeError(
+            f"FinMind broker daily report secid agg error: {data.get('msg', 'unknown')}"
         )
-        return pd.DataFrame()
-    except Exception as e:
-        logger.warning(
-            "TaiwanStockTradingDailyReportSecIdAgg fetch error: %s",
-            e,
-        )
-        return pd.DataFrame()
+
+    return pd.DataFrame(data.get("data", []))
 
 
 def get_realtime_stock_snapshot(stock_id: str) -> dict | None:
@@ -787,7 +779,7 @@ def get_broker_trading_daily_report_secid_agg(
 ) -> pd.DataFrame:
     """Return broker daily aggregated branch stats via an explicit dataset wrapper."""
     df = _get_broker_trading_daily_report_secid_agg_raw(
-        stock_id=stock_id,
+        data_id=stock_id,
         start_date=start_date,
         end_date=end_date,
     )
