@@ -307,22 +307,33 @@ else:
     _finmind_ok   = _day_ctx["is_today_data"]
     _queue        = s.get("queue_size", 0)
     _fund_q       = s.get("fund_queue_size", 0)
+    _cur_inst     = s.get("current_inst_stock", "")
+    _cur_margin   = s.get("current_margin_stock", "")
+    _inst_d       = s.get("inst_supplementary_done", 0)
+    _inst_t       = s.get("inst_supplementary_total", 0) or "?"
+    _marg_d       = s.get("margin_supplementary_done", 0)
+    _marg_t       = s.get("margin_supplementary_total", 0) or "?"
 
-    # 判斷當前工作階段
-    if _cur_stock.startswith("[法人]"):
-        _w_phase = "inst"
-    elif _cur_stock.startswith("[融資]"):
-        _w_phase = "margin"
-    elif _cur_stock.startswith("[基本面]"):
+    # 判斷當前工作階段（主執行緒）
+    if _cur_stock.startswith("[基本面]"):
         _w_phase = "fund"
     elif _cur_stock and not _cur_stock.startswith("["):
-        # 純股票代碼：queue > 0 表示真正在更新；queue = 0 則是在巡檢快取命中的股票。
         _w_phase = "ohlcv" if _queue > 0 else "cache_check"
     else:
         _w_phase = "idle"
 
+    # 平行執行緒是否正在跑法人/融資
+    _inst_running   = bool(_cur_inst)
+    _margin_running = bool(_cur_margin)
+    _supp_running   = _inst_running or _margin_running
+
     def _strip_prefix(s_: str) -> str:
         return s_.split("] ", 1)[-1] if "] " in s_ else s_
+
+    def _supp_detail() -> str:
+        inst_cur  = f"法人：{_inst_d}/{_inst_t}（{_strip_prefix(_cur_inst)}）" if _inst_running else f"法人：{_inst_d}/{_inst_t}"
+        marg_cur  = f"融資：{_marg_d}/{_marg_t}（{_strip_prefix(_cur_margin)}）" if _margin_running else f"融資：{_marg_d}/{_marg_t}"
+        return f"{inst_cur}　{marg_cur}"
 
     if _yb_prog:
         bd, bt = s.get("yahoo_bridge_batch_done", 0), s.get("yahoo_bridge_batch_total", 0)
@@ -333,23 +344,23 @@ else:
     elif _w_phase == "ohlcv":
         _cls, _icon = "ok", "🟢"
         _main = f"OHLCV 核心價格更新中（待完成 {_queue} 檔）"
-        _sub  = f"正在抓取：{_cur_stock}　｜　完成後自動開始法人/融資補充"
+        if _supp_running:
+            _sub = f"OHLCV：{_cur_stock}　｜　{_supp_detail()}"
+        else:
+            _sub = f"正在抓取：{_cur_stock}　｜　法人/融資平行更新中"
 
     elif _w_phase == "cache_check":
         _cls, _icon = "ok", "🟢"
         _main = "快取巡檢中"
-        _sub  = f"核心 OHLCV 待更新 0 檔　｜　正在檢查：{_cur_stock}"
+        if _supp_running:
+            _sub = f"OHLCV 全部就緒　｜　{_supp_detail()}"
+        else:
+            _sub = f"核心 OHLCV 待更新 0 檔　｜　正在檢查：{_cur_stock}"
 
-    elif _w_phase in ("inst", "margin"):
-        _inst_d = s.get("inst_supplementary_done", 0)
-        _inst_t = s.get("inst_supplementary_total", 0) or "?"
-        _marg_d = s.get("margin_supplementary_done", 0)
-        _marg_t = s.get("margin_supplementary_total", 0) or "?"
-        _phase_name = "法人資料" if _w_phase == "inst" else "融資融券"
+    elif _supp_running:
         _cls, _icon = "ok", "🟢"
-        _main = f"附加資料補充中（{_phase_name}）"
-        _sub  = (f"法人：{_inst_d}/{_inst_t}　融資：{_marg_d}/{_marg_t}"
-                 f"　｜　正在抓取：{_strip_prefix(_cur_stock)}")
+        _main = "附加資料補充中（法人 + 融資融券）"
+        _sub  = _supp_detail()
 
     elif _w_phase == "fund":
         _cls, _icon = "ok", "🟢"
@@ -387,7 +398,7 @@ else:
     elif _queue > 0:
         _cls, _icon = "ok", "🟢"
         _main = f"OHLCV 核心價格更新中（待完成 {_queue} 檔）"
-        _sub  = "等待下一輪抓取　｜　完成後自動開始法人/融資補充"
+        _sub  = f"等待下一輪抓取　｜　法人/融資平行補充中（{_supp_detail()}）"
 
     else:
         _cls, _icon = "ok", "🟢"
@@ -447,17 +458,17 @@ if _la_at and _la_stock:
     _ago = f"{_el}s 前" if _el < 60 else f"{_el//60}m{_el%60:02d}s 前"
     _time_str = _la_at.strftime("%H:%M:%S")
 
-    # 工作階段上下文標籤
-    _now_phase = s.get("current_stock", "")
-    if _now_phase.startswith("[法人]"):
+    # 工作階段上下文標籤（最近嘗試所屬的執行緒）
+    _la_stock_str = s.get("last_attempt_stock", "")
+    if _la_stock_str.startswith("[法人]"):
         _inst_d2 = s.get("inst_supplementary_done", 0)
         _inst_t2 = s.get("inst_supplementary_total", 0) or "?"
         _phase_ctx = f"補充法人 {_inst_d2}/{_inst_t2}"
-    elif _now_phase.startswith("[融資]"):
+    elif _la_stock_str.startswith("[融資]"):
         _marg_d2 = s.get("margin_supplementary_done", 0)
         _marg_t2 = s.get("margin_supplementary_total", 0) or "?"
         _phase_ctx = f"補充融資 {_marg_d2}/{_marg_t2}"
-    elif _now_phase and not _now_phase.startswith("["):
+    elif _la_stock_str and not _la_stock_str.startswith("["):
         _q2 = s.get("queue_size", 0)
         _phase_ctx = f"OHLCV 更新 剩 {_q2} 檔" if _q2 > 0 else "快取巡檢"
     else:

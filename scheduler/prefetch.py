@@ -144,6 +144,13 @@ class PrefetchWorker:
         self._margin_no_update: set = set()               # 本次啟動中融資無資料的股票
         self._inst_error: set = set()                     # 本次啟動中法人抓取錯誤的股票
         self._margin_error: set = set()                   # 本次啟動中融資抓取錯誤的股票
+        # 平行執行緒（法人 + 融資）
+        self.current_inst_stock: str = ""
+        self.current_margin_stock: str = ""
+        self._inst_thread: threading.Thread | None = None
+        self._margin_thread: threading.Thread | None = None
+        self._inst_phase_date: date | None = None
+        self._margin_phase_date: date | None = None
 
     # ── 公開控制 ───────────────────────────────────────────────
 
@@ -151,6 +158,17 @@ class PrefetchWorker:
         """啟動背景執行緒（已在跑則無操作）"""
         if self._thread and self._thread.is_alive():
             self._wake_event.set()
+            # 確保平行執行緒也在跑
+            if not (self._inst_thread and self._inst_thread.is_alive()):
+                self._inst_thread = threading.Thread(
+                    target=self._inst_thread_loop, daemon=True, name="prefetch-inst"
+                )
+                self._inst_thread.start()
+            if not (self._margin_thread and self._margin_thread.is_alive()):
+                self._margin_thread = threading.Thread(
+                    target=self._margin_thread_loop, daemon=True, name="prefetch-margin"
+                )
+                self._margin_thread.start()
             return
         self._stop_event.clear()
         self._wake_event.set()
@@ -158,8 +176,16 @@ class PrefetchWorker:
             target=self._run_loop, daemon=True, name="prefetch-worker"
         )
         self._thread.start()
+        self._inst_thread = threading.Thread(
+            target=self._inst_thread_loop, daemon=True, name="prefetch-inst"
+        )
+        self._inst_thread.start()
+        self._margin_thread = threading.Thread(
+            target=self._margin_thread_loop, daemon=True, name="prefetch-margin"
+        )
+        self._margin_thread.start()
         self.running = True
-        logger.info("PrefetchWorker 背景執行緒已啟動")
+        logger.info("PrefetchWorker 背景執行緒已啟動（主 + 法人 + 融資）")
 
     def stop(self):
         """要求背景執行緒停止"""
@@ -1561,6 +1587,208 @@ class PrefetchWorker:
                 f"融資 {self.margin_supplementary_done}/{self.margin_supplementary_total}"
             )
 
+    # ── 平行法人 / 融資執行緒 ──────────────────────────────────────
+
+    def _inst_thread_loop(self):
+        """背景法人執行緒 — 與 OHLCV 主執行緒平行，0.7s 間隔。"""
+        logger.info("法人執行緒已啟動")
+        while not self._stop_event.is_set():
+            try:
+                self._run_inst_phase()
+            except Exception:
+                logger.exception("法人執行緒發生未預期例外")
+            self._stop_event.wait(timeout=300)
+        self.current_inst_stock = ""
+        logger.info("法人執行緒已停止")
+
+    def _run_inst_phase(self):
+        """抓取今日法人資料（一輪）。"""
+        try:
+            target_date = _latest_trading_day()
+        except Exception:
+            return
+
+        if self._inst_phase_date != target_date:
+            self._inst_no_update.clear()
+            self._inst_error.clear()
+            self._inst_phase_date = target_date
+
+        target_str = target_date.isoformat()
+
+        try:
+            from data.finmind_client import get_stock_list
+            from db.price_cache import get_delisted_stocks
+            all_df = get_stock_list()
+            skip = set(get_delisted_stocks(include_legacy_no_update=True))
+            active_ids = sorted(set(all_df["stock_id"].tolist()) - skip)
+        except Exception as e:
+            logger.warning(f"法人執行緒取得股票清單失敗：{e}")
+            return
+
+        try:
+            from db.database import get_session
+            from sqlalchemy import text
+            with get_session() as sess:
+                done_ids = {
+                    r[0] for r in sess.execute(
+                        text("SELECT DISTINCT stock_id FROM inst_cache WHERE date = :d"),
+                        {"d": target_str},
+                    ).fetchall()
+                }
+        except Exception:
+            done_ids = set()
+
+        active_set = set(active_ids)
+        queue = sorted(active_set - done_ids - self._inst_no_update)
+
+        effective_total = len(active_set) - len(self._inst_no_update & active_set)
+        self.inst_supplementary_total = max(0, effective_total)
+        self.inst_supplementary_done  = len(done_ids & active_set)
+
+        if not queue:
+            self._check_supplementary_completion()
+            return
+
+        for stock_id in queue:
+            if self._stop_event.is_set():
+                break
+            if self._hour_count() >= self._current_hourly_limit():
+                self._stop_event.wait(timeout=60)
+                continue
+
+            self.current_inst_stock = f"[法人] {stock_id}"
+            result = self._fetch_inst_today(stock_id)
+            self._note_attempt(f"[法人] {stock_id}", result)
+
+            if result == "ok":
+                self._record_request()
+                self.last_fetch_at = datetime.now()
+                self.inst_supplementary_done = min(
+                    self.inst_supplementary_done + 1, self.inst_supplementary_total
+                )
+                self._stop_event.wait(timeout=0.7)
+            elif result == "cached":
+                self.inst_supplementary_done = min(
+                    self.inst_supplementary_done + 1, self.inst_supplementary_total
+                )
+            elif result == "no_update":
+                self._inst_no_update.add(stock_id)
+                self.inst_supplementary_total = max(0, self.inst_supplementary_total - 1)
+            elif result == "rate_limit":
+                self.current_inst_stock = ""
+                self._stop_event.wait(timeout=60)
+                return
+            # "error": 繼續下一檔
+
+        self.current_inst_stock = ""
+        self._check_supplementary_completion()
+
+    def _margin_thread_loop(self):
+        """背景融資融券執行緒 — 與 OHLCV 主執行緒平行，0.7s 間隔。"""
+        logger.info("融資執行緒已啟動")
+        while not self._stop_event.is_set():
+            try:
+                self._run_margin_phase()
+            except Exception:
+                logger.exception("融資執行緒發生未預期例外")
+            self._stop_event.wait(timeout=300)
+        self.current_margin_stock = ""
+        logger.info("融資執行緒已停止")
+
+    def _run_margin_phase(self):
+        """抓取今日融資融券資料（一輪）。"""
+        try:
+            target_date = _latest_trading_day()
+        except Exception:
+            return
+
+        if self._margin_phase_date != target_date:
+            self._margin_no_update.clear()
+            self._margin_error.clear()
+            self._margin_phase_date = target_date
+
+        target_str = target_date.isoformat()
+
+        try:
+            from data.finmind_client import get_stock_list
+            from db.price_cache import get_delisted_stocks
+            all_df = get_stock_list()
+            skip = set(get_delisted_stocks(include_legacy_no_update=True))
+            active_ids = sorted(set(all_df["stock_id"].tolist()) - skip)
+        except Exception as e:
+            logger.warning(f"融資執行緒取得股票清單失敗：{e}")
+            return
+
+        try:
+            from db.database import get_session
+            from sqlalchemy import text
+            with get_session() as sess:
+                done_ids = {
+                    r[0] for r in sess.execute(
+                        text("SELECT DISTINCT stock_id FROM margin_cache WHERE date = :d"),
+                        {"d": target_str},
+                    ).fetchall()
+                }
+        except Exception:
+            done_ids = set()
+
+        active_set = set(active_ids)
+        queue = sorted(active_set - done_ids - self._margin_no_update)
+
+        effective_total = len(active_set) - len(self._margin_no_update & active_set)
+        self.margin_supplementary_total = max(0, effective_total)
+        self.margin_supplementary_done  = len(done_ids & active_set)
+
+        if not queue:
+            self._check_supplementary_completion()
+            return
+
+        for stock_id in queue:
+            if self._stop_event.is_set():
+                break
+            if self._hour_count() >= self._current_hourly_limit():
+                self._stop_event.wait(timeout=60)
+                continue
+
+            self.current_margin_stock = f"[融資] {stock_id}"
+            result = self._fetch_margin_today(stock_id)
+            self._note_attempt(f"[融資] {stock_id}", result)
+
+            if result == "ok":
+                self._record_request()
+                self.last_fetch_at = datetime.now()
+                self.margin_supplementary_done = min(
+                    self.margin_supplementary_done + 1, self.margin_supplementary_total
+                )
+                self._stop_event.wait(timeout=0.7)
+            elif result == "cached":
+                self.margin_supplementary_done = min(
+                    self.margin_supplementary_done + 1, self.margin_supplementary_total
+                )
+            elif result == "no_update":
+                self._margin_no_update.add(stock_id)
+                self.margin_supplementary_total = max(0, self.margin_supplementary_total - 1)
+            elif result == "rate_limit":
+                self.current_margin_stock = ""
+                self._stop_event.wait(timeout=60)
+                return
+            # "error": 繼續下一檔
+
+        self.current_margin_stock = ""
+        self._check_supplementary_completion()
+
+    def _check_supplementary_completion(self):
+        """法人或融資執行緒完成一輪後呼叫，判斷雙方是否均已完成。"""
+        inst_done   = self.inst_supplementary_total > 0 and self.inst_supplementary_done >= self.inst_supplementary_total
+        margin_done = self.margin_supplementary_total > 0 and self.margin_supplementary_done >= self.margin_supplementary_total
+        if inst_done and margin_done and not self.supplementary_completed_at:
+            self._supplementary_date = _latest_trading_day()
+            self.supplementary_completed_at = datetime.now()
+            logger.info(
+                f"Supplementary 完成：法人 {self.inst_supplementary_done}/{self.inst_supplementary_total}，"
+                f"融資 {self.margin_supplementary_done}/{self.margin_supplementary_total}"
+            )
+
     # 回傳值：
     #   'normal'     — 成功抓取並更新快取
     #   'cached'     — 快取仍新鮮，跳過
@@ -1695,24 +1923,8 @@ class PrefetchWorker:
                 logger.info("全速重建完成，自動退出重建模式，恢復正常限速")
 
             if not needs_update:
-                # 待更新清單為空（needs_update 空）：① Supplementary ② 死股回收 ③ 填充基本面 ④ idle
-
-                # Supplementary：FinMind 已更新今日資料後抓取法人 + 融資
-                if self._should_run_supplementary():
-                    try:
-                        from data.finmind_client import get_stock_list
-                        from db.price_cache import get_delisted_stocks
-                        all_stocks_df = get_stock_list()
-                        skip = set(get_delisted_stocks(include_legacy_no_update=True))
-                        active_ids = sorted(
-                            set(all_stocks_df["stock_id"].tolist()) - skip
-                        )
-                    except Exception as e:
-                        logger.warning(f"Supplementary 取得股票清單失敗：{e}")
-                        active_ids = []
-                    if active_ids:
-                        self._run_supplementary_phase(active_ids)
-                    continue
+                # 待更新清單為空（needs_update 空）：① 死股回收 ② 填充基本面 ③ idle
+                # 法人 / 融資由平行執行緒（prefetch-inst / prefetch-margin）獨立處理
 
                 self._try_recover_dead_stocks()
 
@@ -1785,7 +1997,7 @@ class PrefetchWorker:
                     if stock_id in needs_update_set:
                         self.queue_size = max(0, self.queue_size - 1)
                     logger.debug(f"已抓 {stock_id}，本小時 {self.hour_fetched}，待更新 {self.queue_size}")
-                    self._wait_with_wake(self._normal_fetch_interval())
+                    # OHLCV 不剎車：額度計數器（_hour_count）自然當煞車，不加 sleep
 
                 elif result == "suspended":
                     # 同一天先暫停重試，隔天再由 _get_stale_stocks 放回待更新清單
@@ -1858,6 +2070,8 @@ class PrefetchWorker:
             "premium_broker_backfill_days": self.premium_broker_backfill_days,
             "premium_broker_backfill_completed_at": self.premium_broker_backfill_completed_at,
             "current_stock":        self.current_stock,
+            "current_inst_stock":   self.current_inst_stock,
+            "current_margin_stock": self.current_margin_stock,
             "last_fetch_at":        self.last_fetch_at,
             "paused_for_market":    self._within_trading_hours(),
             "paused_until":         self.paused_until,
