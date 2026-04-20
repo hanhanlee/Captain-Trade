@@ -1602,7 +1602,7 @@ class PrefetchWorker:
         logger.info("法人執行緒已停止")
 
     def _run_inst_phase(self):
-        """抓取今日法人資料（一輪）。"""
+        """抓取今日法人資料（單次全市場批次）。"""
         try:
             target_date = _latest_trading_day()
         except Exception:
@@ -1620,65 +1620,62 @@ class PrefetchWorker:
             from db.price_cache import get_delisted_stocks
             all_df = get_stock_list()
             skip = set(get_delisted_stocks(include_legacy_no_update=True))
-            active_ids = sorted(set(all_df["stock_id"].tolist()) - skip)
+            active_count = len(set(all_df["stock_id"].tolist()) - skip)
         except Exception as e:
             logger.warning(f"法人執行緒取得股票清單失敗：{e}")
-            return
+            active_count = 0
 
         try:
             from db.database import get_session
             from sqlalchemy import text
             with get_session() as sess:
-                done_ids = {
-                    r[0] for r in sess.execute(
-                        text("SELECT DISTINCT stock_id FROM inst_cache WHERE date = :d"),
-                        {"d": target_str},
-                    ).fetchall()
-                }
+                done_count = sess.execute(
+                    text("SELECT COUNT(DISTINCT stock_id) FROM inst_cache WHERE date = :d"),
+                    {"d": target_str},
+                ).fetchone()[0] or 0
         except Exception:
-            done_ids = set()
+            done_count = 0
 
-        active_set = set(active_ids)
-        queue = sorted(active_set - done_ids - self._inst_no_update)
+        self.inst_supplementary_total = max(active_count, 1)
+        self.inst_supplementary_done = done_count
 
-        effective_total = len(active_set) - len(self._inst_no_update & active_set)
-        self.inst_supplementary_total = max(0, effective_total)
-        self.inst_supplementary_done  = len(done_ids & active_set)
-
-        if not queue:
+        # 80% 覆蓋率視為該日已完成（允許部分股票當日無資料）
+        threshold = max(int(active_count * 0.8), 500) if active_count else 500
+        if done_count >= threshold:
             self._check_supplementary_completion()
             return
 
-        for stock_id in queue:
-            if self._stop_event.is_set():
-                break
-            if self._hour_count() >= self._current_hourly_limit():
-                self._stop_event.wait(timeout=60)
-                continue
+        if self._hour_count() >= self._current_hourly_limit():
+            return
 
-            self.current_inst_stock = f"[法人] {stock_id}"
-            result = self._fetch_inst_today(stock_id)
-            self._note_attempt(f"[法人] {stock_id}", result)
+        self.current_inst_stock = f"[法人] {target_str} 全市場"
+        try:
+            from data.finmind_client import get_all_institutional_by_date
+            from db.inst_cache import save_institutional_batch
 
-            if result == "ok":
-                self._record_request()
-                self.last_fetch_at = datetime.now()
-                self.inst_supplementary_done = min(
-                    self.inst_supplementary_done + 1, self.inst_supplementary_total
-                )
-                self._stop_event.wait(timeout=0.7)
-            elif result == "cached":
-                self.inst_supplementary_done = min(
-                    self.inst_supplementary_done + 1, self.inst_supplementary_total
-                )
-            elif result == "no_update":
-                self._inst_no_update.add(stock_id)
-                self.inst_supplementary_total = max(0, self.inst_supplementary_total - 1)
-            elif result == "rate_limit":
+            df = get_all_institutional_by_date(target_str)
+            if df.empty:
+                self.current_inst_stock = ""
+                self._check_supplementary_completion()
+                return
+
+            save_institutional_batch(df)
+            self._record_request()
+            self.last_fetch_at = datetime.now()
+            fetched_stocks = int(df["stock_id"].nunique()) if "stock_id" in df.columns else 0
+            self.inst_supplementary_done = min(
+                done_count + fetched_stocks, self.inst_supplementary_total
+            )
+            self._note_attempt(f"[法人] {target_str}", "ok")
+            logger.info(f"法人全市場批次完成：{fetched_stocks} 檔，日期 {target_str}")
+        except Exception as e:
+            if _is_429(e):
+                self._note_attempt(f"[法人] {target_str}", "rate_limit")
                 self.current_inst_stock = ""
                 self._stop_event.wait(timeout=60)
                 return
-            # "error": 繼續下一檔
+            logger.warning(f"法人全市場批次抓取失敗：{e}")
+            self._note_attempt(f"[法人] {target_str}", "error")
 
         self.current_inst_stock = ""
         self._check_supplementary_completion()
@@ -1696,7 +1693,7 @@ class PrefetchWorker:
         logger.info("融資執行緒已停止")
 
     def _run_margin_phase(self):
-        """抓取今日融資融券資料（一輪）。"""
+        """抓取今日融資融券資料（單次全市場批次）。"""
         try:
             target_date = _latest_trading_day()
         except Exception:
@@ -1714,65 +1711,62 @@ class PrefetchWorker:
             from db.price_cache import get_delisted_stocks
             all_df = get_stock_list()
             skip = set(get_delisted_stocks(include_legacy_no_update=True))
-            active_ids = sorted(set(all_df["stock_id"].tolist()) - skip)
+            active_count = len(set(all_df["stock_id"].tolist()) - skip)
         except Exception as e:
             logger.warning(f"融資執行緒取得股票清單失敗：{e}")
-            return
+            active_count = 0
 
         try:
             from db.database import get_session
             from sqlalchemy import text
             with get_session() as sess:
-                done_ids = {
-                    r[0] for r in sess.execute(
-                        text("SELECT DISTINCT stock_id FROM margin_cache WHERE date = :d"),
-                        {"d": target_str},
-                    ).fetchall()
-                }
+                done_count = sess.execute(
+                    text("SELECT COUNT(DISTINCT stock_id) FROM margin_cache WHERE date = :d"),
+                    {"d": target_str},
+                ).fetchone()[0] or 0
         except Exception:
-            done_ids = set()
+            done_count = 0
 
-        active_set = set(active_ids)
-        queue = sorted(active_set - done_ids - self._margin_no_update)
+        self.margin_supplementary_total = max(active_count, 1)
+        self.margin_supplementary_done = done_count
 
-        effective_total = len(active_set) - len(self._margin_no_update & active_set)
-        self.margin_supplementary_total = max(0, effective_total)
-        self.margin_supplementary_done  = len(done_ids & active_set)
-
-        if not queue:
+        # 80% 覆蓋率視為該日已完成（允許部分股票當日無資料）
+        threshold = max(int(active_count * 0.8), 500) if active_count else 500
+        if done_count >= threshold:
             self._check_supplementary_completion()
             return
 
-        for stock_id in queue:
-            if self._stop_event.is_set():
-                break
-            if self._hour_count() >= self._current_hourly_limit():
-                self._stop_event.wait(timeout=60)
-                continue
+        if self._hour_count() >= self._current_hourly_limit():
+            return
 
-            self.current_margin_stock = f"[融資] {stock_id}"
-            result = self._fetch_margin_today(stock_id)
-            self._note_attempt(f"[融資] {stock_id}", result)
+        self.current_margin_stock = f"[融資] {target_str} 全市場"
+        try:
+            from data.finmind_client import get_all_margin_by_date
+            from db.margin_cache import save_margin_batch
 
-            if result == "ok":
-                self._record_request()
-                self.last_fetch_at = datetime.now()
-                self.margin_supplementary_done = min(
-                    self.margin_supplementary_done + 1, self.margin_supplementary_total
-                )
-                self._stop_event.wait(timeout=0.7)
-            elif result == "cached":
-                self.margin_supplementary_done = min(
-                    self.margin_supplementary_done + 1, self.margin_supplementary_total
-                )
-            elif result == "no_update":
-                self._margin_no_update.add(stock_id)
-                self.margin_supplementary_total = max(0, self.margin_supplementary_total - 1)
-            elif result == "rate_limit":
+            df = get_all_margin_by_date(target_str)
+            if df.empty:
+                self.current_margin_stock = ""
+                self._check_supplementary_completion()
+                return
+
+            save_margin_batch(df)
+            self._record_request()
+            self.last_fetch_at = datetime.now()
+            fetched_stocks = int(df["stock_id"].nunique()) if "stock_id" in df.columns else 0
+            self.margin_supplementary_done = min(
+                done_count + fetched_stocks, self.margin_supplementary_total
+            )
+            self._note_attempt(f"[融資] {target_str}", "ok")
+            logger.info(f"融資全市場批次完成：{fetched_stocks} 檔，日期 {target_str}")
+        except Exception as e:
+            if _is_429(e):
+                self._note_attempt(f"[融資] {target_str}", "rate_limit")
                 self.current_margin_stock = ""
                 self._stop_event.wait(timeout=60)
                 return
-            # "error": 繼續下一檔
+            logger.warning(f"融資全市場批次抓取失敗：{e}")
+            self._note_attempt(f"[融資] {target_str}", "error")
 
         self.current_margin_stock = ""
         self._check_supplementary_completion()

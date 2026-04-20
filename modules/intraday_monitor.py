@@ -53,17 +53,26 @@ def _check_one(holding: dict) -> list[str]:
     檢查單一持股的盤中警示條件。
     回傳本次觸發的警示描述列表（已記錄 cooldown）。
     """
-    from data.finmind_client import get_kbar_latest
+    from data.finmind_client import get_kbar_latest, get_realtime_stock_snapshot
 
     stock_id = str(holding["stock_id"])
     stop_loss = holding.get("stop_loss")
     take_profit = holding.get("take_profit")
+    cost_price = _to_float(holding.get("cost_price"))
 
     try:
-        price = get_kbar_latest(stock_id)
+        snapshot = get_realtime_stock_snapshot(stock_id)
+        price = _to_float(snapshot.get("close")) if snapshot else None
     except Exception as e:
-        logger.warning(f"get_kbar_latest {stock_id}: {e}")
-        return []
+        logger.warning(f"get_realtime_stock_snapshot {stock_id}: {e}")
+        price = None
+
+    if price is None:
+        try:
+            price = get_kbar_latest(stock_id)
+        except Exception as e:
+            logger.warning(f"get_kbar_latest {stock_id}: {e}")
+            return []
 
     if price is None:
         return []
@@ -90,7 +99,25 @@ def _check_one(holding: dict) -> list[str]:
             fired.append(f"現價 {price:.2f} 觸及停利（{take_profit:.2f}）")
             _mark(stock_id, "take_profit")
 
+    if not stop_loss and cost_price and cost_price > 0:
+        pnl_pct = (price - cost_price) / cost_price * 100
+        if pnl_pct <= -5 and _cooled_down(stock_id, "unrealized_loss"):
+            fired.append(f"現價 {price:.2f} / 成本 {cost_price:.2f}，未實現虧損 {pnl_pct:.1f}%，建議設定停損")
+            _mark(stock_id, "unrealized_loss")
+
     return fired
+
+
+def _to_float(value) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        num = float(value)
+        if pd.isna(num):
+            return None
+        return num
+    except (TypeError, ValueError):
+        return None
 
 
 def run_intraday_check() -> int:
@@ -112,6 +139,7 @@ def run_intraday_check() -> int:
             {
                 "stock_id": r.stock_id,
                 "stock_name": r.stock_name or "",
+                "cost_price": r.cost_price,
                 "stop_loss": r.stop_loss,
                 "take_profit": r.take_profit,
             }

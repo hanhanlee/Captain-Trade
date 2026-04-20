@@ -980,6 +980,45 @@ def get_margin_trading(stock_id: str, days: int = 10) -> pd.DataFrame:
     return df
 
 
+def get_all_institutional_by_date(date_str: str) -> pd.DataFrame:
+    """
+    一次取得全市場單日三大法人買賣超（不傳 stock_id）。
+
+    FinMind 特性：省略 data_id 時回傳該日全市場所有股票的法人資料。
+    回傳 DataFrame 含 stock_id、date、name、buy、sell、net 欄位。
+    """
+    df = _get(
+        "TaiwanStockInstitutionalInvestorsBuySell",
+        start_date=date_str,
+        end_date=date_str,
+    )
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    df["buy"] = pd.to_numeric(df.get("buy", 0), errors="coerce").fillna(0)
+    df["sell"] = pd.to_numeric(df.get("sell", 0), errors="coerce").fillna(0)
+    df["net"] = df["buy"] - df["sell"]
+    return df
+
+
+def get_all_margin_by_date(date_str: str) -> pd.DataFrame:
+    """
+    一次取得全市場單日融資融券餘額（不傳 stock_id）。
+
+    FinMind 特性：省略 data_id 時回傳該日全市場所有股票的融資券資料。
+    回傳 DataFrame 含 stock_id、date 及原始 FinMind 欄位。
+    """
+    df = _get(
+        "TaiwanStockMarginPurchaseShortSale",
+        start_date=date_str,
+        end_date=date_str,
+    )
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 def compute_margin_trend(margin_df: pd.DataFrame) -> tuple[str, int, int]:
     """
     根據融資餘額趨勢回傳 (trend, latest_balance, prev_balance)

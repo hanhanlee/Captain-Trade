@@ -97,6 +97,52 @@ def save_institutional(stock_id: str, df: pd.DataFrame) -> int:
     return len(rows)
 
 
+def save_institutional_batch(df: pd.DataFrame) -> int:
+    """
+    批次儲存全市場法人資料（df 須含 stock_id 欄位）。
+    通常由批次抓取全市場資料後呼叫，一次寫入數千筆，效率遠優於逐檔寫入。
+    """
+    if df.empty or "stock_id" not in df.columns:
+        return 0
+
+    now_str = datetime.now().isoformat()
+    rows = []
+    for _, row in df.iterrows():
+        d = row["date"]
+        if hasattr(d, "date"):
+            d = d.date().isoformat()
+        elif hasattr(d, "isoformat"):
+            d = d.isoformat()[:10]
+        else:
+            d = str(d)[:10]
+        sid = str(row.get("stock_id", "")).strip()
+        if not sid or not d:
+            continue
+        rows.append({
+            "stock_id": sid,
+            "date": d,
+            "name": str(row.get("name", "")),
+            "buy":  float(row["buy"])  if pd.notna(row.get("buy"))  else 0.0,
+            "sell": float(row["sell"]) if pd.notna(row.get("sell")) else 0.0,
+            "net":  float(row["net"])  if pd.notna(row.get("net"))  else 0.0,
+            "fetched_at": now_str,
+        })
+
+    if not rows:
+        return 0
+
+    sql = text("""
+        INSERT OR REPLACE INTO inst_cache
+            (stock_id, date, name, buy, sell, net, fetched_at)
+        VALUES
+            (:stock_id, :date, :name, :buy, :sell, :net, :fetched_at)
+    """)
+    with get_session() as sess:
+        sess.execute(sql, rows)
+        sess.commit()
+    return len(rows)
+
+
 def load_institutional(stock_id: str, days: int = 10) -> pd.DataFrame:
     """從快取讀取法人資料（欄位與 FinMind 原始格式一致）"""
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")

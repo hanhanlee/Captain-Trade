@@ -268,7 +268,7 @@ with tab_add:
             if not t_id:
                 st.error("請填入股票代碼")
             else:
-                add_trade(
+                portfolio_sync = add_trade(
                     stock_id=t_id.strip(),
                     stock_name=t_name.strip(),
                     action=t_action,
@@ -281,5 +281,13 @@ with tab_add:
                 )
                 if t_action == "BUY":
                     st.success(f"✅ 已新增 {t_action} {t_id} {t_name} @ {t_price}，並同步加入持股監控")
+                elif portfolio_sync:
+                    if portfolio_sync.get("removed"):
+                        st.success(f"✅ 已新增 {t_action} {t_id} {t_name} @ {t_price}，並已從持股監控移除")
+                    else:
+                        st.success(
+                            f"✅ 已新增 {t_action} {t_id} {t_name} @ {t_price}，持股監控剩餘 "
+                            f"{portfolio_sync['new_shares']} 股"
+                        )
                 else:
                     st.success(f"✅ 已新增 {t_action} {t_id} {t_name} @ {t_price}")

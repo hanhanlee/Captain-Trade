@@ -20,7 +20,11 @@ from modules.portfolio_io import (
 from db.price_cache import load_prices
 from db.database import get_session, init_db
 from db.models import Portfolio
-from db.settings import is_market_closed
+from db.settings import (
+    get_intraday_monitor_scheduler_enabled,
+    is_market_closed,
+    set_intraday_monitor_scheduler_enabled,
+)
 from notifications.line_notify import send_multicast
 
 st.set_page_config(page_title="持股監控", page_icon="💼", layout="wide")
@@ -64,6 +68,15 @@ def load_holdings() -> list:
             }
             for r in rows
         ]
+
+
+def _intraday_monitor_enabled_count() -> int:
+    with get_session() as sess:
+        return (
+            sess.query(Portfolio)
+            .filter(Portfolio.intraday_monitor == True)  # noqa: E712
+            .count()
+        )
 
 
 def save_holding(stock_id, stock_name, shares, cost_price, stop_loss, take_profit, notes):
@@ -424,10 +437,83 @@ tab_monitor, tab_manage = st.tabs(["📊 即時監控", "✏️ 管理持股"])
 with tab_monitor:
     holdings = load_holdings()
     market_closed_mode = is_market_closed()
+    scheduler_enabled = get_intraday_monitor_scheduler_enabled()
+    monitored_count = _intraday_monitor_enabled_count()
+    try:
+        from scheduler.intraday_service import (
+            run_once as run_intraday_scheduler_once,
+            start_intraday_scheduler,
+            status as intraday_scheduler_status,
+            stop_intraday_scheduler,
+        )
+        if scheduler_enabled:
+            start_intraday_scheduler()
+        else:
+            stop_intraday_scheduler()
+        intraday_status = intraday_scheduler_status()
+    except Exception as exc:
+        run_intraday_scheduler_once = None
+        start_intraday_scheduler = None
+        stop_intraday_scheduler = None
+        intraday_status = {
+            "running": False,
+            "last_error": str(exc),
+            "last_run_at": None,
+            "last_sent_count": 0,
+            "next_run_time": None,
+        }
 
     if not holdings:
         st.info("尚未新增任何持股。請前往「管理持股」頁籤新增。")
     else:
+        st.markdown("#### 盤中即時監控排程")
+        sched_cols = st.columns([1.2, 1.2, 1.4, 2.2])
+        with sched_cols[0]:
+            st.metric("排程器", "運行中" if intraday_status.get("running") else "未啟動")
+        with sched_cols[1]:
+            st.metric("監控持股", f"{monitored_count} 檔")
+        with sched_cols[2]:
+            last_run = intraday_status.get("last_run_at")
+            last_run_text = last_run.strftime("%H:%M:%S") if hasattr(last_run, "strftime") else "尚未執行"
+            st.metric("上次執行", last_run_text)
+        with sched_cols[3]:
+            last_error = intraday_status.get("last_error")
+            if last_error:
+                st.error(f"排程錯誤：{last_error}")
+            elif intraday_status.get("running"):
+                st.caption("每分鐘讀取勾選持股的 Sponsor 分K現價，觸及均線/停損/停利時推播 LINE。")
+            else:
+                st.caption("啟動後不需要另外開 `python scheduler/jobs.py` 視窗。")
+
+        ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+        with ctrl1:
+            if not scheduler_enabled:
+                if st.button("啟動盤中監控排程", type="primary", use_container_width=True):
+                    set_intraday_monitor_scheduler_enabled(True)
+                    if start_intraday_scheduler:
+                        start_intraday_scheduler()
+                    st.rerun()
+            else:
+                if st.button("停止盤中監控排程", type="secondary", use_container_width=True):
+                    set_intraday_monitor_scheduler_enabled(False)
+                    if stop_intraday_scheduler:
+                        stop_intraday_scheduler()
+                    st.rerun()
+        with ctrl2:
+            if st.button("立即測試一次", use_container_width=True):
+                if run_intraday_scheduler_once:
+                    sent = run_intraday_scheduler_once()
+                    st.success(f"已執行一次盤中監控，推播 {sent} 則。")
+                else:
+                    st.error("盤中監控排程器目前無法執行。")
+        with ctrl3:
+            if monitored_count == 0:
+                st.warning("目前沒有任何持股勾選「🔔盤中監控」，排程器即使啟動也不會抓即時分K。")
+            elif not scheduler_enabled:
+                st.info("已有持股勾選盤中監控，但排程器尚未啟動。")
+
+        st.markdown("---")
+
         if market_closed_mode:
             st.info(
                 "🏖️ 休市模式啟用中：持股監控只讀取本機快取，不會連線更新報價。",

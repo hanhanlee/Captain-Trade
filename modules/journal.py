@@ -12,7 +12,10 @@ from datetime import date
 def add_trade(stock_id: str, stock_name: str, action: str, price: float,
               shares: int, trade_date: date, reason: str = "",
               emotion: str = "", pnl: float = None):
+    portfolio_sync = None
     with get_session() as sess:
+        stock_id = (stock_id or "").strip()
+        stock_name = (stock_name or "").strip()
         action = action.upper()
         t = TradeJournal(
             stock_id=stock_id,
@@ -35,7 +38,14 @@ def add_trade(stock_id: str, stock_name: str, action: str, price: float,
                 price=float(price),
                 trade_date=trade_date,
             )
+        elif action == "SELL":
+            portfolio_sync = _apply_portfolio_sell(
+                sess,
+                stock_id=stock_id,
+                shares=int(shares),
+            )
         sess.commit()
+    return portfolio_sync
 
 
 def _upsert_portfolio_buy(sess, stock_id: str, stock_name: str, shares: int,
@@ -71,6 +81,36 @@ def _upsert_portfolio_buy(sess, stock_id: str, stock_name: str, shares: int,
         notes="由交易日誌自動加入",
         note="由交易日誌自動加入",
     ))
+
+
+def _apply_portfolio_sell(sess, stock_id: str, shares: int) -> dict | None:
+    """將賣出交易同步扣回持股監控；賣完時刪除該持股。"""
+    stock_id = (stock_id or "").strip()
+    if not stock_id or shares <= 0:
+        return None
+
+    row = sess.query(Portfolio).filter(Portfolio.stock_id == stock_id).first()
+    if not row:
+        return None
+
+    old_shares = int(row.shares or 0)
+    new_shares = old_shares - int(shares)
+    if new_shares <= 0:
+        sess.delete(row)
+        return {
+            "stock_id": stock_id,
+            "old_shares": old_shares,
+            "new_shares": 0,
+            "removed": True,
+        }
+
+    row.shares = new_shares
+    return {
+        "stock_id": stock_id,
+        "old_shares": old_shares,
+        "new_shares": new_shares,
+        "removed": False,
+    }
 
 
 def _open_positions_from_trades(rows: list[TradeJournal]) -> dict:
@@ -125,15 +165,31 @@ def _open_positions_from_trades(rows: list[TradeJournal]) -> dict:
 
 def sync_open_trades_to_portfolio() -> list[dict]:
     """
-    將交易日誌推算出的仍持有部位補進持股監控。
+    將交易日誌推算出的仍持有部位同步到持股監控。
 
-    只新增持股監控中不存在的股票，避免覆蓋手動維護的停損、停利與成本。
+    對有交易日誌的股票，同步目前股數；若已無未平倉部位則移除。
+    已存在的停損、停利與備註不會被覆蓋。
     回傳新增項目清單。
     """
     added = []
     with get_session() as sess:
         rows = sess.query(TradeJournal).all()
         positions = _open_positions_from_trades(rows)
+        trade_stock_ids = {(r.stock_id or "").strip() for r in rows if (r.stock_id or "").strip()}
+
+        existing_rows = sess.query(Portfolio).filter(Portfolio.stock_id.in_(trade_stock_ids)).all() if trade_stock_ids else []
+        for row in existing_rows:
+            sid = (row.stock_id or "").strip()
+            pos = positions.get(sid)
+            if not pos:
+                sess.delete(row)
+                continue
+            row.shares = int(pos["shares"])
+            if not row.stock_name and pos["stock_name"]:
+                row.stock_name = pos["stock_name"]
+            if not row.buy_date and pos["buy_date"]:
+                row.buy_date = pos["buy_date"]
+
         for sid, pos in positions.items():
             exists = sess.query(Portfolio).filter(Portfolio.stock_id == sid).first()
             if exists:

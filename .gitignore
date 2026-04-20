@@ -16,6 +16,7 @@ tools/
 secrets/
 runtime/
 .streamlit/secrets.toml
+user_reports/*.md
 
 # Python
 __pycache__/

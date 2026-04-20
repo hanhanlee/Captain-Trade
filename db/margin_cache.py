@@ -86,6 +86,65 @@ def save_margin(stock_id: str, df: pd.DataFrame) -> int:
     return len(rows)
 
 
+def save_margin_batch(df: pd.DataFrame) -> int:
+    """
+    批次儲存全市場融資融券資料（df 須含 stock_id 欄位）。
+    通常由批次抓取全市場資料後呼叫，一次寫入數千筆，效率遠優於逐檔寫入。
+    """
+    if df.empty or "stock_id" not in df.columns:
+        return 0
+
+    now_str = datetime.now().isoformat()
+    rows = []
+
+    for _, row in df.iterrows():
+        d = row["date"]
+        if hasattr(d, "date"):
+            d = d.date().isoformat()
+        elif hasattr(d, "isoformat"):
+            d = d.isoformat()[:10]
+        else:
+            d = str(d)[:10]
+
+        sid = str(row.get("stock_id", "")).strip()
+        if not sid or not d:
+            continue
+
+        def _int(col):
+            v = row.get(col)
+            if v is None or (hasattr(v, "__class__") and pd.isna(v)):
+                return None
+            return int(v)
+
+        rows.append({
+            "stock_id":       sid,
+            "date":           d,
+            "margin_buy":     _int("MarginPurchaseBuy"),
+            "margin_sell":    _int("MarginPurchaseSell"),
+            "margin_balance": _int("MarginPurchaseTodayBalance"),
+            "short_buy":      _int("ShortSaleBuy"),
+            "short_sell":     _int("ShortSaleSell"),
+            "short_balance":  _int("ShortSaleTodayBalance"),
+            "fetch_at":       now_str,
+        })
+
+    if not rows:
+        return 0
+
+    sql = text("""
+        INSERT OR REPLACE INTO margin_cache
+            (stock_id, date, margin_buy, margin_sell, margin_balance,
+             short_buy, short_sell, short_balance, fetch_at)
+        VALUES
+            (:stock_id, :date, :margin_buy, :margin_sell, :margin_balance,
+             :short_buy, :short_sell, :short_balance, :fetch_at)
+    """)
+    with get_session() as sess:
+        sess.execute(sql, rows)
+        sess.commit()
+    return len(rows)
+
+
 def get_margin(stock_id: str, days: int = 5) -> pd.DataFrame:
     """
     讀取近 N 天融資融券資料，欄位名稱對齊 FinMind 原始格式，供掃描器使用。

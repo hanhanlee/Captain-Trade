@@ -26,15 +26,27 @@ init_db()
 def _start_prefetch_worker():
     """透過 cache_resource 確保整個 App 生命週期只啟動一個執行緒"""
     try:
-        from scheduler.prefetch import get_worker
-        worker = get_worker()
-        worker.start()
-        return worker
-    except Exception as e:
+        from modules.worker_runtime import get_prefetch_worker
+        return get_prefetch_worker(auto_start=True)
+    except Exception:
         return None
 
 
 worker = _start_prefetch_worker()
+
+
+@st.cache_resource
+def _sync_intraday_monitor_scheduler():
+    """啟動或停止內建盤中持股監控排程器。"""
+    try:
+        from scheduler.intraday_service import sync_intraday_scheduler_from_settings
+
+        return sync_intraday_scheduler_from_settings()
+    except Exception:
+        return {"running": False, "last_error": "failed to sync intraday scheduler"}
+
+
+intraday_scheduler = _sync_intraday_monitor_scheduler()
 
 
 # ── 主頁面 ───────────────────────────────────────────────────────
@@ -66,6 +78,7 @@ st.markdown("""
 | **3 - 風險控制** | 計算合理部位大小，控制總帳戶風險 |
 | **4 - 市場環境** | 判讀目前大盤多空環境 |
 | **5 - 交易日誌** | 記錄每筆交易，分析勝率與盈虧比 |
+| **8 - 問題回報** | 回報使用問題或提出功能建議，存成 Markdown 方便後續處理 |
 
 > 使用前請先在 `.env` 檔案設定你的 **FinMind API Token**。
 > 免費申請：https://finmindtrade.com/

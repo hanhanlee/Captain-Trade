@@ -101,3 +101,13 @@ def get_premium_broker_backfill_days() -> int:
 
 def set_premium_broker_backfill_days(days: int) -> None:
     set_setting("premium_broker_backfill_days", str(max(1, int(days))))
+
+
+def get_intraday_monitor_scheduler_enabled() -> bool:
+    """Return whether the built-in intraday portfolio scheduler should run."""
+    return get_setting("intraday_monitor_scheduler_enabled", "false").lower() == "true"
+
+
+def set_intraday_monitor_scheduler_enabled(enabled: bool) -> None:
+    """Persist the built-in intraday portfolio scheduler switch."""
+    set_setting("intraday_monitor_scheduler_enabled", "true" if enabled else "false")
