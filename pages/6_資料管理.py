@@ -579,12 +579,12 @@ _total_cls = "ok"   if s["total_fetched"] > 0 else ""
 st.markdown(f"""
 <div class="metric-grid" style="grid-template-columns:repeat(3,1fr);">
   <div class="metric-box">
-    <div class="mb-label">本小時用量</div>
+        <div class="mb-label">本小時資料請求</div>
     <div class="mb-val">{s['hour_fetched']}</div>
-    <div class="mb-sub">上限 {s['hourly_limit']}　剩餘 {s['hourly_remaining']} 次</div>
+        <div class="mb-sub">上限 {s['hourly_limit']}　剩餘 {s['hourly_remaining']} 次　｜　剩餘額度已含 user_info quota probe</div>
   </div>
   <div class="metric-box {_total_cls}">
-    <div class="mb-label">本次累計抓取</div>
+        <div class="mb-label">本次累計資料請求</div>
     <div class="mb-val">{s['total_fetched']}</div>
     <div class="mb-sub">最近：{elapsed_str}</div>
   </div>

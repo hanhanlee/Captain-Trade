@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 from dotenv import load_dotenv
 
+from data.finmind_capability_map import get_dataset_capability
+
 try:
     import tomllib
 except ImportError:
@@ -86,8 +88,14 @@ _premium_state = PremiumState()
 
 _request_lock = threading.Lock()
 _request_times = deque()
-_request_hour_times = deque()
-_request_total = 0
+_REQUEST_KIND_DATA = "data"
+_REQUEST_KIND_QUOTA_PROBE = "quota_probe"
+_REQUEST_KINDS = (_REQUEST_KIND_DATA, _REQUEST_KIND_QUOTA_PROBE)
+_request_hour_times = {kind: deque() for kind in _REQUEST_KINDS}
+_request_total = {kind: 0 for kind in _REQUEST_KINDS}
+TRADING_HOURS_START_HHMM = (9, 0)
+TRADING_HOURS_END_HHMM = (15, 0)
+SPONSOR_TRADING_MAX_PER_HOUR = 3000
 
 # ── 全域最新交易日（執行緒安全）────────────────────────────────────
 _trading_day_lock = threading.Lock()
@@ -219,7 +227,7 @@ def refresh_finmind_user_info(force: bool = False) -> PremiumState:
         return get_premium_state()
 
     try:
-        _note_http_request()
+        _note_http_request(kind=_REQUEST_KIND_QUOTA_PROBE)
         resp = requests.get(
             FINMIND_USER_INFO_API,
             headers={"Authorization": f"Bearer {TOKEN}"},
@@ -281,6 +289,7 @@ def _premium_gate(dataset: str) -> None:
 
 
 def _requests_per_minute() -> int:
+    trading_hours = _within_market_request_window()
     settings = _load_finmind_settings()
     tier = str(settings["tier"])
     enabled = bool(settings["premium_enabled"])
@@ -289,14 +298,40 @@ def _requests_per_minute() -> int:
     if enabled and state.quota_pct >= 0.15:
         api_limit = int(state.api_request_limit or 0)
         if tier == "sponsor":
+            if trading_hours:
+                return max(1, min(SPONSOR_TRADING_MAX_PER_HOUR // 60, (api_limit or 6000) // 60))
             # Sponsor is 6000/h. Use the shared sliding-window limiter as the
             # primary brake so long backfills can fill the hourly quota.
             return max(40, min(100, (api_limit or 6000) // 60))
         if tier == "auto" and api_limit >= 6000:
+            if trading_hours:
+                return max(1, min(SPONSOR_TRADING_MAX_PER_HOUR // 60, api_limit // 60))
             return max(40, min(100, api_limit // 60))
         if tier in {"backer", "auto"}:
             return 40
     return 8
+
+
+def _within_market_request_window() -> bool:
+    """Return whether client-wide FinMind requests should obey trading-hours caps."""
+    today = datetime.now().date()
+    if today.weekday() >= 5:
+        return False
+
+    try:
+        from db.settings import is_market_closed
+
+        if is_market_closed():
+            return False
+    except Exception:
+        pass
+
+    now = datetime.now().time()
+    return (
+        (TRADING_HOURS_START_HHMM[0], TRADING_HOURS_START_HHMM[1])
+        <= (now.hour, now.minute)
+        <= (TRADING_HOURS_END_HHMM[0], TRADING_HOURS_END_HHMM[1])
+    )
 
 
 def _wait_for_rate_limit() -> None:
@@ -314,31 +349,97 @@ def _wait_for_rate_limit() -> None:
         time.sleep(min(sleep_for, 5.0))
 
 
-def _note_http_request() -> None:
-    """Track actual FinMind HTTP requests for worker quota accounting and UI."""
-    global _request_total
+def _trim_request_counters(now: float) -> None:
+    for kind in _REQUEST_KINDS:
+        queue = _request_hour_times[kind]
+        while queue and now - queue[0] >= 3600:
+            queue.popleft()
+
+
+def _note_http_request(kind: str = _REQUEST_KIND_DATA) -> None:
+    """Track actual FinMind HTTP requests by category for worker accounting and UI."""
+    if kind not in _request_total:
+        kind = _REQUEST_KIND_DATA
 
     now = time.monotonic()
     with _request_lock:
-        while _request_hour_times and now - _request_hour_times[0] >= 3600:
-            _request_hour_times.popleft()
-        _request_hour_times.append(now)
-        _request_total += 1
+        _trim_request_counters(now)
+        _request_hour_times[kind].append(now)
+        _request_total[kind] += 1
 
 
 def get_finmind_request_usage() -> dict[str, int]:
-    """Return shared FinMind HTTP request usage counters."""
+    """Return shared FinMind HTTP request usage counters.
+
+    Backward-compatible fields:
+    - last_hour / total: data requests only
+
+    Extended fields:
+    - quota_probe_last_hour / quota_probe_total
+    - all_last_hour / all_total
+    """
     now = time.monotonic()
     with _request_lock:
-        while _request_hour_times and now - _request_hour_times[0] >= 3600:
-            _request_hour_times.popleft()
+        _trim_request_counters(now)
+        data_last_hour = len(_request_hour_times[_REQUEST_KIND_DATA])
+        quota_probe_last_hour = len(_request_hour_times[_REQUEST_KIND_QUOTA_PROBE])
+        data_total = int(_request_total[_REQUEST_KIND_DATA])
+        quota_probe_total = int(_request_total[_REQUEST_KIND_QUOTA_PROBE])
         return {
-            "last_hour": len(_request_hour_times),
-            "total": int(_request_total),
+            "last_hour": data_last_hour,
+            "total": data_total,
+            "data_last_hour": data_last_hour,
+            "data_total": data_total,
+            "quota_probe_last_hour": quota_probe_last_hour,
+            "quota_probe_total": quota_probe_total,
+            "all_last_hour": data_last_hour + quota_probe_last_hour,
+            "all_total": data_total + quota_probe_total,
         }
 
 
-def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd.DataFrame:
+def _ensure_dataset_routing(dataset: str, *, allow_data_wrapper: bool = False) -> None:
+    """Prevent special endpoint datasets from silently falling back to generic /data."""
+    cap = get_dataset_capability(dataset)
+    endpoint_type = str(cap.get("endpoint_type") or "data")
+    if endpoint_type == "special":
+        raise RuntimeError(
+            f"{dataset} requires a dedicated FinMind endpoint wrapper; do not call generic /data"
+        )
+    if endpoint_type == "snapshot":
+        raise RuntimeError(
+            f"{dataset} requires a snapshot wrapper; do not call generic /data"
+        )
+    if endpoint_type == "data_wrapper" and not allow_data_wrapper:
+        raise RuntimeError(
+            f"{dataset} must be fetched through its dedicated client wrapper"
+        )
+
+
+def _normalize_single_day_all_by_date(dataset: str, start_date: str, kwargs: dict) -> None:
+    """Guard all_by_date datasets so broad date ranges are not sent without data_id."""
+    if not start_date:
+        return
+    cap = get_dataset_capability(dataset)
+    if not cap.get("all_by_date") or not cap.get("single_day_only_for_all_by_date"):
+        return
+
+    end_date = str(kwargs.get("end_date") or "")[:10]
+    start_day = str(start_date)[:10]
+    if end_date and end_date != start_day:
+        raise ValueError(
+            f"{dataset} all_by_date requests must be single-day chunked: {start_day} != {end_date}"
+        )
+
+
+def _get(
+    dataset: str,
+    stock_id: str = "",
+    start_date: str = "",
+    *,
+    allow_data_wrapper: bool = False,
+    **kwargs,
+) -> pd.DataFrame:
+    _ensure_dataset_routing(dataset, allow_data_wrapper=allow_data_wrapper)
     _premium_gate(dataset)
     _wait_for_rate_limit()
 
@@ -348,11 +449,13 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
     }
     if stock_id:
         params["data_id"] = stock_id
+    else:
+        _normalize_single_day_all_by_date(dataset, start_date, kwargs)
     if start_date:
         params["start_date"] = start_date
     params.update(kwargs)
 
-    _note_http_request()
+    _note_http_request(kind=_REQUEST_KIND_DATA)
     resp = requests.get(FINMIND_API, params=params, timeout=30)
     if resp.status_code in (402, 403):
         _set_premium_degraded(f"{dataset} HTTP {resp.status_code}")
@@ -377,7 +480,7 @@ def _get_broker_trading_daily_report_raw(stock_id: str, trade_date: str) -> pd.D
     if not TOKEN:
         raise RuntimeError("FINMIND_TOKEN is not configured")
 
-    _note_http_request()
+    _note_http_request(kind=_REQUEST_KIND_DATA)
     resp = requests.get(
         FINMIND_BROKER_DAILY_REPORT_API,
         headers={"Authorization": f"Bearer {TOKEN}"},
@@ -403,6 +506,27 @@ def _get_broker_trading_daily_report_raw(stock_id: str, trade_date: str) -> pd.D
     return pd.DataFrame(data.get("data", []))
 
 
+def _get_broker_trading_daily_report_secid_agg_raw(
+    stock_id: str,
+    start_date: str,
+    end_date: str = "",
+) -> pd.DataFrame:
+    """Fetch sponsor broker SecId aggregation through a dedicated client wrapper."""
+    dataset = "TaiwanStockTradingDailyReportSecIdAgg"
+    _ensure_dataset_routing(dataset, allow_data_wrapper=True)
+
+    kwargs = {}
+    if end_date:
+        kwargs["end_date"] = str(end_date)[:10]
+    return _get(
+        dataset,
+        stock_id=stock_id,
+        start_date=str(start_date)[:10],
+        allow_data_wrapper=True,
+        **kwargs,
+    )
+
+
 def get_realtime_stock_snapshot(stock_id: str) -> dict | None:
     """
     Fetch FinMind Sponsor real-time stock snapshot.
@@ -416,7 +540,7 @@ def get_realtime_stock_snapshot(stock_id: str) -> dict | None:
     if not TOKEN:
         raise RuntimeError("FINMIND_TOKEN is not configured")
 
-    _note_http_request()
+    _note_http_request(kind=_REQUEST_KIND_DATA)
     resp = requests.get(
         FINMIND_STOCK_TICK_SNAPSHOT_API,
         headers={"Authorization": f"Bearer {TOKEN}"},
@@ -502,19 +626,52 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    # 更新快取（REPLACE INTO = upsert）
+    if len(df) < STOCK_INFO_MIN_VALID_ROWS:
+        logger.warning(
+            "TaiwanStockInfo refresh returned only %s rows; skip cache mutation to avoid pruning valid symbols",
+            len(df),
+        )
+        return df
+
+    # 更新快取：先寫入暫存表，再 upsert 主表，最後清理來源已不存在的舊代碼。
+    # 避免 DELETE 全表造成讀取端短暫看到空表。
     try:
         from db.database import get_session
         from sqlalchemy import text
         rows = df.to_dict("records")
-        sql = text("""
-            INSERT OR REPLACE INTO stock_info_cache (stock_id, stock_name, industry_category, updated_at)
-            VALUES (:stock_id, :stock_name, :industry_category, :ts)
-        """)
         now = datetime.now().isoformat()
         with get_session() as sess:
-            sess.execute(text("DELETE FROM stock_info_cache"))
-            sess.execute(sql, [{**r, "ts": now} for r in rows])
+            sess.execute(text("DROP TABLE IF EXISTS temp.stock_info_refresh_stage"))
+            sess.execute(text("""
+                CREATE TEMP TABLE stock_info_refresh_stage (
+                    stock_id TEXT PRIMARY KEY,
+                    stock_name TEXT,
+                    industry_category TEXT,
+                    updated_at TEXT
+                )
+            """))
+            sess.execute(text("""
+                INSERT INTO stock_info_refresh_stage (stock_id, stock_name, industry_category, updated_at)
+                VALUES (:stock_id, :stock_name, :industry_category, :updated_at)
+            """), [{**r, "updated_at": now} for r in rows])
+            sess.execute(text("""
+                INSERT INTO stock_info_cache (stock_id, stock_name, industry_category, updated_at)
+                SELECT stock_id, stock_name, industry_category, updated_at
+                FROM stock_info_refresh_stage
+                ON CONFLICT(stock_id) DO UPDATE SET
+                    stock_name = excluded.stock_name,
+                    industry_category = excluded.industry_category,
+                    updated_at = excluded.updated_at
+            """))
+            sess.execute(text("""
+                DELETE FROM stock_info_cache
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM stock_info_refresh_stage s
+                    WHERE s.stock_id = stock_info_cache.stock_id
+                )
+            """))
+            sess.execute(text("DROP TABLE IF EXISTS temp.stock_info_refresh_stage"))
             sess.commit()
     except Exception:
         pass  # 快取寫入失敗不影響功能
@@ -578,6 +735,29 @@ def get_broker_trading_daily_report(stock_id: str, trade_date) -> pd.DataFrame:
     if "sell_volume" not in df.columns:
         df["sell_volume"] = 0
     df["net_volume"] = df["buy_volume"] - df["sell_volume"]
+    return df
+
+
+def get_broker_trading_daily_report_secid_agg(
+    stock_id: str,
+    start_date: str,
+    end_date: str = "",
+) -> pd.DataFrame:
+    """Return broker daily aggregated branch stats via an explicit dataset wrapper."""
+    df = _get_broker_trading_daily_report_secid_agg_raw(
+        stock_id=stock_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if df.empty:
+        return df
+
+    df = df.copy()
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    for col in ["buy_volume", "sell_volume", "buy_price", "sell_price"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
 
@@ -690,15 +870,24 @@ def get_broker_main_force_series(
 
     missing = [d for d in dates if d not in cached_dates]
     fetched_rows = []
+    failed_dates = []
     for d in missing:
         try:
             daily = get_broker_trading_daily_report(stock_id, d)
             summary = summarize_broker_main_force(daily, top_n=top_n)
         except Exception as exc:
             logger.warning(f"get_broker_main_force_series {stock_id} {d}: {exc}")
-            break
+            failed_dates.append(d)
+            continue
         if summary:
             fetched_rows.append(summary)
+
+    if failed_dates:
+        logger.warning(
+            "get_broker_main_force_series partial failure %s: skipped dates=%s",
+            stock_id,
+            ",".join(failed_dates),
+        )
 
     if fetched_rows:
         save_broker_main_force(stock_id, fetched_rows)

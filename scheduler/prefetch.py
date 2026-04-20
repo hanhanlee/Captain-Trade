@@ -505,6 +505,22 @@ class PrefetchWorker:
             return 0
         return int(shared.get("total") or 0)
 
+    def _get_shared_all_request_count(self) -> int | None:
+        shared = self._get_shared_request_usage()
+        if shared is None:
+            return None
+        return int(shared.get("all_last_hour") or 0)
+
+    @staticmethod
+    def _supplementary_completion_threshold(total: int) -> int:
+        if total <= 0:
+            return 0
+        return min(total, max(int(total * 0.8), 500))
+
+    def _supplementary_phase_done(self, done: int, total: int) -> bool:
+        threshold = self._supplementary_completion_threshold(total)
+        return threshold > 0 and done >= threshold
+
     def _next_hour_seconds(self) -> int:
         """計算距離下一個整點還有幾秒（加 61 秒緩衝）"""
         now = datetime.now()
@@ -1538,6 +1554,7 @@ class PrefetchWorker:
         self._supplementary_date = target_date
 
         target_str = target_date.isoformat()
+        active_ids: set[str] = set()
         active_set = set(active_ids)
         try:
             from db.database import get_session
@@ -1683,7 +1700,8 @@ class PrefetchWorker:
             from db.price_cache import get_delisted_stocks
             all_df = get_stock_list()
             skip = set(get_delisted_stocks(include_legacy_no_update=True))
-            active_count = len(set(all_df["stock_id"].tolist()) - skip)
+            active_ids = set(all_df["stock_id"].tolist()) - skip
+            active_count = len(active_ids)
         except Exception as e:
             logger.warning(f"法人執行緒取得股票清單失敗：{e}")
             active_count = 0
@@ -1692,18 +1710,23 @@ class PrefetchWorker:
             from db.database import get_session
             from sqlalchemy import text
             with get_session() as sess:
-                done_count = sess.execute(
-                    text("SELECT COUNT(DISTINCT stock_id) FROM inst_cache WHERE date = :d"),
+                done_rows = sess.execute(
+                    text("SELECT DISTINCT stock_id FROM inst_cache WHERE date = :d"),
                     {"d": target_str},
-                ).fetchone()[0] or 0
+                ).fetchall()
+                done_ids = {str(row[0]) for row in done_rows if row and row[0]}
         except Exception:
-            done_count = 0
+            done_ids = set()
+
+        if active_ids:
+            done_ids &= active_ids
+        done_count = len(done_ids)
 
         self.inst_supplementary_total = max(active_count, 1)
         self.inst_supplementary_done = done_count
 
         # 80% 覆蓋率視為該日已完成（允許部分股票當日無資料）
-        threshold = max(int(active_count * 0.8), 500) if active_count else 500
+        threshold = self._supplementary_completion_threshold(active_count)
         if done_count >= threshold:
             self._check_supplementary_completion()
             return
@@ -1722,15 +1745,21 @@ class PrefetchWorker:
                 self._check_supplementary_completion()
                 return
 
+            if active_ids and "stock_id" in df.columns:
+                df = df[df["stock_id"].astype(str).isin(active_ids)].copy()
+            if df.empty:
+                self.current_inst_stock = ""
+                self._check_supplementary_completion()
+                return
+
             save_institutional_batch(df)
             self._record_request()
             self.last_fetch_at = datetime.now()
-            fetched_stocks = int(df["stock_id"].nunique()) if "stock_id" in df.columns else 0
-            self.inst_supplementary_done = min(
-                done_count + fetched_stocks, self.inst_supplementary_total
-            )
+            fetched_ids = set(df["stock_id"].astype(str).tolist()) if "stock_id" in df.columns else set()
+            done_ids |= fetched_ids
+            self.inst_supplementary_done = min(len(done_ids), self.inst_supplementary_total)
             self._note_attempt(f"[法人] {target_str}", "ok")
-            logger.info(f"法人全市場批次完成：{fetched_stocks} 檔，日期 {target_str}")
+            logger.info(f"法人全市場批次完成：{len(fetched_ids)} 檔，日期 {target_str}")
         except Exception as e:
             if _is_rate_limited(e):
                 self._note_attempt(f"[法人] {target_str}", "rate_limit")
@@ -1740,8 +1769,44 @@ class PrefetchWorker:
             logger.warning(f"法人全市場批次抓取失敗：{e}")
             self._note_attempt(f"[法人] {target_str}", "error")
 
+            fallback_queue = sorted(active_ids - done_ids - self._inst_no_update) if active_ids else []
+            if fallback_queue:
+                logger.info(f"法人批次失敗，退回逐檔補抓：{len(fallback_queue)} 檔")
+                self._run_inst_fallback_queue(fallback_queue)
+
         self.current_inst_stock = ""
         self._check_supplementary_completion()
+
+    def _run_inst_fallback_queue(self, stock_ids: list[str]):
+        """Fallback path when institutional all_by_date batch fetch fails."""
+        for stock_id in stock_ids:
+            if self._stop_event.is_set():
+                return
+            if self._hour_count() >= self._current_hourly_limit():
+                return
+
+            self.current_inst_stock = f"[法人] {stock_id}"
+            result = self._fetch_inst_today(stock_id)
+            self._note_attempt(self.current_inst_stock, result)
+
+            if result == "rate_limit":
+                self.current_inst_stock = ""
+                return
+            if result in {"ok", "cached"}:
+                self.inst_supplementary_done = min(
+                    self.inst_supplementary_done + 1,
+                    self.inst_supplementary_total,
+                )
+                if result == "ok":
+                    self._record_request()
+                    self.last_fetch_at = datetime.now()
+            elif result == "no_update":
+                self._inst_no_update.add(stock_id)
+                self.inst_supplementary_total = max(0, self.inst_supplementary_total - 1)
+            else:
+                self._inst_error.add(stock_id)
+
+            self.current_inst_stock = ""
 
     def _margin_thread_loop(self):
         """背景融資融券執行緒 — 與 OHLCV 主執行緒平行，0.7s 間隔。"""
@@ -1768,13 +1833,15 @@ class PrefetchWorker:
             self._margin_phase_date = target_date
 
         target_str = target_date.isoformat()
+        active_ids: set[str] = set()
 
         try:
             from data.finmind_client import get_stock_list
             from db.price_cache import get_delisted_stocks
             all_df = get_stock_list()
             skip = set(get_delisted_stocks(include_legacy_no_update=True))
-            active_count = len(set(all_df["stock_id"].tolist()) - skip)
+            active_ids = set(all_df["stock_id"].tolist()) - skip
+            active_count = len(active_ids)
         except Exception as e:
             logger.warning(f"融資執行緒取得股票清單失敗：{e}")
             active_count = 0
@@ -1783,18 +1850,23 @@ class PrefetchWorker:
             from db.database import get_session
             from sqlalchemy import text
             with get_session() as sess:
-                done_count = sess.execute(
-                    text("SELECT COUNT(DISTINCT stock_id) FROM margin_cache WHERE date = :d"),
+                done_rows = sess.execute(
+                    text("SELECT DISTINCT stock_id FROM margin_cache WHERE date = :d"),
                     {"d": target_str},
-                ).fetchone()[0] or 0
+                ).fetchall()
+                done_ids = {str(row[0]) for row in done_rows if row and row[0]}
         except Exception:
-            done_count = 0
+            done_ids = set()
+
+        if active_ids:
+            done_ids &= active_ids
+        done_count = len(done_ids)
 
         self.margin_supplementary_total = max(active_count, 1)
         self.margin_supplementary_done = done_count
 
         # 80% 覆蓋率視為該日已完成（允許部分股票當日無資料）
-        threshold = max(int(active_count * 0.8), 500) if active_count else 500
+        threshold = self._supplementary_completion_threshold(active_count)
         if done_count >= threshold:
             self._check_supplementary_completion()
             return
@@ -1813,15 +1885,21 @@ class PrefetchWorker:
                 self._check_supplementary_completion()
                 return
 
+            if active_ids and "stock_id" in df.columns:
+                df = df[df["stock_id"].astype(str).isin(active_ids)].copy()
+            if df.empty:
+                self.current_margin_stock = ""
+                self._check_supplementary_completion()
+                return
+
             save_margin_batch(df)
             self._record_request()
             self.last_fetch_at = datetime.now()
-            fetched_stocks = int(df["stock_id"].nunique()) if "stock_id" in df.columns else 0
-            self.margin_supplementary_done = min(
-                done_count + fetched_stocks, self.margin_supplementary_total
-            )
+            fetched_ids = set(df["stock_id"].astype(str).tolist()) if "stock_id" in df.columns else set()
+            done_ids |= fetched_ids
+            self.margin_supplementary_done = min(len(done_ids), self.margin_supplementary_total)
             self._note_attempt(f"[融資] {target_str}", "ok")
-            logger.info(f"融資全市場批次完成：{fetched_stocks} 檔，日期 {target_str}")
+            logger.info(f"融資全市場批次完成：{len(fetched_ids)} 檔，日期 {target_str}")
         except Exception as e:
             if _is_rate_limited(e):
                 self._note_attempt(f"[融資] {target_str}", "rate_limit")
@@ -1831,13 +1909,55 @@ class PrefetchWorker:
             logger.warning(f"融資全市場批次抓取失敗：{e}")
             self._note_attempt(f"[融資] {target_str}", "error")
 
+            fallback_queue = sorted(active_ids - done_ids - self._margin_no_update) if active_ids else []
+            if fallback_queue:
+                logger.info(f"融資批次失敗，退回逐檔補抓：{len(fallback_queue)} 檔")
+                self._run_margin_fallback_queue(fallback_queue)
+
         self.current_margin_stock = ""
         self._check_supplementary_completion()
 
+    def _run_margin_fallback_queue(self, stock_ids: list[str]):
+        """Fallback path when margin all_by_date batch fetch fails."""
+        for stock_id in stock_ids:
+            if self._stop_event.is_set():
+                return
+            if self._hour_count() >= self._current_hourly_limit():
+                return
+
+            self.current_margin_stock = f"[融資] {stock_id}"
+            result = self._fetch_margin_today(stock_id)
+            self._note_attempt(self.current_margin_stock, result)
+
+            if result == "rate_limit":
+                self.current_margin_stock = ""
+                return
+            if result in {"ok", "cached"}:
+                self.margin_supplementary_done = min(
+                    self.margin_supplementary_done + 1,
+                    self.margin_supplementary_total,
+                )
+                if result == "ok":
+                    self._record_request()
+                    self.last_fetch_at = datetime.now()
+            elif result == "no_update":
+                self._margin_no_update.add(stock_id)
+                self.margin_supplementary_total = max(0, self.margin_supplementary_total - 1)
+            else:
+                self._margin_error.add(stock_id)
+
+            self.current_margin_stock = ""
+
     def _check_supplementary_completion(self):
         """法人或融資執行緒完成一輪後呼叫，判斷雙方是否均已完成。"""
-        inst_done   = self.inst_supplementary_total > 0 and self.inst_supplementary_done >= self.inst_supplementary_total
-        margin_done = self.margin_supplementary_total > 0 and self.margin_supplementary_done >= self.margin_supplementary_total
+        inst_done = self._supplementary_phase_done(
+            self.inst_supplementary_done,
+            self.inst_supplementary_total,
+        )
+        margin_done = self._supplementary_phase_done(
+            self.margin_supplementary_done,
+            self.margin_supplementary_total,
+        )
         if inst_done and margin_done and not self.supplementary_completed_at:
             self._supplementary_date = _latest_trading_day()
             self.supplementary_completed_at = datetime.now()
@@ -2101,9 +2221,11 @@ class PrefetchWorker:
 
     def status(self) -> dict:
         self._record_request()
-        used  = self._hour_count()
+        used = self._hour_count()
         limit = self._current_hourly_limit()
-        now   = datetime.now()
+        now = datetime.now()
+        all_used = self._get_shared_all_request_count()
+        effective_used = all_used if all_used is not None else used
 
         pause_remaining_sec = 0
         if self.paused_until and self.paused_until > now:
@@ -2118,8 +2240,9 @@ class PrefetchWorker:
             "running":              self.running and bool(self._thread and self._thread.is_alive()),
             "hour_fetched":         used,
             "hourly_limit":         limit,
-            "hourly_remaining":     max(limit - used, 0),
+            "hourly_remaining":     max(limit - effective_used, 0),
             "total_fetched":        self.total_fetched,
+            "all_hour_fetched":     effective_used,
             "queue_size":           self.queue_size,
             "fund_queue_size":      self.fund_queue_size,
             "premium_queue_size":   self.premium_queue_size,
