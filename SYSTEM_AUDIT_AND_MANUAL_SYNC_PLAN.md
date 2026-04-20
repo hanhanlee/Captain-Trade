@@ -303,3 +303,37 @@ The audit is complete only when:
 5. Any leftover external script is either documented as diagnostic-only or deprecated/removed.
 6. `py_compile` and relevant local checks pass.
 7. A final findings section lists unresolved issues with exact file references.
+
+## Audit Progress Notes - 2026-04-20
+
+Baseline:
+
+- Git baseline before this audit: `c23df04 Add intraday monitor and broker-force scan signal`.
+- Services observed running at audit start: Streamlit, Auth/Caddy, and Cloudflare Tunnel.
+- `srock.db` is the active database. The stale `data/stock_data.db` path should not be used for operational checks.
+- Built-in Sponsor broker backfill is enabled in `app_settings` with `premium_broker_backfill_enabled=true` and `premium_broker_backfill_days=30`.
+
+Confirmed implementation behavior:
+
+- `TaiwanStockTradingDailyReport` is now the source for "主力連 3 日買超"; the app stores derived daily rows in `broker_main_force_cache`.
+- The "三大法人買賣超" UI switch controls institutional data only. It does not fetch Sponsor broker-branch data.
+- Portfolio Premium recheck reads local cache only; it does not rerun Premium API calls on every portfolio page load.
+- Intraday holding monitor uses `TaiwanStockKBar` for current price and local daily cache for MA5/MA10/MA20.
+
+Fixes made during audit:
+
+- `pages/7_個股分析.py` had a variable-order bug in v3/v4 scorecards: broker summary variables were read before assignment. The scorecards now compute broker summary before building cards and receive the broker dataframe explicitly.
+- Scanner and stock-analysis copy now distinguishes "三大法人" from Sponsor "分點主力" to reduce user confusion.
+- `使用說明手冊.md` now documents the data inventory, Free/Sponsor distinction, built-in Sponsor broker backfill priority, and known issues.
+
+Known issues carried forward:
+
+- `TaiwanStockShareholdingTransfer` remains a source-confirmation issue. The UI path exists, but missing FinMind data should not yet be treated as app failure.
+- `TaiwanStockPriceLimit` is gated as Premium but not fully wired into a clear user-facing risk display. Avoid raw `price_limit` wording in portfolio alerts.
+- `scripts/premium_broker_backfill.py` is retained for diagnostics only; daily operation should use the built-in Data Management control.
+
+Official FinMind references checked:
+
+- FinMind Chip documentation lists `TaiwanStockTradingDailyReport` as sponsor-only and `TaiwanStockHoldingSharesPer` / disposition-related datasets as backer/sponsor-level datasets.
+- FinMind Technical documentation lists `TaiwanStockKBar` as sponsor-only and `TaiwanStockPriceLimit` as backer/sponsor-level.
+- FinMind API usage documentation confirms `user_info` is the endpoint for `user_count` and `api_request_limit`.

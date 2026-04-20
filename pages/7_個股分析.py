@@ -245,7 +245,23 @@ def _color(passed: bool) -> str:
     return "#27ae60" if passed else "#e74c3c"
 
 
-def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: bool = False):
+def _broker_summary(broker_df: pd.DataFrame | None) -> tuple[bool, float | None, float | None]:
+    """Return whether broker force data is loaded plus latest streak/net values."""
+    if broker_df is None or broker_df.empty:
+        return False, None, None
+    latest_broker = broker_df.sort_values("date").iloc[-1]
+    streak = pd.to_numeric(latest_broker.get("consecutive_buy_days"), errors="coerce")
+    net = pd.to_numeric(latest_broker.get("net"), errors="coerce")
+    return True, streak, net
+
+
+def render_scorecard(
+    sig,
+    df: pd.DataFrame,
+    ma_mode: str = "strict",
+    has_inst: bool = False,
+    broker_df: pd.DataFrame | None = None,
+):
     """v4 條件逐項評分卡"""
     latest = df.iloc[-1]
     prev   = df.iloc[-2] if len(df) >= 2 else latest
@@ -282,6 +298,9 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: b
     resist_60d = df["close"].iloc[-61:-1].max() if len(df) >= 62 else float("nan")
     # RS 分數
     rs_score = sig.rs_score
+
+    # 分點主力摘要（供必要條件卡片 detail 使用）
+    _has_broker, _broker_streak, _broker_net = _broker_summary(broker_df)
 
     # ── 必要條件 ────────────────────────────────────────────────
     st.markdown("##### 必要條件（全部達到才入選）")
@@ -378,15 +397,6 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: b
     # ── 加分條件 ────────────────────────────────────────────────
     st.markdown("##### 加分條件")
 
-    # 分點主力摘要（供卡片 detail 使用）
-    _broker_streak = None
-    _broker_net = None
-    _has_broker = broker_main_force is not None and not broker_main_force.empty
-    if _has_broker:
-        _latest_b = broker_main_force.sort_values("date").iloc[-1]
-        _broker_streak = pd.to_numeric(_latest_b.get("consecutive_buy_days"), errors="coerce")
-        _broker_net = pd.to_numeric(_latest_b.get("net"), errors="coerce")
-
     # 投信今昨資料
     trust_today_val = trust_prev_val = None
     if hasattr(sig, "_trust_detail"):
@@ -429,7 +439,7 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: b
                     else "昨日投信 ≤ 0，今日轉正"
                 )
                 if has_inst else
-                "未載入法人資料（請勾選「載入法人買賣超」）"
+                "未載入三大法人資料（請勾選「載入三大法人買賣超」）"
             ),
         },
         {
@@ -483,7 +493,12 @@ def render_scorecard(sig, df: pd.DataFrame, ma_mode: str = "strict", has_inst: b
     )
 
 
-def render_scorecard_v3(sig, df: pd.DataFrame, has_inst: bool = False):
+def render_scorecard_v3(
+    sig,
+    df: pd.DataFrame,
+    has_inst: bool = False,
+    broker_df: pd.DataFrame | None = None,
+):
     """v3 條件逐項評分卡"""
     latest = df.iloc[-1]
     prev   = df.iloc[-2] if len(df) >= 2 else latest
@@ -518,6 +533,9 @@ def render_scorecard_v3(sig, df: pd.DataFrame, has_inst: bool = False):
 
     # 60 日高點
     resist_60d = df["close"].iloc[-61:-1].max() if len(df) >= 62 else float("nan")
+
+    # 分點主力摘要（供必要條件卡片 detail 使用）
+    _has_broker, _broker_streak, _broker_net = _broker_summary(broker_df)
 
     # ── 必要條件 ────────────────────────────────────────────────
     st.markdown("##### 必要條件（全部達到才入選）")
@@ -673,7 +691,7 @@ def render_scorecard_v3(sig, df: pd.DataFrame, has_inst: bool = False):
             "detail": (
                 "外資、投信、自營各自連續買超條件未達成"
                 if has_inst else
-                "未載入法人資料（請勾選「載入法人買賣超」）"
+                "未載入三大法人資料（請勾選「載入三大法人買賣超」）"
             ),
         },
         {
@@ -1423,9 +1441,12 @@ with st.sidebar:
         st.caption("歷史模式只回放價格條件；法人與融資不回補當日歷史資料，避免混入今日 API 結果。")
 
     load_inst = st.checkbox(
-        "載入法人買賣超",
+        "載入三大法人買賣超",
         value=True,
-        help="v3/v4 皆需判斷主力連續 3 日買超；取消勾選時此必要條件會顯示未通過",
+        help=(
+            "用於投信第一天買超與法人買超加分。"
+            "v3/v4 的「主力連 3 日」改用 Sponsor 分點主力快取，不由此開關載入。"
+        ),
     )
 
     if _custom_preset:
@@ -1457,7 +1478,8 @@ with st.sidebar:
     **說明**
     - 資料來源：本機快取（需先由工作器更新）
     - 若快取無資料，請前往「資料管理」頁面更新
-    - 法人條件需勾選「載入法人買賣超」才能判斷
+    - 三大法人條件需勾選「載入三大法人買賣超」才能判斷
+    - 主力連 3 日買超使用 Sponsor 分點主力快取，需先由「資料管理」補完
     """)
 
 
@@ -1633,10 +1655,21 @@ with col_score:
     _has_inst = bool(inst_buying)
     if _strategy == "v3 均線突破版":
         st.subheader("📋 v3 條件評分卡")
-        render_scorecard_v3(sig, df, has_inst=_has_inst)
+        render_scorecard_v3(
+            sig,
+            df,
+            has_inst=_has_inst,
+            broker_df=broker_main_force if not broker_main_force.empty else None,
+        )
     else:
         st.subheader("📋 v4 條件評分卡")
-        render_scorecard(sig, df, ma_mode=_ma_breakout_mode, has_inst=_has_inst)
+        render_scorecard(
+            sig,
+            df,
+            ma_mode=_ma_breakout_mode,
+            has_inst=_has_inst,
+            broker_df=broker_main_force if not broker_main_force.empty else None,
+        )
 
 with col_chart:
     st.subheader("📈 日K線圖")

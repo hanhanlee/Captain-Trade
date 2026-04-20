@@ -677,8 +677,16 @@ with st.sidebar:
         or st.session_state.get("sb_include_margin", False)
     )
     with st.expander("📊 法人 & 融資條件", expanded=_inst_exp):
-        include_institutional = st.checkbox("納入法人買賣超（較慢）", value=False,
-                                            key="sb_include_inst")
+        include_institutional = st.checkbox(
+            "納入三大法人買賣超（較慢）",
+            value=False,
+            key="sb_include_inst",
+            help=(
+                "這是外資、投信、自營商的加分或額外過濾條件。"
+                "v3/v4 必要條件「主力連 3 日買超」使用 Sponsor 分點主力快取，"
+                "請在資料管理補完。"
+            ),
+        )
         include_margin = st.checkbox(
             "納入融資餘額（消耗 API 額度）", value=False, key="sb_include_margin",
             help="抓取每檔股票近 5 日融資餘額，判斷散戶是否去槓桿（籌碼乾淨）。每檔多 1 次 API 呼叫。",
