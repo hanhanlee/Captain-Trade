@@ -172,7 +172,7 @@ def save_broker_main_force(stock_id: str, rows: list[dict]) -> int:
 
     with get_session() as sess:
         sess.execute(text("""
-            INSERT OR REPLACE INTO broker_main_force_cache
+            INSERT INTO broker_main_force_cache
                 (
                     stock_id, date, buy_top15, sell_top15, net, broker_count,
                     top5_buy_concentration, consecutive_buy_days, reversal_flag,
@@ -184,6 +184,15 @@ def save_broker_main_force(stock_id: str, rows: list[dict]) -> int:
                     :top5_buy_concentration, :consecutive_buy_days, :reversal_flag,
                     :fetched_at
                 )
+            ON CONFLICT(stock_id, date) DO UPDATE SET
+                buy_top15 = excluded.buy_top15,
+                sell_top15 = excluded.sell_top15,
+                net = excluded.net,
+                broker_count = excluded.broker_count,
+                top5_buy_concentration = excluded.top5_buy_concentration,
+                consecutive_buy_days = excluded.consecutive_buy_days,
+                reversal_flag = excluded.reversal_flag,
+                fetched_at = excluded.fetched_at
         """), payload)
         sess.commit()
 

@@ -294,7 +294,7 @@ elif s.get("pause_remaining_sec", 0) > 0:
     rs = s["pause_remaining_sec"] % 60
     resume_str = s["paused_until"].strftime("%H:%M") if s.get("paused_until") else "—"
     _cls, _icon = "warn", "🟠"
-    _main = f"429 限流暫停中（第 {s.get('rate_limit_count',1)} 次）"
+    _main = f"FinMind 限流 / 配額暫停中（第 {s.get('rate_limit_count',1)} 次）"
     _sub  = f"剩餘 {rm} 分 {rs} 秒，預計 {resume_str} 恢復　｜　或按「⚡ 立即恢復」提前繼續"
 elif s["paused_for_market"]:
     _cls, _icon = "warn", "🟡"
@@ -446,7 +446,7 @@ if _la_at and _la_stock:
         "suspended":  ("⚠️", "暫無資料","ar-warn"),
         "no_update":  ("⚠️", "無資料",  "ar-warn"),
         "delisted":   ("🚫", "已下市",  "ar-dim"),
-        "rate_limit": ("🚫", "429 限流","ar-err"),
+        "rate_limit": ("🚫", "限流/配額","ar-err"),
         "error":      ("❌", "錯誤",    "ar-err"),
     }
     _r_icon, _r_label, _r_cls = _result_map.get(
@@ -589,7 +589,7 @@ st.markdown(f"""
     <div class="mb-sub">最近：{elapsed_str}</div>
   </div>
   <div class="metric-box {_rate_cls}">
-    <div class="mb-label">429 限流次數</div>
+        <div class="mb-label">限流 / 配額暫停次數</div>
     <div class="mb-val">{s.get('rate_limit_count', 0)}</div>
     <div class="mb-sub">已略過 {s.get('skip_count', 0)} 檔無資料</div>
   </div>
@@ -911,7 +911,7 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
                                        + ("…" if len(ok_l) > 10 else ""))
                 if fail_l: st.error(f"❌ 失敗：{'、'.join(fail_l[:5])}"
                                      + ("…" if len(fail_l) > 5 else ""))
-                if rl:     st.warning("⚠️ 遇到 429 限流，請等 20 分鐘後再試")
+                if rl:     st.warning("⚠️ 遇到 FinMind 限流或配額暫停，請稍後再試")
                 if ok_l or fail_l: st.rerun()
 
     # ── 附加資料排除清單 ─────────────────────────────────────────

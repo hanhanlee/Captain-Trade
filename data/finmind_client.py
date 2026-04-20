@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 FINMIND_STOCK_TICK_SNAPSHOT_API = "https://api.finmindtrade.com/api/v4/taiwan_stock_tick_snapshot"
+FINMIND_BROKER_DAILY_REPORT_API = "https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report"
 FINMIND_USER_INFO_API = "https://api.web.finmindtrade.com/v2/user_info"
 TOKEN = os.getenv("FINMIND_TOKEN", "")
 
@@ -85,6 +86,8 @@ _premium_state = PremiumState()
 
 _request_lock = threading.Lock()
 _request_times = deque()
+_request_hour_times = deque()
+_request_total = 0
 
 # ── 全域最新交易日（執行緒安全）────────────────────────────────────
 _trading_day_lock = threading.Lock()
@@ -216,6 +219,7 @@ def refresh_finmind_user_info(force: bool = False) -> PremiumState:
         return get_premium_state()
 
     try:
+        _note_http_request()
         resp = requests.get(
             FINMIND_USER_INFO_API,
             headers={"Authorization": f"Bearer {TOKEN}"},
@@ -310,6 +314,30 @@ def _wait_for_rate_limit() -> None:
         time.sleep(min(sleep_for, 5.0))
 
 
+def _note_http_request() -> None:
+    """Track actual FinMind HTTP requests for worker quota accounting and UI."""
+    global _request_total
+
+    now = time.monotonic()
+    with _request_lock:
+        while _request_hour_times and now - _request_hour_times[0] >= 3600:
+            _request_hour_times.popleft()
+        _request_hour_times.append(now)
+        _request_total += 1
+
+
+def get_finmind_request_usage() -> dict[str, int]:
+    """Return shared FinMind HTTP request usage counters."""
+    now = time.monotonic()
+    with _request_lock:
+        while _request_hour_times and now - _request_hour_times[0] >= 3600:
+            _request_hour_times.popleft()
+        return {
+            "last_hour": len(_request_hour_times),
+            "total": int(_request_total),
+        }
+
+
 def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd.DataFrame:
     _premium_gate(dataset)
     _wait_for_rate_limit()
@@ -324,6 +352,7 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
         params["start_date"] = start_date
     params.update(kwargs)
 
+    _note_http_request()
     resp = requests.get(FINMIND_API, params=params, timeout=30)
     if resp.status_code in (402, 403):
         _set_premium_degraded(f"{dataset} HTTP {resp.status_code}")
@@ -336,6 +365,40 @@ def _get(dataset: str, stock_id: str = "", start_date: str = "", **kwargs) -> pd
         if status in (402, 403):
             _set_premium_degraded(f"{dataset} API status {status}: {data.get('msg', '')}")
         raise RuntimeError(f"FinMind API error: {data.get('msg', 'unknown')}")
+
+    return pd.DataFrame(data.get("data", []))
+
+
+def _get_broker_trading_daily_report_raw(stock_id: str, trade_date: str) -> pd.DataFrame:
+    """Fetch sponsor broker daily report from the dedicated special endpoint."""
+    _premium_gate("TaiwanStockTradingDailyReport")
+    _wait_for_rate_limit()
+
+    if not TOKEN:
+        raise RuntimeError("FINMIND_TOKEN is not configured")
+
+    _note_http_request()
+    resp = requests.get(
+        FINMIND_BROKER_DAILY_REPORT_API,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        params={"data_id": str(stock_id).strip(), "date": str(trade_date)[:10]},
+        timeout=30,
+    )
+    if resp.status_code in (402, 403):
+        _set_premium_degraded(f"TaiwanStockTradingDailyReport HTTP {resp.status_code}")
+    resp.raise_for_status()
+
+    data = resp.json()
+    status = data.get("status")
+    if status is not None and str(status) != "200":
+        if status in (402, 403):
+            _set_premium_degraded(
+                "TaiwanStockTradingDailyReport API status "
+                f"{status}: {data.get('msg', '')}"
+            )
+        raise RuntimeError(
+            f"FinMind broker daily report error: {data.get('msg', 'unknown')}"
+        )
 
     return pd.DataFrame(data.get("data", []))
 
@@ -353,6 +416,7 @@ def get_realtime_stock_snapshot(stock_id: str) -> dict | None:
     if not TOKEN:
         raise RuntimeError("FINMIND_TOKEN is not configured")
 
+    _note_http_request()
     resp = requests.get(
         FINMIND_STOCK_TICK_SNAPSHOT_API,
         headers={"Authorization": f"Bearer {TOKEN}"},
@@ -497,12 +561,7 @@ def get_broker_trading_daily_report(stock_id: str, trade_date) -> pd.DataFrame:
     sponsor 權限。buy_volume / sell_volume 單位為股。
     """
     d = trade_date.date().isoformat() if hasattr(trade_date, "date") else str(trade_date)[:10]
-    df = _get(
-        "TaiwanStockTradingDailyReport",
-        stock_id=stock_id,
-        start_date=d,
-        end_date=d,
-    )
+    df = _get_broker_trading_daily_report_raw(stock_id=stock_id, trade_date=d)
     if df.empty:
         return df
 

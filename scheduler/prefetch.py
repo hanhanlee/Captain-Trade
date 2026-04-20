@@ -37,12 +37,21 @@ BACKTEST_PREFETCH_DAYS    = BACKTEST_PREFETCH_YEARS * 365  # ≈ 3650 天
 TRADING_END_DEFAULT_HHMM  = (15, 0)    # 尚無學習記錄時的保底開始時間（最晚 15:00）
 ADAPTIVE_LEAD_MIN         = 10         # 比學習到的最早更新時間提早幾分鐘開始全速
 STALE_DELISTED_DAYS       = 180        # 快取超過此天數仍無新資料 → 視為下市/合併，永久跳過
+BROKER_READY_HHMM         = (21, 15)   # 券商分點官方資料通常需到 21:00 後才穩定
 
 
-def _is_429(exc: Exception) -> bool:
-    """判斷例外是否為 429 限額"""
+def _is_rate_limited(exc: Exception) -> bool:
+    """判斷例外是否為 FinMind 限流或額度耗盡。"""
     msg = str(exc).lower()
-    return "429" in msg or "too many requests" in msg or "rate limit" in msg
+    return (
+        "429" in msg
+        or "402" in msg
+        or "403" in msg
+        or "too many requests" in msg
+        or "rate limit" in msg
+        or "upper limit" in msg
+        or "quota" in msg
+    )
 
 
 def _latest_trading_day() -> date:
@@ -61,7 +70,10 @@ def _latest_trading_day() -> date:
             return today - timedelta(days=1)
         if wd == 6:
             return today - timedelta(days=2)
-        return today
+        fallback = today - timedelta(days=1)
+        while fallback.weekday() >= 5:
+            fallback -= timedelta(days=1)
+        return fallback
 
 
 class PrefetchWorker:
@@ -76,8 +88,8 @@ class PrefetchWorker:
         current_stock (str)         — 正在抓取的股票代碼
         queue_size (int)            — 待抓取數量（快照）
         paused_for_market (bool)    — 是否因交易時間降速
-        paused_until (datetime|None)— 429 暫停到幾點（None = 未暫停）
-        rate_limit_count (int)      — 本次啟動共遇到幾次 429
+        paused_until (datetime|None)— 限流/配額暫停到幾點（None = 未暫停）
+        rate_limit_count (int)      — 本次啟動共遇到幾次限流/配額暫停
     """
 
     def __init__(self):
@@ -85,6 +97,7 @@ class PrefetchWorker:
         self.hour_fetched: int = 0
         self.total_fetched: int = 0
         self._hour_window: deque = deque()
+        self._request_total_baseline: int = 0
         self.last_fetch_at: datetime | None = None
         self.current_stock: str = ""
         self.queue_size: int = 0
@@ -172,6 +185,9 @@ class PrefetchWorker:
             return
         self._stop_event.clear()
         self._wake_event.set()
+        self._request_total_baseline = self._get_shared_request_total()
+        self.total_fetched = 0
+        self.hour_fetched = 0
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="prefetch-worker"
         )
@@ -196,7 +212,7 @@ class PrefetchWorker:
         logger.info("PrefetchWorker 已要求停止")
 
     def resume(self):
-        """手動提前恢復（清除 429 暫停）"""
+        """手動提前恢復（清除限流/配額暫停）"""
         self.paused_until = None
         self._resume_event.set()
         self._wake_event.set()
@@ -450,16 +466,44 @@ class PrefetchWorker:
         return 0.1
 
     def _hour_count(self) -> int:
+        shared = self._get_shared_request_usage()
+        if shared is not None:
+            self.hour_fetched = int(shared.get("last_hour") or 0)
+            return self.hour_fetched
+
         cutoff = datetime.now() - timedelta(hours=1)
         while self._hour_window and self._hour_window[0] < cutoff:
             self._hour_window.popleft()
         return len(self._hour_window)
 
     def _record_request(self):
+        shared = self._get_shared_request_usage()
+        if shared is not None:
+            self.hour_fetched = int(shared.get("last_hour") or 0)
+            self.total_fetched = max(
+                0,
+                int(shared.get("total") or 0) - int(self._request_total_baseline or 0),
+            )
+            return
+
         with self._request_lock:
             self._hour_window.append(datetime.now())
             self.hour_fetched = len(self._hour_window)
             self.total_fetched += 1
+
+    def _get_shared_request_usage(self) -> dict | None:
+        try:
+            from data.finmind_client import get_finmind_request_usage
+
+            return get_finmind_request_usage()
+        except Exception:
+            return None
+
+    def _get_shared_request_total(self) -> int:
+        shared = self._get_shared_request_usage()
+        if shared is None:
+            return 0
+        return int(shared.get("total") or 0)
 
     def _next_hour_seconds(self) -> int:
         """計算距離下一個整點還有幾秒（加 61 秒緩衝）"""
@@ -469,7 +513,7 @@ class PrefetchWorker:
 
     def _pause_for_rate_limit(self, until_next_hour: bool = False):
         """
-        遇到 429：
+        遇到 FinMind 限流或額度耗盡：
         - 一般模式：暫停固定 RATE_LIMIT_PAUSE_MIN 分鐘
         - 重建模式：等到下一個整點（FinMind 重置時間）+ 61 秒緩衝
           確保跨整點後立即恢復，不浪費任何配額
@@ -485,7 +529,7 @@ class PrefetchWorker:
             else:
                 mode_label = "重建模式" if self.rebuild_mode else "回測重建模式"
             logger.warning(
-                f"[{mode_label}] 收到 429（第 {self.rate_limit_count} 次），"
+                f"[{mode_label}] 收到限流/配額訊號（第 {self.rate_limit_count} 次），"
                 f"等待至下一整點 {resume_at_str}（{wait_sec//60} 分 {wait_sec%60} 秒後）"
             )
         else:
@@ -493,7 +537,7 @@ class PrefetchWorker:
             self.paused_until = datetime.now() + timedelta(seconds=wait_sec)
             resume_at_str = self.paused_until.strftime("%H:%M:%S")
             logger.warning(
-                f"收到 429，第 {self.rate_limit_count} 次限額，"
+                f"收到 FinMind 限流/配額訊號，第 {self.rate_limit_count} 次，"
                 f"暫停 {RATE_LIMIT_PAUSE_MIN} 分鐘至 {resume_at_str}"
             )
 
@@ -502,7 +546,22 @@ class PrefetchWorker:
 
         self.paused_until = None
         if not self._stop_event.is_set():
-            logger.info("429 暫停結束，繼續抓取")
+            logger.info("限流/配額暫停結束，繼續抓取")
+
+    def _broker_backfill_window_open(self) -> bool:
+        """Avoid probing today's broker dataset before FinMind official update window."""
+        try:
+            from db.settings import is_market_closed
+            if is_market_closed():
+                return True
+        except Exception:
+            pass
+
+        if date.today().weekday() >= 5:
+            return True
+
+        from datetime import time as _time
+        return datetime.now().time() >= _time(*BROKER_READY_HHMM)
 
     def _is_market_holiday(self) -> bool:
         """判斷目前是否處於休市壓力真空期（週末 or 手動休市模式）"""
@@ -556,7 +615,7 @@ class PrefetchWorker:
                     self._record_request()
                     self._wait_with_wake(self._normal_fetch_interval())
                 except Exception as e:
-                    if _is_429(e):
+                    if _is_rate_limited(e):
                         self._pause_for_rate_limit()
                         break
                     logger.debug(f"死股回收 {sid} 失敗：{e}")
@@ -588,7 +647,7 @@ class PrefetchWorker:
             smart_get_fundamentals(stock_id)
             return "ok"
         except Exception as e:
-            if _is_429(e):
+            if _is_rate_limited(e):
                 return "rate_limit"
             logger.debug(f"抓取基本面 {stock_id} 失敗：{e}")
             return "error"
@@ -655,9 +714,13 @@ class PrefetchWorker:
                     )
                 """))
                 sess.execute(text("""
-                    INSERT OR REPLACE INTO premium_fetch_status
+                    INSERT INTO premium_fetch_status
                     (stock_id, dataset, as_of_date, status, note, fetched_at)
                     VALUES (:stock_id, :dataset, :as_of_date, :status, :note, :fetched_at)
+                    ON CONFLICT(stock_id, dataset, as_of_date) DO UPDATE SET
+                        status = excluded.status,
+                        note = excluded.note,
+                        fetched_at = excluded.fetched_at
                 """), {
                     "stock_id": stock_id,
                     "dataset": dataset,
@@ -716,7 +779,7 @@ class PrefetchWorker:
                     self._record_request()
                 except Exception as e:
                     self._save_premium_fetch_status(stock_id, name, latest_s, "error", str(e))
-                    if _is_429(e):
+                    if _is_rate_limited(e):
                         raise
                     result["error"].append(f"{name}: {e}")
         return result
@@ -941,7 +1004,7 @@ class PrefetchWorker:
             return status
         except Exception as e:
             self._save_premium_fetch_status(stock_id, "broker_main_force", trade_date, "error", str(e))
-            if _is_429(e):
+            if _is_rate_limited(e):
                 raise
             return "error"
 
@@ -996,7 +1059,7 @@ class PrefetchWorker:
                 else:
                     self.premium_done += 1
             except Exception as e:
-                if _is_429(e):
+                if _is_rate_limited(e):
                     self._pause_for_rate_limit(until_next_hour=True)
                     if self._stop_event.is_set():
                         self.premium_last_summary = "stopped: worker stop requested"
@@ -1065,7 +1128,7 @@ class PrefetchWorker:
                 else:
                     self.premium_done += 1
             except Exception as e:
-                if _is_429(e):
+                if _is_rate_limited(e):
                     self._pause_for_rate_limit(until_next_hour=True)
                     if self._stop_event.is_set():
                         self.premium_last_summary = "stopped: worker stop requested"
@@ -1151,7 +1214,7 @@ class PrefetchWorker:
             save_prices(stock_id, new_df)
             return "ok"
         except Exception as e:
-            if _is_429(e):
+            if _is_rate_limited(e):
                 return "rate_limit"
             logger.debug(f"抓取回測歷史 {stock_id} 失敗：{e}")
             return "error"
@@ -1422,7 +1485,7 @@ class PrefetchWorker:
             save_institutional(stock_id, df)
             return "ok"
         except Exception as e:
-            if _is_429(e):
+            if _is_rate_limited(e):
                 return "rate_limit"
             logger.debug(f"法人資料 {stock_id} 失敗：{e}")
             return "error"
@@ -1455,7 +1518,7 @@ class PrefetchWorker:
             save_margin(stock_id, df)
             return "ok"
         except Exception as e:
-            if _is_429(e):
+            if _is_rate_limited(e):
                 return "rate_limit"
             logger.debug(f"融資資料 {stock_id} 失敗：{e}")
             return "error"
@@ -1669,7 +1732,7 @@ class PrefetchWorker:
             self._note_attempt(f"[法人] {target_str}", "ok")
             logger.info(f"法人全市場批次完成：{fetched_stocks} 檔，日期 {target_str}")
         except Exception as e:
-            if _is_429(e):
+            if _is_rate_limited(e):
                 self._note_attempt(f"[法人] {target_str}", "rate_limit")
                 self.current_inst_stock = ""
                 self._stop_event.wait(timeout=60)
@@ -1760,7 +1823,7 @@ class PrefetchWorker:
             self._note_attempt(f"[融資] {target_str}", "ok")
             logger.info(f"融資全市場批次完成：{fetched_stocks} 檔，日期 {target_str}")
         except Exception as e:
-            if _is_429(e):
+            if _is_rate_limited(e):
                 self._note_attempt(f"[融資] {target_str}", "rate_limit")
                 self.current_margin_stock = ""
                 self._stop_event.wait(timeout=60)
@@ -1788,7 +1851,7 @@ class PrefetchWorker:
     #   'cached'     — 快取仍新鮮，跳過
     #   'suspended'  — 有舊快取，但本次抓不到新資料；同日先暫停重試
     #   'delisted'   — 無舊快取且 API 仍回空值，視為永久跳過
-    #   'rate_limit' — 429
+    #   'rate_limit' — FinMind 限流或配額耗盡
     #   'error'      — 其他例外
     def _fetch_one(self, stock_id: str) -> str:
         try:
@@ -1832,7 +1895,7 @@ class PrefetchWorker:
             set_fetch_status(stock_id, "normal")
             return "normal"
         except Exception as e:
-            if _is_429(e):
+            if _is_rate_limited(e):
                 return "rate_limit"
             logger.debug(f"抓取 {stock_id} 失敗：{e}")
             return "error"
@@ -1923,7 +1986,7 @@ class PrefetchWorker:
                 self._try_recover_dead_stocks()
 
                 # Premium broker backfill（OHLCV + supplementary 完成後才執行，避免堵住收盤資料更新）
-                if self.premium_broker_backfill_mode and not self._within_trading_hours():
+                if self.premium_broker_backfill_mode and not self._within_trading_hours() and self._broker_backfill_window_open():
                     result = self.prefetch_market_broker_by_date(
                         days=self.premium_broker_backfill_days
                     )
@@ -1938,6 +2001,11 @@ class PrefetchWorker:
                         self.premium_last_summary = "broker backfill complete: no missing targets"
                     self._wait_with_wake(5)
                     continue
+                if self.premium_broker_backfill_mode and not self._within_trading_hours() and not self._broker_backfill_window_open():
+                    self.premium_last_summary = (
+                        f"broker backfill waiting: official update after "
+                        f"{BROKER_READY_HHMM[0]:02d}:{BROKER_READY_HHMM[1]:02d}"
+                    )
 
                 fund_ids = self._get_funds_needing_fetch()
                 self.fund_queue_size = len(fund_ids)
@@ -2032,6 +2100,7 @@ class PrefetchWorker:
         logger.info("PrefetchWorker 迴圈結束")
 
     def status(self) -> dict:
+        self._record_request()
         used  = self._hour_count()
         limit = self._current_hourly_limit()
         now   = datetime.now()
