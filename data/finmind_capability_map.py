@@ -39,11 +39,12 @@ DATASET_CAP: dict[str, dict] = {
         "endpoint": "taiwan_stock_trading_daily_report",
     },
     "TaiwanStockTradingDailyReportSecIdAgg": {
-        "endpoint_type": "data_wrapper",
+        "endpoint_type": "special",
         "premium": True,
         "all_by_date": False,
         "single_day_only": False,
-        "note": "Use dedicated wrapper to keep routing explicit even though current API shape is dataset-based.",
+        "endpoint": "taiwan_stock_trading_daily_report_secid_agg",
+        "note": "Dedicated special endpoint: /api/v4/taiwan_stock_trading_daily_report_secid_agg. Supports optional securities_trader_id parameter.",
     },
     "TaiwanStockHoldingSharesPer": {
         "endpoint_type": "data",

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 FINMIND_STOCK_TICK_SNAPSHOT_API = "https://api.finmindtrade.com/api/v4/taiwan_stock_tick_snapshot"
 FINMIND_BROKER_DAILY_REPORT_API = "https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report"
+FINMIND_BROKER_DAILY_REPORT_SECID_AGG_API = "https://api.finmindtrade.com/api/v4/taiwan_stock_trading_daily_report_secid_agg"
 FINMIND_USER_INFO_API = "https://api.web.finmindtrade.com/v2/user_info"
 TOKEN = os.getenv("FINMIND_TOKEN", "")
 
@@ -510,21 +511,62 @@ def _get_broker_trading_daily_report_secid_agg_raw(
     stock_id: str,
     start_date: str,
     end_date: str = "",
+    securities_trader_id: str | None = None,
 ) -> pd.DataFrame:
-    """Fetch sponsor broker SecId aggregation through a dedicated client wrapper."""
-    dataset = "TaiwanStockTradingDailyReportSecIdAgg"
-    _ensure_dataset_routing(dataset, allow_data_wrapper=True)
-
-    kwargs = {}
+    """
+    Fetch sponsor broker SecId aggregation through dedicated special endpoint.
+    
+    Official endpoint: /api/v4/taiwan_stock_trading_daily_report_secid_agg
+    Parameters: stock_id, start_date, end_date (optional), securities_trader_id (optional)
+    """
+    _check_premium("TaiwanStockTradingDailyReportSecIdAgg")
+    
+    params = {
+        "stock_id": str(stock_id).strip(),
+        "start_date": str(start_date)[:10],
+    }
     if end_date:
-        kwargs["end_date"] = str(end_date)[:10]
-    return _get(
-        dataset,
-        stock_id=stock_id,
-        start_date=str(start_date)[:10],
-        allow_data_wrapper=True,
-        **kwargs,
-    )
+        params["end_date"] = str(end_date)[:10]
+    if securities_trader_id:
+        params["securities_trader_id"] = str(securities_trader_id).strip()
+    
+    headers = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
+    
+    try:
+        resp = requests.get(
+            FINMIND_BROKER_DAILY_REPORT_SECID_AGG_API,
+            params=params,
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("status") == 200 and data.get("data"):
+            df = pd.DataFrame(data["data"])
+            _record_request(_REQUEST_KIND_DATA)
+            return df
+        else:
+            logger.warning(
+                "TaiwanStockTradingDailyReportSecIdAgg returned empty or error: %s",
+                data.get("message", "unknown"),
+            )
+            return pd.DataFrame()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            _record_rate_limit_hit()
+            raise RateLimitError(str(e))
+        logger.warning(
+            "TaiwanStockTradingDailyReportSecIdAgg HTTP error: %s",
+            e,
+        )
+        return pd.DataFrame()
+    except Exception as e:
+        logger.warning(
+            "TaiwanStockTradingDailyReportSecIdAgg fetch error: %s",
+            e,
+        )
+        return pd.DataFrame()
 
 
 def get_realtime_stock_snapshot(stock_id: str) -> dict | None:
@@ -673,8 +715,8 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
             """))
             sess.execute(text("DROP TABLE IF EXISTS temp.stock_info_refresh_stage"))
             sess.commit()
-    except Exception:
-        pass  # 快取寫入失敗不影響功能
+    except Exception as e:
+        logger.exception("stock_info_cache refresh failed: %s", e)
 
     return df
 
