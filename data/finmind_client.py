@@ -465,7 +465,11 @@ def get_broker_trading_daily_report(stock_id: str, trade_date) -> pd.DataFrame:
         return df
 
     df["date"] = pd.to_datetime(df["date"])
-    for col in ["buy_volume", "sell_volume", "buy_price", "sell_price"]:
+    if "buy_volume" not in df.columns and "buy" in df.columns:
+        df["buy_volume"] = df["buy"]
+    if "sell_volume" not in df.columns and "sell" in df.columns:
+        df["sell_volume"] = df["sell"]
+    for col in ["buy_volume", "sell_volume", "buy_price", "sell_price", "buy", "sell"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     if "buy_volume" not in df.columns:

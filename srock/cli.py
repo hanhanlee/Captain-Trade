@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import getpass
+import sys
 import time
 import webbrowser
+from datetime import datetime, time as dtime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -12,7 +14,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from srock import auth as auth_mod
-from srock.config import load_config
+from srock.config import ROOT, load_config
 from srock.display import console, print_status, tail_log, watch_status
 from srock.services import CaddyService, FunnelService, StreamlitService
 
@@ -127,6 +129,37 @@ def _ask_password(confirm: bool = True) -> str:
     return pw
 
 
+def _startup_public_url(cfg, profile: Profile, funnel: FunnelService) -> str:
+    if profile == Profile.full:
+        return funnel.public_url() or "(Tunnel URL 尚未取得)"
+    if profile == Profile.protected:
+        return f"http://127.0.0.1:{cfg.auth_port}"
+    return f"http://127.0.0.1:{cfg.streamlit_port}"
+
+
+def _notify_startup_complete(cfg, profile: Profile, funnel: FunnelService) -> None:
+    now = datetime.now()
+    if not (dtime(8, 0) <= now.time() <= dtime(20, 0)):
+        return
+
+    url = _startup_public_url(cfg, profile, funnel)
+    msg = (
+        "Srock 服務已啟動\n"
+        f"時間：{now.strftime('%Y-%m-%d %H:%M')}\n"
+        f"對外網址：{url}"
+    )
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from notifications.line_notify import send_multicast
+        if send_multicast(msg):
+            _ok("已推播服務啟動通知")
+        else:
+            _warn("服務已啟動，但 LINE 啟動通知未送出")
+    except Exception as e:
+        _warn(f"服務已啟動，但 LINE 啟動通知失敗：{e}")
+
+
 # ── Default command (no subcommand → show status) ─────────────
 
 @app.callback(invoke_without_command=True)
@@ -175,6 +208,7 @@ def up(
 
     console.rule()
     print_status(cfg)
+    _notify_startup_complete(cfg, profile, funnel)
 
     if cfg.auto_open_browser:
         url = f"http://127.0.0.1:{cfg.streamlit_port}"
@@ -232,6 +266,7 @@ def restart(
 
     console.rule()
     print_status(cfg)
+    _notify_startup_complete(cfg, profile, funnel)
 
     if not no_watch and cfg.watch_after_up:
         console.print("\n[dim]進入監控模式（Ctrl+C 離開）[/dim]")
@@ -321,7 +356,9 @@ def start_caddy():
 def start_funnel():
     """啟動 Cloudflare Tunnel。"""
     cfg = load_config()
-    _start_tunnel(FunnelService(cfg))
+    funnel = FunnelService(cfg)
+    _start_tunnel(funnel)
+    _notify_startup_complete(cfg, Profile.full, funnel)
 
 
 @stop_app.command("streamlit")

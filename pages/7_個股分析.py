@@ -890,13 +890,17 @@ def render_institutional_chart(main_force_df: pd.DataFrame):
     plot_df = main_force_df.copy()
     plot_df["date"] = pd.to_datetime(plot_df["date"])
     plot_df["net"] = pd.to_numeric(plot_df["net"], errors="coerce").fillna(0)
+    plot_df = plot_df.sort_values("date").tail(30).reset_index(drop=True)
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=plot_df["date"],
         y=plot_df["net"],
         name="主力買賣超",
-        marker_color="#2f8bd8",
+        marker_color=[
+            "#d62728" if value > 0 else "#2ca02c" if value < 0 else "#8a8f98"
+            for value in plot_df["net"]
+        ],
         hovertemplate="%{x|%Y-%m-%d}<br>主力買賣超 %{y:,.0f} 張<extra></extra>",
     ))
 
