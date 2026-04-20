@@ -58,26 +58,38 @@ class PremiumUnavailableError(RuntimeError):
         self.reason = reason
 
 
-_PREMIUM_DATASETS = {
-    "TaiwanStockTradingDailyReport",
-    "TaiwanStockTradingDailyReportSecIdAgg",
-    "TaiwanStockHoldingSharesPer",
-    "TaiwanStockDispositionSecuritiesPeriod",
-    "TaiwanStockSuspended",
-    "TaiwanStockShareholdingTransfer",
-    "TaiwanStockAttentionSecuritiesPeriod",
-    "TaiwanStockTreasuryShares",
-    "TaiwanStockPriceLimit",
-    "TaiwanStockKBar",
-    "TaiwanStockPriceTick",
-    "taiwan_stock_tick_snapshot",
-}
+# Build _PREMIUM_DATASETS and _FUNDAMENTAL_DATASETS from capability map to avoid duplication
+def _build_dataset_sets() -> tuple[set[str], set[str]]:
+    """Generate premium and fundamental dataset sets from capability_map.
+    
+    Single source of truth: capability map is the authority.
+    This avoids maintenance drift between hardcoded sets and the routing registry.
+    """
+    from data.finmind_capability_map import get_dataset_capability
+    
+    premium = set()
+    fundamental = set()
+    
+    # Try to import capability map; fallback to empty sets if unavailable during early import
+    try:
+        from data.finmind_capability_map import DATASET_CAP
+        for name, cap in DATASET_CAP.items():
+            if cap.get("premium"):
+                premium.add(name)
+            # Fundamental datasets end with financial/balance/cash flow indicator
+            if any(x in name for x in [
+                "FinancialStatements",
+                "BalanceSheet",
+                "CashFlowsStatement",
+            ]):
+                fundamental.add(name)
+    except Exception:
+        # Fallback during circular import; user code will trigger full initialization
+        pass
+    
+    return premium, fundamental
 
-_FUNDAMENTAL_DATASETS = {
-    "TaiwanStockFinancialStatements",
-    "TaiwanStockBalanceSheet",
-    "TaiwanStockCashFlowsStatement",
-}
+_PREMIUM_DATASETS, _FUNDAMENTAL_DATASETS = _build_dataset_sets()
 
 _settings_lock = threading.Lock()
 _settings_cache: dict | None = None
@@ -776,12 +788,21 @@ def get_broker_trading_daily_report_secid_agg(
     stock_id: str,
     start_date: str,
     end_date: str = "",
+    securities_trader_id: str | None = None,
 ) -> pd.DataFrame:
-    """Return broker daily aggregated branch stats via an explicit dataset wrapper."""
+    """Return broker daily aggregated branch stats via an explicit dataset wrapper.
+    
+    Args:
+        stock_id: Stock ID to query
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD), optional
+        securities_trader_id: Specific securities trader ID to filter by, optional
+    """
     df = _get_broker_trading_daily_report_secid_agg_raw(
         data_id=stock_id,
         start_date=start_date,
         end_date=end_date,
+        securities_trader_id=securities_trader_id,
     )
     if df.empty:
         return df
