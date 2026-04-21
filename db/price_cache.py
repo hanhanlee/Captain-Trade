@@ -78,6 +78,46 @@ def save_prices(stock_id: str, df: pd.DataFrame, replace: bool = True) -> int:
     return len(rows)
 
 
+def save_prices_batch(df: pd.DataFrame) -> int:
+    """
+    多股批次寫入日K資料（一次 DB transaction）。
+
+    df 須含 stock_id 欄位，其餘欄位同 save_prices。
+    使用 INSERT OR REPLACE 確保覆蓋舊資料。
+    """
+    if df.empty or "stock_id" not in df.columns:
+        return 0
+
+    now_str = datetime.now().isoformat()
+    rows = []
+    for _, row in df.iterrows():
+        d = row["date"].date() if hasattr(row["date"], "date") else row["date"]
+        rows.append({
+            "stock_id": str(row["stock_id"]),
+            "date":   str(d),
+            "open":   float(row["open"])                                          if pd.notna(row.get("open"))                            else None,
+            "high":   float(row.get("max", row.get("high", None)))                if pd.notna(row.get("max", row.get("high")))            else None,
+            "low":    float(row.get("min", row.get("low",  None)))                if pd.notna(row.get("min", row.get("low")))             else None,
+            "close":  float(row["close"])                                         if pd.notna(row.get("close"))                           else None,
+            "volume": float(row.get("Trading_Volume", row.get("volume", None)))   if pd.notna(row.get("Trading_Volume", row.get("volume"))) else None,
+            "ts":     now_str,
+        })
+
+    if not rows:
+        return 0
+
+    sql = text("""
+        INSERT OR REPLACE INTO price_cache
+            (stock_id, date, open, high, low, close, volume, updated_at)
+        VALUES
+            (:stock_id, :date, :open, :high, :low, :close, :volume, :ts)
+    """)
+    with get_session() as sess:
+        sess.execute(sql, rows)
+        sess.commit()
+    return len(rows)
+
+
 def load_prices(stock_id: str, start_date: str = None, end_date: str = None,
                 lookback_days: int = None) -> pd.DataFrame:
     """

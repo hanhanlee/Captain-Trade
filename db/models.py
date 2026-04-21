@@ -169,6 +169,21 @@ class MarginCache(Base):
     fetch_at       = Column(String(30))  # ISO timestamp
 
 
+class FinmindFetchTiming(Base):
+    """FinMind 各資料類型每次批次抓取的時間點與筆數記錄（分析發布規律用）"""
+    __tablename__ = "finmind_fetch_timing"
+    __table_args__ = (
+        Index("idx_fft_type_date", "data_type", "trading_date"),
+    )
+
+    id           = Column(Integer, primary_key=True)
+    trading_date = Column(String(10), nullable=False)  # 交易日 'YYYY-MM-DD'
+    data_type    = Column(String(10), nullable=False)  # 'inst' | 'margin' | 'price'
+    fetch_at     = Column(String(30), nullable=False)  # ISO datetime，本次抓取時間點
+    stock_count  = Column(Integer,    nullable=False)  # 本次 active 股票中有資料的數量
+    active_total = Column(Integer,    nullable=False)  # active 股票總數（分母）
+
+
 class InstCache(Base):
     """三大法人買賣超本機快取（每日一次，避免重複 API 請求）"""
     __tablename__ = "inst_cache"

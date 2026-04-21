@@ -44,7 +44,7 @@ DATASET_CAP: dict[str, dict] = {
         "all_by_date": False,
         "single_day_only": False,
         "endpoint": "taiwan_stock_trading_daily_report_secid_agg",
-        "note": "Dedicated special endpoint: /api/v4/taiwan_stock_trading_daily_report_secid_agg. Supports optional securities_trader_id parameter.",
+        "note": "Dedicated special endpoint: /api/v4/taiwan_stock_trading_daily_report_secid_agg. securities_trader_id is REQUIRED by the API (HTTP 400 if omitted).",
     },
     "TaiwanStockHoldingSharesPer": {
         "endpoint_type": "data",

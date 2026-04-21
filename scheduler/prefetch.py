@@ -164,6 +164,26 @@ class PrefetchWorker:
         self._margin_thread: threading.Thread | None = None
         self._inst_phase_date: date | None = None
         self._margin_phase_date: date | None = None
+        # 批次模式：記錄已執行全市場批次抓取的交易日，避免因覆蓋率不足而重複抓
+        self._inst_batch_fetched_date: date | None = None
+        self._margin_batch_fetched_date: date | None = None
+        self._price_batch_fetched_date: date | None = None
+        # 穩定計數：連續兩輪相同筆數 → 宣告今日完成
+        self._inst_prev_done: int = -1
+        self._inst_stable_rounds: int = 0
+        self._margin_prev_done: int = -1
+        self._margin_stable_rounds: int = 0
+        # 下次執行時間（UI 顯示倒數用）
+        self._inst_next_check_at: datetime | None = None
+        self._margin_next_check_at: datetime | None = None
+        # 最後確認時間（每次嘗試都更新，不論是否有新資料）
+        self._inst_last_checked_at: datetime | None = None
+        self._margin_last_checked_at: datetime | None = None
+        # 最後有新資料的時間與筆數（僅 count 增加時更新）
+        self._inst_last_new_data_at: datetime | None = None
+        self._inst_last_new_count: int = 0
+        self._margin_last_new_data_at: datetime | None = None
+        self._margin_last_new_count: int = 0
 
     # ── 公開控制 ───────────────────────────────────────────────
 
@@ -1658,8 +1678,16 @@ class PrefetchWorker:
             return
 
         # 兩者均完成
-        inst_done   = self.inst_supplementary_done   >= self.inst_supplementary_total   > 0
-        margin_done = self.margin_supplementary_done >= self.margin_supplementary_total > 0
+        # total == 0 表示佇列本來就是空的（全部已快取或全 no_update），視為該階段已完成。
+        # 避免「empty queue」被 > 0 guard 永久判定為未完成。
+        inst_done = (
+            self.inst_supplementary_total == 0
+            or self.inst_supplementary_done >= self.inst_supplementary_total > 0
+        )
+        margin_done = (
+            self.margin_supplementary_total == 0
+            or self.margin_supplementary_done >= self.margin_supplementary_total > 0
+        )
         if inst_done and margin_done:
             self.supplementary_completed_at = datetime.now()
             logger.info(
@@ -1673,12 +1701,15 @@ class PrefetchWorker:
         """背景法人執行緒 — 與 OHLCV 主執行緒平行，0.7s 間隔。"""
         logger.info("法人執行緒已啟動")
         while not self._stop_event.is_set():
+            self._inst_next_check_at = None
             try:
                 self._run_inst_phase()
             except Exception:
                 logger.exception("法人執行緒發生未預期例外")
+            self._inst_next_check_at = datetime.now() + timedelta(seconds=300)
             self._stop_event.wait(timeout=300)
         self.current_inst_stock = ""
+        self._inst_next_check_at = None
         logger.info("法人執行緒已停止")
 
     def _run_inst_phase(self):
@@ -1692,6 +1723,8 @@ class PrefetchWorker:
             self._inst_no_update.clear()
             self._inst_error.clear()
             self._inst_phase_date = target_date
+            self._inst_prev_done = -1
+            self._inst_stable_rounds = 0
 
         target_str = target_date.isoformat()
 
@@ -1725,12 +1758,6 @@ class PrefetchWorker:
         self.inst_supplementary_total = max(active_count, 1)
         self.inst_supplementary_done = done_count
 
-        # 80% 覆蓋率視為該日已完成（允許部分股票當日無資料）
-        threshold = self._supplementary_completion_threshold(active_count)
-        if done_count >= threshold:
-            self._check_supplementary_completion()
-            return
-
         if self._hour_count() >= self._current_hourly_limit():
             return
 
@@ -1740,6 +1767,8 @@ class PrefetchWorker:
             from db.inst_cache import save_institutional_batch
 
             df = get_all_institutional_by_date(target_str)
+            self._inst_last_checked_at = datetime.now()
+
             if df.empty:
                 self.current_inst_stock = ""
                 self._check_supplementary_completion()
@@ -1757,9 +1786,48 @@ class PrefetchWorker:
             self.last_fetch_at = datetime.now()
             fetched_ids = set(df["stock_id"].astype(str).tolist()) if "stock_id" in df.columns else set()
             done_ids |= fetched_ids
-            self.inst_supplementary_done = min(len(done_ids), self.inst_supplementary_total)
+
+            # 重新從 DB 計算實際完成數（INSERT OR REPLACE 後最準確）
+            try:
+                from db.database import get_session as _gs
+                from sqlalchemy import text as _text
+                with _gs() as _s:
+                    _rows = _s.execute(
+                        _text("SELECT DISTINCT stock_id FROM inst_cache WHERE date = :d"),
+                        {"d": target_str},
+                    ).fetchall()
+                    _db_ids = {str(r[0]) for r in _rows if r and r[0]}
+                if active_ids:
+                    _db_ids &= active_ids
+                done_count = len(_db_ids)
+            except Exception:
+                done_count = len(done_ids & active_ids) if active_ids else len(done_ids)
+
+            self.inst_supplementary_done = min(done_count, self.inst_supplementary_total)
             self._note_attempt(f"[法人] {target_str}", "ok")
-            logger.info(f"法人全市場批次完成：{len(fetched_ids)} 檔，日期 {target_str}")
+
+            # 穩定計數（純 UI 顯示，不觸發停止）
+            if done_count > 0 and done_count == self._inst_prev_done:
+                self._inst_stable_rounds += 1
+            else:
+                self._inst_stable_rounds = 0
+
+            # 有新資料才寫 DB log 並更新「最後新增」時間
+            if done_count > self._inst_prev_done:
+                self._inst_last_new_data_at = datetime.now()
+                self._inst_last_new_count = done_count
+                try:
+                    from db.fetch_timing import log_fetch as _log_fetch
+                    _log_fetch(target_str, "inst", done_count, active_count)
+                except Exception:
+                    pass
+
+            self._inst_prev_done = done_count
+
+            logger.info(
+                f"法人批次 {target_str}：{done_count}/{active_count} 檔，"
+                f"穩定 {self._inst_stable_rounds} 輪，5 分鐘後重試"
+            )
         except Exception as e:
             if _is_rate_limited(e):
                 self._note_attempt(f"[法人] {target_str}", "rate_limit")
@@ -1812,12 +1880,15 @@ class PrefetchWorker:
         """背景融資融券執行緒 — 與 OHLCV 主執行緒平行，0.7s 間隔。"""
         logger.info("融資執行緒已啟動")
         while not self._stop_event.is_set():
+            self._margin_next_check_at = None
             try:
                 self._run_margin_phase()
             except Exception:
                 logger.exception("融資執行緒發生未預期例外")
+            self._margin_next_check_at = datetime.now() + timedelta(seconds=300)
             self._stop_event.wait(timeout=300)
         self.current_margin_stock = ""
+        self._margin_next_check_at = None
         logger.info("融資執行緒已停止")
 
     def _run_margin_phase(self):
@@ -1831,6 +1902,8 @@ class PrefetchWorker:
             self._margin_no_update.clear()
             self._margin_error.clear()
             self._margin_phase_date = target_date
+            self._margin_prev_done = -1
+            self._margin_stable_rounds = 0
 
         target_str = target_date.isoformat()
         active_ids: set[str] = set()
@@ -1865,12 +1938,6 @@ class PrefetchWorker:
         self.margin_supplementary_total = max(active_count, 1)
         self.margin_supplementary_done = done_count
 
-        # 80% 覆蓋率視為該日已完成（允許部分股票當日無資料）
-        threshold = self._supplementary_completion_threshold(active_count)
-        if done_count >= threshold:
-            self._check_supplementary_completion()
-            return
-
         if self._hour_count() >= self._current_hourly_limit():
             return
 
@@ -1880,6 +1947,8 @@ class PrefetchWorker:
             from db.margin_cache import save_margin_batch
 
             df = get_all_margin_by_date(target_str)
+            self._margin_last_checked_at = datetime.now()
+
             if df.empty:
                 self.current_margin_stock = ""
                 self._check_supplementary_completion()
@@ -1897,9 +1966,48 @@ class PrefetchWorker:
             self.last_fetch_at = datetime.now()
             fetched_ids = set(df["stock_id"].astype(str).tolist()) if "stock_id" in df.columns else set()
             done_ids |= fetched_ids
-            self.margin_supplementary_done = min(len(done_ids), self.margin_supplementary_total)
+
+            # 重新從 DB 計算實際完成數
+            try:
+                from db.database import get_session as _gs
+                from sqlalchemy import text as _text
+                with _gs() as _s:
+                    _rows = _s.execute(
+                        _text("SELECT DISTINCT stock_id FROM margin_cache WHERE date = :d"),
+                        {"d": target_str},
+                    ).fetchall()
+                    _db_ids = {str(r[0]) for r in _rows if r and r[0]}
+                if active_ids:
+                    _db_ids &= active_ids
+                done_count = len(_db_ids)
+            except Exception:
+                done_count = len(done_ids & active_ids) if active_ids else len(done_ids)
+
+            self.margin_supplementary_done = min(done_count, self.margin_supplementary_total)
             self._note_attempt(f"[融資] {target_str}", "ok")
-            logger.info(f"融資全市場批次完成：{len(fetched_ids)} 檔，日期 {target_str}")
+
+            # 穩定計數（純 UI 顯示，不觸發停止）
+            if done_count > 0 and done_count == self._margin_prev_done:
+                self._margin_stable_rounds += 1
+            else:
+                self._margin_stable_rounds = 0
+
+            # 有新資料才寫 DB log 並更新「最後新增」時間
+            if done_count > self._margin_prev_done:
+                self._margin_last_new_data_at = datetime.now()
+                self._margin_last_new_count = done_count
+                try:
+                    from db.fetch_timing import log_fetch as _log_fetch
+                    _log_fetch(target_str, "margin", done_count, active_count)
+                except Exception:
+                    pass
+
+            self._margin_prev_done = done_count
+
+            logger.info(
+                f"融資批次 {target_str}：{done_count}/{active_count} 檔，"
+                f"穩定 {self._margin_stable_rounds} 輪，5 分鐘後重試"
+                )
         except Exception as e:
             if _is_rate_limited(e):
                 self._note_attempt(f"[融資] {target_str}", "rate_limit")
@@ -1954,10 +2062,18 @@ class PrefetchWorker:
             self.inst_supplementary_done,
             self.inst_supplementary_total,
         )
+        # total == 0 且 individual loop 已執行過（_supplementary_date 已設定）代表
+        # inst 佇列本來就是空的（資料全部已快取），應視為完成，而非「尚未初始化」。
+        if not inst_done and self._supplementary_date is not None and self.inst_supplementary_total == 0:
+            inst_done = True
+
         margin_done = self._supplementary_phase_done(
             self.margin_supplementary_done,
             self.margin_supplementary_total,
         )
+        if not margin_done and self._supplementary_date is not None and self.margin_supplementary_total == 0:
+            margin_done = True
+
         if inst_done and margin_done and not self.supplementary_completed_at:
             self._supplementary_date = _latest_trading_day()
             self.supplementary_completed_at = datetime.now()
@@ -2019,6 +2135,63 @@ class PrefetchWorker:
                 return "rate_limit"
             logger.debug(f"抓取 {stock_id} 失敗：{e}")
             return "error"
+
+    def _run_price_batch_phase(self):
+        """抓取今日全市場股價（FinMind 單次批次，覆蓋所有活躍股票）。"""
+        try:
+            target_date = _latest_trading_day()
+        except Exception:
+            return
+
+        if self._price_batch_fetched_date == target_date:
+            return
+
+        target_str = target_date.isoformat()
+
+        try:
+            from data.finmind_client import get_stock_list
+            from db.price_cache import get_delisted_stocks
+            all_df = get_stock_list()
+            skip = set(get_delisted_stocks(include_legacy_no_update=True))
+            active_ids = set(all_df["stock_id"].tolist()) - skip
+            active_count = len(active_ids)
+        except Exception as e:
+            logger.warning(f"股價批次：取得股票清單失敗：{e}")
+            return
+
+        if self._hour_count() >= self._current_hourly_limit():
+            return
+
+        try:
+            from data.finmind_client import get_all_prices_by_date
+            from db.price_cache import save_prices_batch
+
+            df = get_all_prices_by_date(target_str)
+            if df.empty:
+                logger.info(f"股價批次 {target_str}：FinMind 尚無資料，稍後重試")
+                return
+
+            if active_ids and "stock_id" in df.columns:
+                df = df[df["stock_id"].astype(str).isin(active_ids)].copy()
+
+            saved = save_prices_batch(df)
+            self._record_request()
+            self.last_fetch_at = datetime.now()
+
+            try:
+                from db.fetch_timing import log_fetch as _log_fetch
+                _log_fetch(target_str, "price", saved, active_count)
+            except Exception:
+                pass
+
+            self._price_batch_fetched_date = target_date
+            logger.info(f"股價批次完成：{saved}/{active_count} 檔，日期 {target_str}")
+
+        except Exception as e:
+            if _is_rate_limited(e):
+                self._stop_event.wait(timeout=60)
+                return
+            logger.warning(f"股價全市場批次抓取失敗：{e}")
 
     def _run_loop(self):
         logger.info("PrefetchWorker 迴圈開始")
@@ -2083,6 +2256,14 @@ class PrefetchWorker:
             if self._should_run_yahoo_bridge():
                 self._run_yahoo_bridge_phase()
                 continue
+
+            # ── FinMind 股價全市場批次：收盤後一次抓完所有股票（每日一次）─────────
+            # 條件：盤後且 Yahoo Bridge 已完成（或今日不是交易日）
+            if (
+                not self._within_trading_hours()
+                and self._price_batch_fetched_date != _latest_trading_day()
+            ):
+                self._run_price_batch_phase()
 
             # ── 一般模式：抓取近期價格資料 ─────────────────────────
             # 取得待抓清單（needs_update 用於顯示，full_queue 用於實際抓取）
@@ -2296,6 +2477,20 @@ class PrefetchWorker:
             "margin_supplementary_done":   self.margin_supplementary_done,
             "supplementary_date":          self._supplementary_date,
             "supplementary_completed_at":  self.supplementary_completed_at,
+            # 穩定計數 + 下次重試時間 + 確認時間（UI 顯示用）
+            "inst_stable_rounds":          self._inst_stable_rounds,
+            "margin_stable_rounds":        self._margin_stable_rounds,
+            "inst_next_check_at":          self._inst_next_check_at,
+            "margin_next_check_at":        self._margin_next_check_at,
+            "inst_last_checked_at":        self._inst_last_checked_at,
+            "margin_last_checked_at":      self._margin_last_checked_at,
+            "inst_last_new_data_at":       self._inst_last_new_data_at,
+            "inst_last_new_count":         self._inst_last_new_count,
+            "margin_last_new_data_at":     self._margin_last_new_data_at,
+            "margin_last_new_count":       self._margin_last_new_count,
+            "inst_batch_done":             self._inst_batch_fetched_date == latest_td,
+            "margin_batch_done":           self._margin_batch_fetched_date == latest_td,
+            "price_batch_done":            self._price_batch_fetched_date == latest_td,
         }
 
 

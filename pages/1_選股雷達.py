@@ -905,91 +905,155 @@ tab_scan, tab_funnel, tab_sector, tab_chart, tab_history = st.tabs(
 
 
 # ══ Tab：掃描結果 ════════════════════════════════════════════
+
+# ── 法人資料確認 Dialog（Streamlit 1.29+）──────────────────────
+@st.dialog("法人資料確認")
+def _show_inst_dialog():
+    _done = st.session_state.get("_inst_dlg_done", 0)
+    _ref  = st.session_state.get("_inst_dlg_ref", "")
+    st.markdown(
+        f"目前 DB 中有 **{_done:,}** 檔股票有今日（{_ref}）法人資料。\n\n"
+        "FinMind 法人資料全天持續更新，今日完整度尚無法確認。\n"
+        "請選擇本次掃描方式："
+    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("排除法人條件", use_container_width=True,
+                     help="法人相關條件（含必要條件）全部跳過，避免因資料不完整而誤判"):
+            st.session_state["inst_scan_mode"] = "exclude"
+            st.session_state["_inst_dlg_pending"] = False
+            st.session_state["_inst_dlg_confirm"] = True
+            st.rerun()
+    with c2:
+        if st.button("用現有資料掃描", use_container_width=True, type="primary",
+                     help="用 DB 現有資料評分；無資料的股票不加不減（不影響其他條件）"):
+            st.session_state["inst_scan_mode"] = "partial"
+            st.session_state["_inst_dlg_pending"] = False
+            st.session_state["_inst_dlg_confirm"] = True
+            st.rerun()
+    with c3:
+        if st.button("取消掃描", use_container_width=True):
+            st.session_state["_inst_dlg_pending"] = False
+            st.rerun()
+
 with tab_scan:
     # ── 今日資料就緒提示（歷史日期不顯示）─────────────────────────
-    _today_core_pct      = 1.0
-    _today_supp_ready    = True
+    _today_core_pct = 1.0
+    _inst_done_n    = 0
+    _active_n       = 1
     if not _is_historical:
         try:
+            from data.finmind_client import resolve_latest_trading_day as _resolve_ltd
             from db.price_cache import get_delisted_stocks as _get_del, get_known_stock_ids as _get_known
             from db.database import get_session as _get_sess
             from sqlalchemy import text as _sql_text
-            _today_str = _date_cls.today().strftime("%Y-%m-%d")
+            # 3a: 使用實際參考交易日，而非今日日期
+            _ref_trading_date = _resolve_ltd()
+            _ref_str_scan = _ref_trading_date.isoformat()
             with _get_sess() as _sess:
                 _core_done_n = _sess.execute(
                     _sql_text("SELECT COUNT(DISTINCT stock_id) FROM price_cache WHERE date = :d"),
-                    {"d": _today_str}
+                    {"d": _ref_str_scan}
                 ).fetchone()[0]
                 _inst_done_n = _sess.execute(
                     _sql_text("SELECT COUNT(DISTINCT stock_id) FROM inst_cache WHERE date = :d"),
-                    {"d": _today_str}
+                    {"d": _ref_str_scan}
                 ).fetchone()[0]
-            _skip_n    = set(_get_del(include_legacy_no_update=True))
-            _known_n   = _get_known()
-            _active_n  = max(len(set(_known_n) - _skip_n), 1)
-            _today_core_pct   = _core_done_n / _active_n
-            _today_supp_ready = (_inst_done_n / _active_n) >= 0.9
+            _skip_n  = set(_get_del(include_legacy_no_update=True))
+            _known_n = _get_known()
+            _active_n = max(len(set(_known_n) - _skip_n), 1)
+            _today_core_pct = _core_done_n / _active_n
         except Exception:
-            pass
+            _ref_str_scan = _date_cls.today().isoformat()
 
         if _today_core_pct < 1.0:
             st.info(
                 f"今日價格資料仍在更新中（{_today_core_pct*100:.0f}%），"
                 "掃描結果可能不完整。建議等資料補齊後再掃描，或使用昨日資料。"
             )
-        if not _today_supp_ready:
-            st.info(
-                "法人 / 融資資料尚未就緒，掃描時相關加分條件將自動停用。"
-            )
 
     clicked_scan = st.button("🚀 開始掃描", type="primary", use_container_width=True)
+
+    # 法人 dialog 確認完成 → 推進到原有資料新鮮度流程
+    if st.session_state.pop("_inst_dlg_confirm", False):
+        from db.price_cache import get_cache_summary as _get_cache_summary2
+        from datetime import datetime as _dt2, date as _date2
+        _now2 = _dt2.now()
+        _today2 = _date2.today()
+        _summary2 = _get_cache_summary2()
+        if not _summary2.empty:
+            _max_date2 = _date2.fromisoformat(str(_summary2["latest"].max()))
+            _already2  = _now2.hour >= 15 and _max_date2 >= _today2
+        else:
+            _already2, _max_date2 = False, None
+        if _already2:
+            st.session_state["scan_date"]     = scan_date
+            st.session_state["scan_cache_only"] = True
+            st.session_state["do_scan"]        = True
+        else:
+            st.session_state["scan_pending"]   = True
+            st.session_state["scan_cache_max"] = str(_max_date2) if _max_date2 else "無資料"
 
     if clicked_scan:
         # 歷史日期：資料已在 DB，直接走 cache-only 不需要確認
         if _is_historical:
+            st.session_state["inst_scan_mode"] = "exclude"  # 歷史掃描法人從 cache 讀，不需 dialog
             st.session_state["scan_cache_only"] = True
             st.session_state["scan_date"] = scan_date
             st.session_state["do_scan"] = True
         else:
-            from db.price_cache import get_cache_summary as _get_cache_summary
-            from datetime import datetime as _dt, date as _date
-            _now = _dt.now()
-            _today = _date.today()
-            _after_close = _now.hour >= 15
-            _summary = _get_cache_summary()
-            if not _summary.empty:
-                _max_date_str = _summary["latest"].max()
-                _max_date = _date.fromisoformat(str(_max_date_str))
-                _already_updated = _after_close and _max_date >= _today
+            # 3b: 今日掃描且有法人條件 → 先跳出 inst dialog
+            _needs_inst_check = include_institutional and scan_date >= _date_cls.today()
+            if _needs_inst_check:
+                st.session_state["_inst_dlg_pending"] = True
+                st.session_state["_inst_dlg_done"]    = _inst_done_n
+                st.session_state["_inst_dlg_ref"]     = getattr(locals(), "_ref_str_scan",
+                                                                 _date_cls.today().isoformat())
             else:
-                _already_updated = False
-                _max_date = None
+                # 不需要 inst dialog → 直接走資料新鮮度流程
+                from db.price_cache import get_cache_summary as _get_cache_summary
+                from datetime import datetime as _dt, date as _date
+                _now = _dt.now()
+                _today = _date.today()
+                _after_close = _now.hour >= 15
+                _summary = _get_cache_summary()
+                if not _summary.empty:
+                    _max_date_str = _summary["latest"].max()
+                    _max_date = _date.fromisoformat(str(_max_date_str))
+                    _already_updated = _after_close and _max_date >= _today
+                else:
+                    _already_updated = False
+                    _max_date = None
+                if _already_updated:
+                    st.session_state["scan_date"]     = scan_date
+                    st.session_state["scan_cache_only"] = True
+                    st.session_state["do_scan"]        = True
+                else:
+                    st.session_state["scan_pending"]   = True
+                    st.session_state["scan_cache_max"] = str(_max_date) if _max_date else "無資料"
 
-            if _already_updated:
-                st.session_state["scan_date"] = scan_date
-                st.session_state["do_scan"] = True
-            else:
-                st.session_state["scan_pending"] = True
-                st.session_state["scan_cache_max"] = str(_max_date) if _max_date else "無資料"
+    # 法人 dialog（3b）
+    if st.session_state.get("_inst_dlg_pending"):
+        _show_inst_dialog()
 
-    # 確認對話框
+    # 資料新鮮度確認框（原有邏輯保留）
     if st.session_state.get("scan_pending"):
         _max_disp = st.session_state.get("scan_cache_max", "無資料")
         st.warning(f"⚠️ 資料庫最新報價日期：**{_max_disp}**，與今日不同。")
         _c_ok, _c_cache, _c_cancel = st.columns(3)
         with _c_ok:
             if st.button("🌐 更新後掃描", type="primary", use_container_width=True):
-                st.session_state["scan_pending"] = False
+                st.session_state["scan_pending"]   = False
                 st.session_state["scan_cache_only"] = False
-                st.session_state["scan_date"] = scan_date
-                st.session_state["do_scan"] = True
+                st.session_state["scan_date"]       = scan_date
+                st.session_state["do_scan"]         = True
                 st.rerun()
         with _c_cache:
             if st.button("📦 直接用資料庫掃描", use_container_width=True):
-                st.session_state["scan_pending"] = False
+                st.session_state["scan_pending"]   = False
                 st.session_state["scan_cache_only"] = True
-                st.session_state["scan_date"] = scan_date
-                st.session_state["do_scan"] = True
+                st.session_state["scan_date"]       = scan_date
+                st.session_state["do_scan"]         = True
                 st.rerun()
         with _c_cancel:
             if st.button("❌ 取消", use_container_width=True):
@@ -1000,8 +1064,10 @@ with tab_scan:
         _cache_only_mode = st.session_state.pop("scan_cache_only", False)
         _active_scan_date = st.session_state.get("scan_date", _date_cls.today())
         _is_hist_scan = _active_scan_date < _date_cls.today()
-        # 歷史日期 OR 今日附加資料未就緒 → 停用法人/融資加分條件
-        _disable_non_price_extras = _is_hist_scan or (not _is_hist_scan and not _today_supp_ready)
+        # 3c: inst_mode 決定法人條件行為；margin/fundamental 仍由 hist 控制
+        _inst_mode            = st.session_state.get("inst_scan_mode", "partial")
+        _disable_inst         = _is_hist_scan  # 歷史掃描由 cache 讀，不走 disable 路徑
+        _disable_non_price_extras = _is_hist_scan  # margin / fundamental 維持原邏輯
         # 建立資料來源管理器（每次掃描重新初始化，確保從 FinMind 優先）
         dsm = DataSourceManager()
 
@@ -1088,7 +1154,7 @@ with tab_scan:
                         price_data[sid] = df
 
                     # 法人資料
-                    if not _disable_non_price_extras and dsm.institutional_available:
+                    if not _disable_non_price_extras and _inst_mode != "exclude" and dsm.institutional_available:
                         # 當日掃描：呼叫 live API
                         idf = dsm.get_institutional(sid, days=10)
                         if not idf.empty:
@@ -1191,9 +1257,13 @@ with tab_scan:
             fundamental_filter = {}
 
         with st.spinner("計算指標，篩選中..."):
-            use_inst = bool(inst_data) or (
-                dsm.institutional_available and not _disable_non_price_extras
+            # 3c: inst_mode="exclude" → 傳空 dict 給 run_scan；"partial" → 用現有資料
+            use_inst = (
+                _inst_mode != "exclude"
+                and (bool(inst_data) or (dsm.institutional_available and not _disable_non_price_extras))
             )
+            if _inst_mode == "exclude":
+                st.caption("⚠️ 本次掃描已排除法人相關條件（含必要條件）")
             if _is_hist_scan and inst_data:
                 st.caption(f"歷史掃描：從本機快取讀取 {len(inst_data)} 檔法人資料（截至 {_active_scan_date}）")
 

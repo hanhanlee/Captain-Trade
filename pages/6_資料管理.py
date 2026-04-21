@@ -170,7 +170,7 @@ st.markdown("""
     margin-bottom: 12px;
 }
 
-/* ── 最近嘗試列 ── */
+/* ── 最近嘗試列（保留舊樣式相容） ── */
 .attempt-row {
     display: flex;
     align-items: center;
@@ -196,6 +196,62 @@ st.markdown("""
   font-style: italic;
   white-space: nowrap;
 }
+
+/* ── 執行緒詳細狀態面板 ── */
+.thread-panel {
+    background: var(--secondary-background-color);
+    border: 1px solid rgba(128,128,128,0.18);
+    border-radius: 8px;
+    padding: 13px 16px 10px 16px;
+    margin: 6px 0 4px 0;
+}
+.thread-panel .tp-title {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.09em;
+    text-transform: uppercase; opacity: 0.38; margin-bottom: 10px;
+}
+.thread-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.thread-card {
+    border: 1px solid rgba(128,128,128,0.15);
+    border-radius: 6px;
+    padding: 9px 12px;
+}
+.tc-label  { font-size: 9.5px; opacity: 0.38; text-transform: uppercase;
+             letter-spacing: 0.06em; margin-bottom: 4px; }
+.tc-status { font-size: 12.5px; font-weight: 600; margin-bottom: 2px; }
+.tc-status.running { color: #16a34a; }
+.tc-status.waiting { color: #d97706; }
+.tc-status.done    { color: #16a34a; }
+.tc-status.idle    { color: var(--text-color); opacity: 0.45; }
+.tc-status.stopped { color: var(--text-color); opacity: 0.35; }
+.tc-detail { font-size: 10.5px; opacity: 0.45; line-height: 1.55; }
+.tc-stable { font-size: 10px; opacity: 0.38; margin-top: 2px; }
+.tc-times  { font-size: 10.5px; opacity: 0.5; margin-top: 6px;
+             border-top: 1px solid rgba(128,128,128,0.12); padding-top: 5px;
+             line-height: 1.7; }
+.tc-tlabel { opacity: 0.55; min-width: 52px; display: inline-block; }
+
+/* ── 最後嘗試橫欄（新版） ── */
+.la-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    border-top: 1px solid rgba(128,128,128,0.12);
+    padding-top: 9px; margin-top: 2px;
+    font-size: 11.5px; color: var(--text-color);
+}
+.la-label { font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em;
+            text-transform: uppercase; opacity: 0.35; margin-right: 2px; }
+.la-time  { opacity: 0.55; font-variant-numeric: tabular-nums; }
+.la-sep   { opacity: 0.2; }
+.la-src   { font-weight: 600; opacity: 0.75; }
+.la-stock { font-family: monospace; font-size: 11px; opacity: 0.65; }
+.la-ok    { color: #16a34a; font-weight: 500; }
+.la-warn  { color: #d97706; font-weight: 500; }
+.la-err   { color: #dc2626; font-weight: 500; }
+.la-dim   { opacity: 0.35; }
 
 summary, .streamlit-expanderHeader p { font-size: 13.5px !important; }
 </style>
@@ -415,78 +471,174 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── 最近嘗試資訊列 ────────────────────────────────────────────────
+# ── 執行緒詳細狀態面板 ───────────────────────────────────────────────
+def _fmt_countdown(dt) -> str:
+    """將 datetime 轉成「Xm Ys 後」字串；若已過期則回傳空字串。"""
+    if dt is None:
+        return ""
+    rem = int((dt - datetime.now()).total_seconds())
+    if rem <= 0:
+        return "即將執行"
+    if rem < 60:
+        return f"{rem}s 後"
+    return f"{rem//60}m{rem%60:02d}s 後"
+
+def _thread_card_html(label: str, cur_stock: str, done: int, total: int,
+                      stable: int, next_at,
+                      last_checked_at, last_new_data_at, last_new_count: int) -> str:
+    """產生單一執行緒（法人/融資）狀態卡 HTML。"""
+
+    def _ts(dt) -> str:
+        return dt.strftime("%H:%M:%S") if dt else "—"
+
+    def _ago(dt) -> str:
+        if not dt:
+            return ""
+        el = int((datetime.now() - dt).total_seconds())
+        return f"{el}s 前" if el < 60 else f"{el//60}m{el%60:02d}s 前"
+
+    if not s.get("running"):
+        status_cls, status_txt = "stopped", "— 已停止"
+        body = ""
+    elif cur_stock:
+        clean = cur_stock.split("] ", 1)[-1] if "] " in cur_stock else cur_stock
+        status_cls, status_txt = "running", "▶ 抓取中"
+        body = f'<div class="tc-detail">{clean}</div>'
+    elif next_at:
+        cd = _fmt_countdown(next_at)
+        status_cls, status_txt = "waiting", "⏱ 等待中"
+        count_str = f"{done:,}/{total:,} 檔" if total > 0 else "待啟動"
+        body = f'<div class="tc-detail">{count_str} · 穩定 {stable} 輪</div>'
+        body += f'<div class="tc-stable">下次 {cd}</div>'
+    else:
+        status_cls, status_txt = "idle", "— 待啟動"
+        body = f'<div class="tc-detail">{done}/{total} 檔</div>' if total > 0 else ""
+
+    # 兩個時間欄（不論狀態都顯示）
+    new_str = (f'<span style="color:#16a34a">+{last_new_count:,} 檔</span> · {_ts(last_new_data_at)} ({_ago(last_new_data_at)})'
+               if last_new_data_at else "尚無")
+    chk_str = f'{_ts(last_checked_at)} ({_ago(last_checked_at)})' if last_checked_at else "尚未確認"
+    times_html = f"""
+<div class="tc-times">
+  <div><span class="tc-tlabel">有新資料</span> {new_str}</div>
+  <div><span class="tc-tlabel">最後確認</span> {chk_str}</div>
+</div>"""
+
+    return f"""
+<div class="thread-card">
+  <div class="tc-label">{label}</div>
+  <div class="tc-status {status_cls}">{status_txt}</div>
+  {body}
+  {times_html}
+</div>"""
+
+def _main_thread_card_html() -> str:
+    cur = s.get("current_stock", "")
+    q = s.get("queue_size", 0)
+    if not s.get("running"):
+        return """<div class="thread-card">
+  <div class="tc-label">主執行緒</div>
+  <div class="tc-status stopped">— 已停止</div></div>"""
+    if s.get("yahoo_bridge_in_progress"):
+        bd = s.get("yahoo_bridge_batch_done", 0)
+        bt = s.get("yahoo_bridge_batch_total", 0)
+        return f"""<div class="thread-card">
+  <div class="tc-label">主執行緒</div>
+  <div class="tc-status running">▶ Yahoo Bridge</div>
+  <div class="tc-detail">批次 {bd}/{bt}</div></div>"""
+    if cur:
+        clean = cur.split("] ", 1)[-1] if "] " in cur else cur
+        phase = "基本面" if cur.startswith("[基本面]") else ("OHLCV" if not cur.startswith("[") else "其他")
+        return f"""<div class="thread-card">
+  <div class="tc-label">主執行緒</div>
+  <div class="tc-status running">▶ 抓取中</div>
+  <div class="tc-detail">{clean}</div>
+  <div class="tc-stable">{phase} · 剩 {q} 檔</div></div>"""
+    paused_until = s.get("paused_until")
+    if paused_until and paused_until > datetime.now():
+        rm = int((paused_until - datetime.now()).total_seconds())
+        return f"""<div class="thread-card">
+  <div class="tc-label">主執行緒</div>
+  <div class="tc-status waiting">⏸ 限流暫停</div>
+  <div class="tc-detail">{rm//60}m{rm%60:02d}s 後恢復</div></div>"""
+    status_txt = "待機中" if q == 0 else f"準備下一輪（{q} 檔）"
+    return f"""<div class="thread-card">
+  <div class="tc-label">主執行緒</div>
+  <div class="tc-status idle">○ {status_txt}</div></div>"""
+
+# 最後嘗試資訊
 _la_at     = s.get("last_attempt_at")
 _la_result = s.get("last_attempt_result", "")
 _la_stock  = s.get("last_attempt_stock", "")
 
+_src_map = {
+    "[法人]":   "法人批次",
+    "[融資]":   "融資批次",
+    "[基本面]": "基本面",
+    "[回測]":   "回測歷史",
+    "[Yahoo]":  "Yahoo Finance",
+    "[重建]":   "全速重建",
+}
+_result_map = {
+    "normal":     ("✅", "已更新",    "la-ok"),
+    "ok":         ("✅", "成功",      "la-ok"),
+    "cached":     ("⏭",  "快取命中",  "la-dim"),
+    "suspended":  ("⚠️", "暫無資料", "la-warn"),
+    "no_update":  ("⚠️", "無資料",   "la-warn"),
+    "delisted":   ("🚫", "已下市",   "la-dim"),
+    "rate_limit": ("🚫", "限流",     "la-err"),
+    "error":      ("❌", "錯誤",     "la-err"),
+}
+
 if _la_at and _la_stock:
-    # 來源標籤
-    _src_map = {
-        "[法人]":  ("法人資料",  "#60a5fa"),
-        "[融資]":  ("融資融券",  "#60a5fa"),
-        "[基本面]":("基本面",    "#60a5fa"),
-        "[回測]":  ("回測歷史",  "#a78bfa"),
-        "[Yahoo]": ("Yahoo Finance", "#34d399"),
-        "[重建]":  ("全速重建",  "#f87171"),
-    }
-    _src_label, _src_color = "FinMind 價格", "#60a5fa"
+    _src_label = "FinMind 價格"
     _clean_stock = _la_stock
-    for _prefix, (_lbl, _col) in _src_map.items():
-        if _la_stock.startswith(_prefix):
-            _src_label, _src_color = _lbl, _col
-            _clean_stock = _la_stock[len(_prefix):].strip()
+    for _pfx, _lbl in _src_map.items():
+        if _la_stock.startswith(_pfx):
+            _src_label = _lbl
+            _clean_stock = _la_stock[len(_pfx):].strip()
             break
-
-    # 結果標籤
-    _result_map = {
-        "normal":     ("✅", "已更新",   "ar-ok"),
-        "ok":         ("✅", "成功",     "ar-ok"),
-        "cached":     ("⏭",  "快取命中", "ar-dim"),
-        "suspended":  ("⚠️", "暫無資料","ar-warn"),
-        "no_update":  ("⚠️", "無資料",  "ar-warn"),
-        "delisted":   ("🚫", "已下市",  "ar-dim"),
-        "rate_limit": ("🚫", "限流/配額","ar-err"),
-        "error":      ("❌", "錯誤",    "ar-err"),
-    }
-    _r_icon, _r_label, _r_cls = _result_map.get(
-        _la_result, ("—", _la_result or "—", "ar-dim")
-    )
-
-    # 時間
+    _r_icon, _r_label, _r_cls = _result_map.get(_la_result, ("—", _la_result or "—", "la-dim"))
     _el = int((datetime.now() - _la_at).total_seconds())
     _ago = f"{_el}s 前" if _el < 60 else f"{_el//60}m{_el%60:02d}s 前"
-    _time_str = _la_at.strftime("%H:%M:%S")
-
-    # 工作階段上下文標籤（最近嘗試所屬的執行緒）
-    _la_stock_str = s.get("last_attempt_stock", "")
-    if _la_stock_str.startswith("[法人]"):
-        _inst_d2 = s.get("inst_supplementary_done", 0)
-        _inst_t2 = s.get("inst_supplementary_total", 0) or "?"
-        _phase_ctx = f"補充法人 {_inst_d2}/{_inst_t2}"
-    elif _la_stock_str.startswith("[融資]"):
-        _marg_d2 = s.get("margin_supplementary_done", 0)
-        _marg_t2 = s.get("margin_supplementary_total", 0) or "?"
-        _phase_ctx = f"補充融資 {_marg_d2}/{_marg_t2}"
-    elif _la_stock_str and not _la_stock_str.startswith("["):
-        _q2 = s.get("queue_size", 0)
-        _phase_ctx = f"OHLCV 更新 剩 {_q2} 檔" if _q2 > 0 else "快取巡檢"
-    else:
-        _phase_ctx = ""
-
-    _phase_ctx_html = (
-        f'  <span class="ar-phase">{_phase_ctx}</span>'
-        if _phase_ctx else ""
-    )
-
-    st.markdown(f"""
-<div class="attempt-row">
-  <span class="ar-label">最近嘗試</span>
-  <span class="ar-src" style="color:{_src_color};">{_src_label}</span>
-  <span class="ar-stock">{_clean_stock}</span>
-  <span class="ar-time">{_time_str}（{_ago}）</span>
+    _la_html = f"""
+<div class="la-bar">
+  <span class="la-label">最後嘗試</span>
+  <span class="la-time">{_la_at.strftime('%H:%M:%S')} · {_ago}</span>
+  <span class="la-sep">·</span>
+  <span class="la-src">{_src_label}</span>
+  <span class="la-stock">{_clean_stock}</span>
+  <span class="la-sep">·</span>
   <span class="{_r_cls}">{_r_icon} {_r_label}</span>
-{_phase_ctx_html}
+</div>"""
+else:
+    _la_html = ""
+
+st.markdown(f"""
+<div class="thread-panel">
+  <div class="tp-title">執行緒即時狀態</div>
+  <div class="thread-grid">
+    {_main_thread_card_html()}
+    {_thread_card_html("法人執行緒",
+        s.get("current_inst_stock",""),
+        s.get("inst_supplementary_done",0),
+        s.get("inst_supplementary_total",0),
+        s.get("inst_stable_rounds",0),
+        s.get("inst_next_check_at"),
+        s.get("inst_last_checked_at"),
+        s.get("inst_last_new_data_at"),
+        s.get("inst_last_new_count",0))}
+    {_thread_card_html("融資執行緒",
+        s.get("current_margin_stock",""),
+        s.get("margin_supplementary_done",0),
+        s.get("margin_supplementary_total",0),
+        s.get("margin_stable_rounds",0),
+        s.get("margin_next_check_at"),
+        s.get("margin_last_checked_at"),
+        s.get("margin_last_new_data_at"),
+        s.get("margin_last_new_count",0))}
+  </div>
+  {_la_html}
 </div>
 """, unsafe_allow_html=True)
 
@@ -679,9 +831,10 @@ _w_supp_date_str = _w_supp_date.isoformat() if hasattr(_w_supp_date, "isoformat"
 
 _inst_live = _w_inst_total > 0 and _w_supp_date_str == _ref_str
 _margin_live = _w_marg_total > 0 and _w_supp_date_str == _ref_str
-_inst_display_done = _w_inst_done if _inst_live else _inst_done_ref
+# 永遠以 DB 實際筆數為準（worker 記憶體可能被人工設成 100%，不可信）
+_inst_display_done  = _inst_done_ref
 _inst_display_total = _w_inst_total if _inst_live else _inst_active
-_margin_display_done = _w_marg_done if _margin_live else _margin_done_ref
+_margin_display_done  = _margin_done_ref
 _margin_display_total = _w_marg_total if _margin_live else _margin_active
 _inst_display_pending = max(_inst_display_total - _inst_display_done, 0)
 _margin_display_pending = max(_margin_display_total - _margin_display_done, 0)
@@ -710,8 +863,12 @@ _inst_cls   = "warn" if _inst_display_pending > 20 else ("ok" if _inst_display_p
 _margin_cls = "warn" if _margin_display_pending > 20 else ("ok" if _margin_display_pending == 0 else "")
 _inst_val   = str(_inst_display_pending) if _inst_pending is not None or _inst_live else "—"
 _margin_val = str(_margin_display_pending) if _margin_pending is not None or _margin_live else "—"
-_inst_sub_prefix = "本輪已完成" if _inst_live else "DB 已完成"
-_margin_sub_prefix = "本輪已完成" if _margin_live else "DB 已完成"
+_inst_fully_done   = _inst_display_done >= _inst_display_total and _inst_display_total > 0
+_margin_fully_done = _margin_display_done >= _margin_display_total and _margin_display_total > 0
+_inst_sub_prefix   = ("已完成" if _inst_fully_done
+                      else ("FinMind 更新中" if _inst_live else "DB 已完成"))
+_margin_sub_prefix = ("已完成" if _margin_fully_done
+                      else ("FinMind 更新中" if _margin_live else "DB 已完成"))
 
 st.markdown(f"""
 <div style="font-size:10.5px; color:var(--text-color); opacity:0.42;

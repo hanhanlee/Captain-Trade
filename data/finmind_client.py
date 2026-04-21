@@ -59,24 +59,45 @@ class PremiumUnavailableError(RuntimeError):
 
 
 # Build _PREMIUM_DATASETS and _FUNDAMENTAL_DATASETS from capability map to avoid duplication
+_CONSERVATIVE_PREMIUM_FALLBACK: frozenset[str] = frozenset({
+    "TaiwanStockTradingDailyReport",
+    "TaiwanStockTradingDailyReportSecIdAgg",
+    "taiwan_stock_tick_snapshot",
+    "TaiwanStockHoldingSharesPer",
+    "TaiwanStockFinancialStatements",
+    "TaiwanStockBalanceSheet",
+    "TaiwanStockCashFlowsStatement",
+    "TaiwanStockDispositionSecuritiesPeriod",
+    "TaiwanStockSuspended",
+    "TaiwanStockShareholdingTransfer",
+    "TaiwanStockAttentionSecuritiesPeriod",
+    "TaiwanStockTreasuryShares",
+    "TaiwanStockPriceLimit",
+    "TaiwanStockKBar",
+    "TaiwanStockPriceTick",
+})
+_CONSERVATIVE_FUNDAMENTAL_FALLBACK: frozenset[str] = frozenset({
+    "TaiwanStockFinancialStatements",
+    "TaiwanStockBalanceSheet",
+    "TaiwanStockCashFlowsStatement",
+})
+
+
 def _build_dataset_sets() -> tuple[set[str], set[str]]:
     """Generate premium and fundamental dataset sets from capability_map.
-    
+
     Single source of truth: capability map is the authority.
-    This avoids maintenance drift between hardcoded sets and the routing registry.
+    Fails conservatively: if the capability map cannot be imported, fall back to
+    a hardcoded premium set so the premium gate is never silently disabled.
     """
-    from data.finmind_capability_map import get_dataset_capability
-    
-    premium = set()
-    fundamental = set()
-    
-    # Try to import capability map; fallback to empty sets if unavailable during early import
+    premium: set[str] = set()
+    fundamental: set[str] = set()
+
     try:
         from data.finmind_capability_map import DATASET_CAP
         for name, cap in DATASET_CAP.items():
             if cap.get("premium"):
                 premium.add(name)
-            # Fundamental datasets end with financial/balance/cash flow indicator
             if any(x in name for x in [
                 "FinancialStatements",
                 "BalanceSheet",
@@ -84,9 +105,10 @@ def _build_dataset_sets() -> tuple[set[str], set[str]]:
             ]):
                 fundamental.add(name)
     except Exception:
-        # Fallback during circular import; user code will trigger full initialization
-        pass
-    
+        # Capability map unavailable (broken deploy, circular import during init).
+        # Return conservative hardcoded sets so _premium_gate() stays active.
+        return set(_CONSERVATIVE_PREMIUM_FALLBACK), set(_CONSERVATIVE_FUNDAMENTAL_FALLBACK)
+
     return premium, fundamental
 
 _PREMIUM_DATASETS, _FUNDAMENTAL_DATASETS = _build_dataset_sets()
@@ -488,10 +510,9 @@ def _get(
 def _get_broker_trading_daily_report_raw(stock_id: str, trade_date: str) -> pd.DataFrame:
     """Fetch sponsor broker daily report from the dedicated special endpoint."""
     _premium_gate("TaiwanStockTradingDailyReport")
-    _wait_for_rate_limit()
-
     if not TOKEN:
         raise RuntimeError("FINMIND_TOKEN is not configured")
+    _wait_for_rate_limit()
 
     _note_http_request(kind=_REQUEST_KIND_DATA)
     resp = requests.get(
@@ -523,29 +544,36 @@ def _get_broker_trading_daily_report_secid_agg_raw(
     data_id: str,
     start_date: str,
     end_date: str = "",
-    securities_trader_id: str | None = None,
+    securities_trader_id: str = "",
 ) -> pd.DataFrame:
     """Fetch sponsor broker SecId aggregation from the dedicated special endpoint.
-    
+
     Official endpoint: /api/v4/taiwan_stock_trading_daily_report_secid_agg
-    
+
     Args:
-        data_id: Stock ID (replaces generic "stock_id" param name to match official docs)
+        data_id: Stock ID (matches official docs param name)
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD), optional
-        securities_trader_id: Specific securities trader ID, optional
+        securities_trader_id: Securities trader (broker branch) ID — REQUIRED by the API;
+            the endpoint returns HTTP 400 if omitted.
     """
+    if not securities_trader_id:
+        raise ValueError(
+            "securities_trader_id is required by the FinMind "
+            "taiwan_stock_trading_daily_report_secid_agg endpoint"
+        )
     _premium_gate("TaiwanStockTradingDailyReportSecIdAgg")
-    _wait_for_rate_limit()
-
     if not TOKEN:
         raise RuntimeError("FINMIND_TOKEN is not configured")
+    _wait_for_rate_limit()
 
-    params = {"data_id": str(data_id).strip(), "start_date": str(start_date)[:10]}
+    params = {
+        "data_id": str(data_id).strip(),
+        "start_date": str(start_date)[:10],
+        "securities_trader_id": str(securities_trader_id).strip(),
+    }
     if end_date:
         params["end_date"] = str(end_date)[:10]
-    if securities_trader_id:
-        params["securities_trader_id"] = str(securities_trader_id).strip()
 
     _note_http_request(kind=_REQUEST_KIND_DATA)
     resp = requests.get(
@@ -581,10 +609,9 @@ def get_realtime_stock_snapshot(stock_id: str) -> dict | None:
     seconds according to FinMind's official documentation.
     """
     _premium_gate("taiwan_stock_tick_snapshot")
-    _wait_for_rate_limit()
-
     if not TOKEN:
         raise RuntimeError("FINMIND_TOKEN is not configured")
+    _wait_for_rate_limit()
 
     _note_http_request(kind=_REQUEST_KIND_DATA)
     resp = requests.get(
@@ -788,15 +815,16 @@ def get_broker_trading_daily_report_secid_agg(
     stock_id: str,
     start_date: str,
     end_date: str = "",
-    securities_trader_id: str | None = None,
+    securities_trader_id: str = "",
 ) -> pd.DataFrame:
     """Return broker daily aggregated branch stats via an explicit dataset wrapper.
-    
+
     Args:
         stock_id: Stock ID to query
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD), optional
-        securities_trader_id: Specific securities trader ID to filter by, optional
+        securities_trader_id: Securities trader (broker branch) ID — REQUIRED by the
+            FinMind API; raises ValueError if not provided.
     """
     df = _get_broker_trading_daily_report_secid_agg_raw(
         data_id=stock_id,
@@ -838,7 +866,7 @@ def summarize_broker_main_force(df: pd.DataFrame, top_n: int = 15) -> dict:
     if grouped.empty:
         return {}
 
-    latest_date = pd.to_datetime(grouped["date"].iloc[0]).date().isoformat()
+    latest_date = pd.to_datetime(grouped["date"]).max().date().isoformat()
     buy_top = grouped[grouped["net_volume"] > 0].nlargest(top_n, "net_volume")
     sell_top = grouped[grouped["net_volume"] < 0].nsmallest(top_n, "net_volume")
     buy_top5 = grouped[grouped["net_volume"] > 0].nlargest(5, "net_volume")
@@ -1280,6 +1308,27 @@ def get_margin_trading(stock_id: str, days: int = 10) -> pd.DataFrame:
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def get_all_prices_by_date(date_str: str) -> pd.DataFrame:
+    """
+    一次取得全市場單日股價（不傳 stock_id）。
+
+    FinMind 特性：省略 data_id 時回傳該日全市場所有股票的 OHLCV。
+    回傳 DataFrame 含 stock_id、date、open、max、min、close、Trading_Volume 欄位。
+    """
+    df = _get(
+        "TaiwanStockPrice",
+        start_date=date_str,
+        end_date=date_str,
+    )
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    for col in ("open", "max", "min", "close", "Trading_Volume"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
