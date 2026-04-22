@@ -12,6 +12,8 @@ from data.finmind_client import (
     get_all_margin_by_date,
     get_all_prices_by_date,
     get_broker_main_force_series,
+    get_taiwan_stock_trading_dates,
+    is_taiwan_stock_trading_day,
 )
 from db.broker_cache import load_broker_main_force
 from db.cache_health import (
@@ -60,6 +62,12 @@ def _active_stock_ids() -> list[str]:
 
 
 def _trading_days(date_from: str, date_to: str) -> list[str]:
+    try:
+        df = get_taiwan_stock_trading_dates(date_from, date_to)
+        if not df.empty:
+            return df["date"].dt.strftime("%Y-%m-%d").tolist()
+    except Exception as exc:
+        logger.warning("official trading date lookup failed %s ~ %s: %s", date_from, date_to, exc)
     dates = pd.bdate_range(date_from, date_to)
     return [d.strftime("%Y-%m-%d") for d in dates]
 
@@ -163,7 +171,7 @@ def run_health_scan(run_id: int) -> dict:
         completeness_pct=completeness,
         earliest_cached_date=(str(bounds.get("earliest_cached_date") or "")[:10] or None),
         latest_cached_date=(str(bounds.get("latest_cached_date") or "")[:10] or None),
-        notes="交易日以週一到週五為近似基準。",
+        notes="交易日優先使用 FinMind TaiwanStockTradingDate；若查詢失敗才退回週一到週五近似。",
     )
     return get_health_run(run_id) or {}
 
@@ -268,6 +276,23 @@ def run_repair_job(job_id: int) -> dict:
     for trade_date, group in gaps.groupby("trade_date"):
         target_ids = sorted(group["stock_id"].astype(str).tolist())
         try:
+            is_trading_day = is_taiwan_stock_trading_day(str(trade_date))
+        except Exception as exc:
+            logger.warning("trading day check failed %s: %s", trade_date, exc)
+            is_trading_day = True
+        if not is_trading_day:
+            done_count += len(target_ids)
+            mark_gap_repair_status(
+                run_id,
+                dataset,
+                str(trade_date),
+                target_ids,
+                status="market_closed",
+                repair_error="官方交易日資料顯示該日休市，無資料屬正常。",
+            )
+            update_repair_job(job_id, done_count=done_count, error_count=error_count, last_error=last_error)
+            continue
+        try:
             repaired_ids = handler(str(trade_date), target_ids)
             repaired_list = sorted(repaired_ids)
             failed_ids = sorted(set(target_ids) - repaired_ids)
@@ -283,7 +308,7 @@ def run_repair_job(job_id: int) -> dict:
                     str(trade_date),
                     failed_ids,
                     status="error",
-                    repair_error="補抓後仍缺漏，可能為休市或上游無資料。",
+                    repair_error="補抓後仍缺漏，可能為上游無資料或個股當日無有效記錄。",
                 )
         except Exception as exc:
             error_count += len(target_ids)

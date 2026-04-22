@@ -1212,7 +1212,7 @@ with st.expander("🩺 完整健康度分析", expanded=False):
     hwc1.metric("背景佇列", int(hw_status.get("queue_size") or 0))
     hwc2.metric("目前任務", running_text)
     hwc3.metric("工作器", "運行中" if hw_status.get("running") else "未啟動")
-    st.caption("完整度分母目前以週一到週五為近似交易日；國定假日可能需要人工判讀。")
+    st.caption("完整度分母優先使用 FinMind 官方 TaiwanStockTradingDate；查詢失敗時才退回週一到週五近似。")
 
     runs_df = list_health_runs(limit=30)
     if runs_df.empty:

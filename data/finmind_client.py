@@ -752,6 +752,36 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
     return df
 
 
+def get_taiwan_stock_trading_dates(
+    start_date: str = "",
+    end_date: str = "",
+) -> pd.DataFrame:
+    """Return Taiwan stock trading dates from the official FinMind dataset.
+
+    The dataset contains only actual trading days, so missing dates are usually
+    weekends or market holidays.
+    """
+    kwargs = {}
+    if end_date:
+        kwargs["end_date"] = str(end_date)[:10]
+    df = _get("TaiwanStockTradingDate", start_date=str(start_date)[:10], **kwargs)
+    if df.empty:
+        return pd.DataFrame(columns=["date"])
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    return df[["date"]]
+
+
+def is_taiwan_stock_trading_day(target_date) -> bool:
+    """Return whether the target date is an official Taiwan stock trading day."""
+    target = pd.Timestamp(target_date).strftime("%Y-%m-%d")
+    df = get_taiwan_stock_trading_dates(start_date=target, end_date=target)
+    if df.empty:
+        return False
+    return target in set(df["date"].dt.strftime("%Y-%m-%d"))
+
+
 def get_daily_price(stock_id: str, days: int = 120, start_date: str = None) -> pd.DataFrame:
     """取得個股日K資料（預設近 120 天，可指定 start_date 覆蓋 days）"""
     start = start_date or (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")

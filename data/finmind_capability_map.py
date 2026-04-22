@@ -10,6 +10,12 @@ DATASET_CAP: dict[str, dict] = {
         "all_by_date": False,
         "single_day_only": False,
     },
+    "TaiwanStockTradingDate": {
+        "endpoint_type": "data",
+        "premium": False,
+        "all_by_date": False,
+        "single_day_only": False,
+    },
     "TaiwanStockPrice": {
         "endpoint_type": "data",
         "premium": False,
