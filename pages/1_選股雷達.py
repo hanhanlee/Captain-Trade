@@ -1200,7 +1200,7 @@ with tab_scan:
         prog.empty()
         status_txt.empty()
 
-        # ── 基本面資料預載（快取優先，首次可能需要 API）──────────
+        # ── 基本面資料預載（改為技術面初篩後再載入，避免全市場逐檔財報查詢）────
         fund_data: dict = {}
         fundamental_mode = get_fundamentals_mode()
         fundamental_enabled_for_scan = (
@@ -1220,40 +1220,7 @@ with tab_scan:
                     "不會逐檔呼叫財報 API。"
                 )
                 fundamental_enabled_for_scan = False
-
-        if fundamental_enabled_for_scan:
-            from data.finmind_client import smart_get_fundamentals
-            fund_prog = st.progress(0, text="載入基本面資料（讀取快取）...")
-            fund_api, fund_cache = 0, 0
-            for i, sid in enumerate(sample_ids):
-                fund_prog.progress((i + 1) / total,
-                                   text=f"基本面資料：{sid}（{i+1}/{total}）")
-                from db.fundamental_cache import is_fundamental_fresh
-                is_fresh = is_fundamental_fresh(sid)
-                if not is_fresh:
-                    fund_api += 1
-                else:
-                    fund_cache += 1
-                metrics = smart_get_fundamentals(sid)
-                if metrics:
-                    fund_data[sid] = metrics
-            fund_prog.empty()
-
-            if fund_api > 0 and not fund_data:
-                # 所有 API 呼叫均無資料，很可能是 402 付費牆
-                st.warning(
-                    "⚠️ **基本面資料無法取得（402 Payment Required）**  \n"
-                    "FinMind 財報端點（`TaiwanStockFinancialStatements`）需要付費方案，"
-                    "免費帳號無法使用。基本面篩選條件本次**自動停用**，選股結果不受影響。  \n"
-                    "若需基本面過濾，請升級 FinMind 方案後重試。"
-                )
-                # 強制清空，讓 run_scan 跳過基本面過濾
-                fund_data = {}
-            else:
-                st.caption(
-                    f"基本面資料：快取 **{fund_cache}** 檔 / API **{fund_api}** 次"
-                )
-        else:
+        if not fundamental_enabled_for_scan:
             fundamental_filter = {}
 
         with st.spinner("計算指標，篩選中..."):
@@ -1289,13 +1256,11 @@ with tab_scan:
                     "掃描結果可能偏少。請先至「資料管理」執行分點資料補抓。"
                 )
 
-            result_df, sector_info, debug_info = run_scan(
+            _base_scan_kwargs = dict(
                 price_data=price_data,
                 stock_info=stock_list,
                 inst_data=inst_data if use_inst else {},
                 margin_data=margin_data if not _disable_non_price_extras else {},
-                fundamental_data=fund_data if use_fundamental and not _disable_non_price_extras else {},
-                fundamental_filter=fundamental_filter if use_fundamental and not _disable_non_price_extras else {},
                 min_price=min_price,
                 min_avg_volume=min_avg_volume,
                 top_volume_n=top_volume_n,
@@ -1309,9 +1274,62 @@ with tab_scan:
                 overheat_action=overheat_action,
                 ma_breakout_mode=ma_breakout_mode,
                 strategy_version=strategy_version,
-                fundamental_mode=fundamental_mode,
                 broker_data=_broker_data,
                 debug=True,
+            )
+
+            if fundamental_enabled_for_scan:
+                prelim_df, _, _ = run_scan(
+                    **_base_scan_kwargs,
+                    fundamental_data={},
+                    fundamental_filter={},
+                    fundamental_mode="off",
+                )
+                candidate_ids = prelim_df["stock_id"].astype(str).tolist() if not prelim_df.empty else []
+                if candidate_ids:
+                    from data.finmind_client import smart_get_fundamentals
+                    from db.fundamental_cache import is_fundamental_fresh
+
+                    candidate_total = len(candidate_ids)
+                    fund_prog = st.progress(0, text="載入候選股基本面資料（快取優先）...")
+                    fund_api, fund_cache = 0, 0
+                    for i, sid in enumerate(candidate_ids):
+                        fund_prog.progress(
+                            (i + 1) / candidate_total,
+                            text=f"基本面資料：{sid}（{i+1}/{candidate_total}）",
+                        )
+                        is_fresh = is_fundamental_fresh(sid)
+                        if not is_fresh:
+                            fund_api += 1
+                        else:
+                            fund_cache += 1
+                        metrics = smart_get_fundamentals(sid)
+                        if metrics:
+                            fund_data[sid] = metrics
+                    fund_prog.empty()
+
+                    if fund_api > 0 and not fund_data:
+                        st.warning(
+                            "⚠️ **基本面資料無法取得（402 Payment Required）**  \n"
+                            "FinMind 財報端點（`TaiwanStockFinancialStatements`）需要付費方案，"
+                            "免費帳號無法使用。基本面篩選條件本次**自動停用**，選股結果不受影響。  \n"
+                            "若需基本面過濾，請升級 FinMind 方案後重試。"
+                        )
+                        fundamental_filter = {}
+                        fundamental_enabled_for_scan = False
+                    else:
+                        st.caption(
+                            f"技術面入圍 **{candidate_total}** 檔後才載入基本面："
+                            f"快取 **{fund_cache}** 檔 / API **{fund_api}** 次"
+                        )
+                else:
+                    st.caption("技術面初篩無入圍股票，本次不載入基本面資料。")
+
+            result_df, sector_info, debug_info = run_scan(
+                **_base_scan_kwargs,
+                fundamental_data=fund_data if fundamental_enabled_for_scan else {},
+                fundamental_filter=fundamental_filter if fundamental_enabled_for_scan else {},
+                fundamental_mode=fundamental_mode,
             )
             st.session_state["debug_info"] = debug_info
             st.session_state["sector_info"] = sector_info
