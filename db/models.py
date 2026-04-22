@@ -199,3 +199,90 @@ class InstCache(Base):
     sell = Column(Float, default=0.0)
     net = Column(Float, default=0.0)
     fetched_at = Column(DateTime, default=datetime.now)
+
+
+class CacheHealthRun(Base):
+    """快取健康度分析任務。"""
+    __tablename__ = "cache_health_run"
+    __table_args__ = (
+        Index("idx_cache_health_run_dataset_requested", "dataset", "requested_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    dataset = Column(String(50), nullable=False)
+    date_from = Column(String(10), nullable=False)
+    date_to = Column(String(10), nullable=False)
+    requested_at = Column(DateTime, default=datetime.now, nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    status = Column(String(20), default="queued", nullable=False)
+    requested_by = Column(String(50), default="streamlit")
+    scan_scope = Column(String(50), default="active_stocks")
+    total_expected_units = Column(Integer, default=0)
+    total_present_units = Column(Integer, default=0)
+    total_missing_units = Column(Integer, default=0)
+    completeness_pct = Column(Float, default=0.0)
+    earliest_cached_date = Column(String(10))
+    latest_cached_date = Column(String(10))
+    notes = Column(Text)
+    error_message = Column(Text)
+
+
+class CacheHealthDailySummary(Base):
+    """健康度分析每日彙總。"""
+    __tablename__ = "cache_health_daily_summary"
+    __table_args__ = (
+        UniqueConstraint("run_id", "trade_date", name="uq_cache_health_daily_run_date"),
+        Index("idx_cache_health_daily_run_date", "run_id", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, nullable=False)
+    dataset = Column(String(50), nullable=False)
+    trade_date = Column(String(10), nullable=False)
+    expected_count = Column(Integer, default=0)
+    present_count = Column(Integer, default=0)
+    missing_count = Column(Integer, default=0)
+    completeness_pct = Column(Float, default=0.0)
+
+
+class CacheHealthGap(Base):
+    """健康度分析缺漏明細。"""
+    __tablename__ = "cache_health_gap"
+    __table_args__ = (
+        UniqueConstraint("run_id", "dataset", "trade_date", "stock_id", name="uq_cache_health_gap_unit"),
+        Index("idx_cache_health_gap_run_date", "run_id", "trade_date"),
+        Index("idx_cache_health_gap_dataset_status", "dataset", "repair_status"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, nullable=False)
+    dataset = Column(String(50), nullable=False)
+    trade_date = Column(String(10), nullable=False)
+    stock_id = Column(String(10), nullable=False)
+    gap_type = Column(String(20), default="missing")
+    severity = Column(String(20), default="normal")
+    detail_json = Column(Text)
+    repair_status = Column(String(20), default="pending")
+    repaired_at = Column(DateTime)
+    repair_error = Column(Text)
+
+
+class CacheHealthRepairJob(Base):
+    """健康度缺漏補抓任務。"""
+    __tablename__ = "cache_health_repair_job"
+    __table_args__ = (
+        Index("idx_cache_health_repair_run_requested", "run_id", "requested_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, nullable=False)
+    dataset = Column(String(50), nullable=False)
+    status = Column(String(20), default="queued", nullable=False)
+    requested_at = Column(DateTime, default=datetime.now, nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    target_count = Column(Integer, default=0)
+    done_count = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    last_error = Column(Text)

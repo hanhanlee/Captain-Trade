@@ -7,7 +7,16 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, date, timedelta
 
+from data.cache_health_registry import get_cache_health_dataset, list_cache_health_datasets
 from db.database import init_db, vacuum_db, get_session
+from db.cache_health import (
+    get_health_run,
+    get_run_daily_summary,
+    get_run_gaps,
+    list_health_runs,
+    list_latest_health_runs_by_dataset,
+    list_repair_jobs,
+)
 from db.price_cache import (get_cache_summary, delete_old_prices, get_all_cached_stocks,
                             diagnose_cache, get_failed_today_detail, set_fetch_status,
                             get_delisted_stocks, get_known_stock_ids)
@@ -15,6 +24,8 @@ from db.settings import is_market_closed, set_market_closed, get_force_yahoo, se
 from db.inst_cache import get_inst_cache_stats
 from db.fundamental_cache import get_fundamental_stats
 from db.margin_cache import get_margin_stats as get_margin_cache_stats
+from modules.cache_health_runtime import get_cache_health_worker
+from modules.cache_health_service import create_repair_job_for_run
 from sqlalchemy import text as _sqla_text
 
 init_db()
@@ -301,11 +312,34 @@ def _get_worker():
 
 worker = _get_worker()
 
+
+@st.cache_resource
+def _get_cache_health_bg_worker():
+    return get_cache_health_worker(auto_start=True)
+
+
+health_worker = _get_cache_health_bg_worker()
+
 if worker is None:
     st.error("工作器載入失敗，請重新啟動應用程式")
     st.stop()
 
 s = worker.status()
+
+
+def _format_health_run_option(run_id: int) -> str:
+    run = get_health_run(run_id)
+    if not run:
+        return f"#{run_id}"
+    dataset_label = get_cache_health_dataset(str(run["dataset"])).label
+    requested_at = str(run.get("requested_at") or "")[:16].replace("T", " ")
+    completeness = run.get("completeness_pct")
+    completeness_text = f"{float(completeness):.2f}%" if completeness is not None else "-"
+    return (
+        f"#{run_id} {dataset_label} | {run.get('status', '-') } | "
+        f"{run.get('date_from', '-') } ~ {run.get('date_to', '-') } | "
+        f"完整度 {completeness_text} | {requested_at}"
+    )
 
 def _market_day_context(latest_trading_day):
     today = date.today()
@@ -1107,6 +1141,186 @@ if date.today().weekday() < 5 and not s.get("backtest_rebuild_mode"):
                 st.code("  ".join(margin_l[:100]) + ("  ..." if len(margin_l) > 100 else ""))
 
 # ══ 區塊 3：快取狀態 & 診斷 ══════════════════════════════════════
+with st.expander("🩺 完整健康度分析", expanded=False):
+    st.caption("背景分析指定資料集在日期區間內的缺漏情況，並可直接排入補抓任務。")
+
+    hw_status = health_worker.status() if health_worker else {}
+    dataset_specs = list_cache_health_datasets()
+    latest_runs_df = list_latest_health_runs_by_dataset()
+    latest_run_map = {}
+    if not latest_runs_df.empty:
+        latest_run_map = {
+            str(row["dataset"]): row for _, row in latest_runs_df.iterrows()
+        }
+
+    overview_rows = []
+    for spec in dataset_specs:
+        latest = latest_run_map.get(spec.key)
+        overview_rows.append({
+            "資料集": spec.label,
+            "最近狀態": latest.get("status", "尚未分析") if latest is not None else "尚未分析",
+            "最近區間": (
+                f"{latest.get('date_from', '-') } ~ {latest.get('date_to', '-') }"
+                if latest is not None else "-"
+            ),
+            "完整度": (
+                f"{float(latest.get('completeness_pct') or 0):.2f}%"
+                if latest is not None and latest.get("completeness_pct") is not None else "-"
+            ),
+            "缺漏單位": int(latest.get("total_missing_units") or 0) if latest is not None else 0,
+            "最早資料": str(latest.get("earliest_cached_date") or "-")[:10] if latest is not None else "-",
+            "最新資料": str(latest.get("latest_cached_date") or "-")[:10] if latest is not None else "-",
+            "說明": spec.description,
+        })
+
+    st.dataframe(pd.DataFrame(overview_rows), use_container_width=True, hide_index=True)
+
+    hs1, hs2, hs3, hs4 = st.columns([1.5, 1.1, 1.1, 1])
+    dataset_key = hs1.selectbox(
+        "資料類型",
+        options=[spec.key for spec in dataset_specs],
+        format_func=lambda key: get_cache_health_dataset(key).label,
+        key="cache_health_dataset_key",
+    )
+    default_end = date.today()
+    default_start = default_end - timedelta(days=60)
+    health_start = hs2.date_input("開始日期", value=default_start, key="cache_health_start")
+    health_end = hs3.date_input("結束日期", value=default_end, key="cache_health_end")
+    start_health_scan = hs4.button("開始背景分析", type="primary", use_container_width=True)
+
+    if start_health_scan:
+        if health_start > health_end:
+            st.error("開始日期不能晚於結束日期")
+        else:
+            from db.cache_health import create_health_run
+
+            run_id = create_health_run(
+                dataset_key,
+                health_start.isoformat(),
+                health_end.isoformat(),
+                notes="由資料管理頁建立",
+            )
+            health_worker.enqueue_scan(run_id)
+            st.session_state["selected_cache_health_run_id"] = run_id
+            st.success(f"已建立健康度分析任務 #{run_id}，背景執行中。")
+
+    running_text = "閒置"
+    if hw_status.get("current_task"):
+        current_task = "分析" if hw_status.get("current_task") == "scan" else "補抓"
+        running_text = f"{current_task} #{hw_status.get('current_id')}"
+    hwc1, hwc2, hwc3 = st.columns(3)
+    hwc1.metric("背景佇列", int(hw_status.get("queue_size") or 0))
+    hwc2.metric("目前任務", running_text)
+    hwc3.metric("工作器", "運行中" if hw_status.get("running") else "未啟動")
+    st.caption("完整度分母目前以週一到週五為近似交易日；國定假日可能需要人工判讀。")
+
+    runs_df = list_health_runs(limit=30)
+    if runs_df.empty:
+        st.info("尚無健康度分析紀錄。")
+    else:
+        run_options = runs_df["id"].astype(int).tolist()
+        selected_run_id = st.session_state.get("selected_cache_health_run_id")
+        if selected_run_id not in run_options:
+            selected_run_id = run_options[0]
+        run_index = run_options.index(selected_run_id)
+        selected_run_id = st.selectbox(
+            "分析紀錄",
+            options=run_options,
+            index=run_index,
+            format_func=_format_health_run_option,
+            key="cache_health_run_select",
+        )
+        st.session_state["selected_cache_health_run_id"] = selected_run_id
+        selected_run = get_health_run(int(selected_run_id))
+
+        if selected_run:
+            dataset_label = get_cache_health_dataset(str(selected_run["dataset"])).label
+            hr1, hr2, hr3, hr4, hr5 = st.columns(5)
+            hr1.metric("資料集", dataset_label)
+            hr2.metric("狀態", str(selected_run.get("status") or "-"))
+            hr3.metric("完整度", f"{float(selected_run.get('completeness_pct') or 0):.2f}%")
+            hr4.metric("缺漏單位", int(selected_run.get("total_missing_units") or 0))
+            hr5.metric("快取起點", str(selected_run.get("earliest_cached_date") or "-")[:10])
+
+            st.caption(
+                f"分析區間：{selected_run.get('date_from', '-')} ~ {selected_run.get('date_to', '-')}"
+                f"　最新快取：{str(selected_run.get('latest_cached_date') or '-')[:10]}"
+            )
+
+            daily_df = get_run_daily_summary(int(selected_run_id))
+            if not daily_df.empty:
+                daily_fig = px.line(
+                    daily_df,
+                    x="trade_date",
+                    y="completeness_pct",
+                    markers=True,
+                    labels={"trade_date": "日期", "completeness_pct": "完整度 %"},
+                    title="每日完整度",
+                )
+                daily_fig.update_layout(height=280, margin=dict(t=40, b=10))
+                st.plotly_chart(daily_fig, use_container_width=True)
+
+                missing_days_df = daily_df[daily_df["missing_count"] > 0].copy()
+                if not missing_days_df.empty:
+                    st.dataframe(
+                        missing_days_df.rename(columns={
+                            "trade_date": "日期",
+                            "expected_count": "應有股票數",
+                            "present_count": "已有股票數",
+                            "missing_count": "缺漏股票數",
+                            "completeness_pct": "完整度 %",
+                        }),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=240,
+                    )
+
+            gap_df = get_run_gaps(int(selected_run_id), limit=500)
+            if not gap_df.empty:
+                st.markdown("**缺漏明細（最多顯示 500 筆）**")
+                st.dataframe(
+                    gap_df.rename(columns={
+                        "trade_date": "日期",
+                        "stock_id": "股票代碼",
+                        "gap_type": "缺漏類型",
+                        "severity": "嚴重度",
+                        "repair_status": "補抓狀態",
+                        "repaired_at": "補抓時間",
+                        "repair_error": "錯誤訊息",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=320,
+                )
+            else:
+                st.success("此分析區間目前沒有缺漏明細。")
+
+            if int(selected_run.get("total_missing_units") or 0) > 0:
+                if st.button("立即補抓此分析缺漏", type="primary", key=f"repair_run_{selected_run_id}"):
+                    repair_job_id = create_repair_job_for_run(int(selected_run_id))
+                    health_worker.enqueue_repair(repair_job_id)
+                    st.success(f"已建立補抓任務 #{repair_job_id}，背景執行中。")
+
+            repair_jobs_df = list_repair_jobs(run_id=int(selected_run_id), limit=15)
+            if not repair_jobs_df.empty:
+                st.markdown("**補抓任務紀錄**")
+                st.dataframe(
+                    repair_jobs_df.rename(columns={
+                        "id": "任務 ID",
+                        "status": "狀態",
+                        "requested_at": "建立時間",
+                        "started_at": "開始時間",
+                        "finished_at": "完成時間",
+                        "target_count": "目標數",
+                        "done_count": "完成數",
+                        "error_count": "失敗數",
+                        "last_error": "最後錯誤",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=220,
+                )
+
 with st.expander("📦 快取狀態 & 診斷", expanded=False):
     ec1, ec2, ec3, _ = st.columns([1, 1.3, 1.3, 4])
     load_c  = ec1.button("載入快取摘要", use_container_width=True)

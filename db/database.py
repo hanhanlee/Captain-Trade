@@ -180,6 +180,104 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 holding_shares_cache 表")
 
+        if not _table_exists(conn, "cache_health_run"):
+            conn.execute(text("""
+                CREATE TABLE cache_health_run (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dataset TEXT NOT NULL,
+                    date_from TEXT NOT NULL,
+                    date_to TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    requested_by TEXT DEFAULT 'streamlit',
+                    scan_scope TEXT DEFAULT 'active_stocks',
+                    total_expected_units INTEGER DEFAULT 0,
+                    total_present_units INTEGER DEFAULT 0,
+                    total_missing_units INTEGER DEFAULT 0,
+                    completeness_pct REAL DEFAULT 0,
+                    earliest_cached_date TEXT,
+                    latest_cached_date TEXT,
+                    notes TEXT,
+                    error_message TEXT
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_cache_health_run_dataset_requested
+                ON cache_health_run (dataset, requested_at)
+            """))
+            logger.info("migration: 建立 cache_health_run 表")
+
+        if not _table_exists(conn, "cache_health_daily_summary"):
+            conn.execute(text("""
+                CREATE TABLE cache_health_daily_summary (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    dataset TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    expected_count INTEGER DEFAULT 0,
+                    present_count INTEGER DEFAULT 0,
+                    missing_count INTEGER DEFAULT 0,
+                    completeness_pct REAL DEFAULT 0,
+                    CONSTRAINT uq_cache_health_daily_run_date UNIQUE (run_id, trade_date)
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_cache_health_daily_run_date
+                ON cache_health_daily_summary (run_id, trade_date)
+            """))
+            logger.info("migration: 建立 cache_health_daily_summary 表")
+
+        if not _table_exists(conn, "cache_health_gap"):
+            conn.execute(text("""
+                CREATE TABLE cache_health_gap (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    dataset TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    stock_id TEXT NOT NULL,
+                    gap_type TEXT DEFAULT 'missing',
+                    severity TEXT DEFAULT 'normal',
+                    detail_json TEXT,
+                    repair_status TEXT DEFAULT 'pending',
+                    repaired_at TEXT,
+                    repair_error TEXT,
+                    CONSTRAINT uq_cache_health_gap_unit UNIQUE (run_id, dataset, trade_date, stock_id)
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_cache_health_gap_run_date
+                ON cache_health_gap (run_id, trade_date)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_cache_health_gap_dataset_status
+                ON cache_health_gap (dataset, repair_status)
+            """))
+            logger.info("migration: 建立 cache_health_gap 表")
+
+        if not _table_exists(conn, "cache_health_repair_job"):
+            conn.execute(text("""
+                CREATE TABLE cache_health_repair_job (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    dataset TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    requested_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    target_count INTEGER DEFAULT 0,
+                    done_count INTEGER DEFAULT 0,
+                    error_count INTEGER DEFAULT 0,
+                    last_error TEXT
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_cache_health_repair_run_requested
+                ON cache_health_repair_job (run_id, requested_at)
+            """))
+            logger.info("migration: 建立 cache_health_repair_job 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""
