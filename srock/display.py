@@ -14,15 +14,23 @@ from rich.text import Text
 from srock.config import Config
 from srock.services import CaddyService, FunnelService, ServiceStatus, StreamlitService
 
-# Windows: 切換 UTF-8 code page，停用 legacy renderer（避免 cp950 UnicodeEncodeError）
+# Windows: 啟用 VT100 + UTF-8（PowerShell / conhost 預設皆未啟用）
 if sys.platform == "win32":
+    import ctypes
+    _ENABLE_VT = 0x0004
+    _k32 = ctypes.windll.kernel32
+    for _hid in (-10, -11, -12):
+        _h = _k32.GetStdHandle(_hid)
+        _m = ctypes.c_ulong()
+        if _k32.GetConsoleMode(_h, ctypes.byref(_m)):
+            _k32.SetConsoleMode(_h, _m.value | _ENABLE_VT)
     os.system("chcp 65001 > nul 2>&1")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-console = Console(legacy_windows=False)
+console = Console(legacy_windows=False, force_terminal=True)
 
 
 def _status_badge(running: bool) -> Text:

@@ -16,6 +16,7 @@ srock 互動監控台
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -32,7 +33,31 @@ from rich.text import Text
 from srock.config import Config
 from srock.services import CaddyService, FunnelService, StreamlitService
 
-_rc = RichConsole(legacy_windows=False)
+
+def _setup_windows_terminal():
+    """
+    PowerShell / conhost 預設不啟用 VT100 處理，Rich 的 escape code 會變亂碼。
+    用 Win32 API 強制開啟 ENABLE_VIRTUAL_TERMINAL_PROCESSING，再切換 UTF-8 codepage。
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    ENABLE_VT = 0x0004
+    kernel32 = ctypes.windll.kernel32
+    for handle_id in (-10, -11, -12):   # stdin / stdout / stderr
+        h = kernel32.GetStdHandle(handle_id)
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(h, mode.value | ENABLE_VT)
+    os.system("chcp 65001 > nul 2>&1")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+_setup_windows_terminal()
+
+_rc = RichConsole(legacy_windows=False, force_terminal=True)
 
 _WATCHDOG_INTERVAL  = 20   # seconds between health checks
 _WATCHDOG_COOLDOWN  = 90   # min seconds between auto-restarts of same service
