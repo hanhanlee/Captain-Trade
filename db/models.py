@@ -268,6 +268,23 @@ class CacheHealthGap(Base):
     repair_error = Column(Text)
 
 
+class TelegramChatMember(Base):
+    """Telegram 群組成員自動記錄（有發言或加入即寫入）"""
+    __tablename__ = "telegram_chat_members"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "user_id", name="uq_tg_chat_user"),
+    )
+
+    id        = Column(Integer, primary_key=True)
+    chat_id   = Column(String(30), nullable=False)   # 群組 chat_id
+    user_id   = Column(String(30), nullable=False)   # Telegram user_id
+    username  = Column(String(100), default="")      # @username（無則空）
+    full_name = Column(String(200), default="")      # first_name + last_name
+    first_seen_at = Column(DateTime, default=datetime.now)  # 首次紀錄
+    last_seen_at  = Column(DateTime, default=datetime.now)  # 最近一次活動
+    joined_via    = Column(String(20), default="message")   # "message" | "join"
+
+
 class CacheHealthRepairJob(Base):
     """健康度缺漏補抓任務。"""
     __tablename__ = "cache_health_repair_job"

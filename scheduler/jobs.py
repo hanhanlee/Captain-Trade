@@ -19,6 +19,10 @@ from modules.journal import get_all_trades, calc_performance
 from db.database import init_db, get_session
 from db.models import Portfolio
 from notifications.line_notify import send_multicast, send_scan_results
+from notifications.telegram_notify import (
+    send_stock_alert as tg_alert,
+    send_scan_results as tg_scan,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -51,14 +55,17 @@ def job_daily_scan(top_n: int = 5, scan_count: int = 200):
 
         if result_df.empty:
             send_multicast("📊 今日選股雷達：無符合條件的股票")
+            tg_alert("📊 今日選股雷達：無符合條件的股票")
         else:
             results = result_df.to_dict("records")
             send_scan_results(results, top_n=top_n)
+            tg_scan(results, top_n=top_n)
             logger.info(f"選股完成，找到 {len(result_df)} 檔，已推播前 {top_n} 名")
 
     except Exception as e:
         logger.error(f"選股任務失敗：{e}")
         send_multicast(f"⚠️ 選股掃描失敗：{e}")
+        tg_alert(f"⚠️ 選股掃描失敗：{e}")
 
 
 def job_portfolio_check():
@@ -107,7 +114,9 @@ def job_portfolio_check():
             lines.append(f"   {a.reason}")
             lines.append(f"   現價 {a.current_price} 元  損益 {a.pnl_pct:+.1f}%")
 
-        send_multicast("\n".join(lines))
+        alert_msg = "\n".join(lines)
+        send_multicast(alert_msg)
+        tg_alert(alert_msg)
         logger.info(f"推播 {len(all_alerts)} 則警示")
 
     except Exception as e:
@@ -191,6 +200,7 @@ def job_weekly_performance():
             f"\n最差交易：{perf['worst_trade']:+,.0f} 元"
         )
         send_multicast(msg)
+        tg_alert(msg)
     except Exception as e:
         logger.error(f"週報任務失敗：{e}")
 
