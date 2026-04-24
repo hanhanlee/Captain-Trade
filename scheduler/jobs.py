@@ -133,6 +133,44 @@ def job_intraday_monitor():
         logger.error(f"盤中監控任務失敗：{e}")
 
 
+def job_weekly_holding_shares():
+    """
+    每週五 22:00 更新持股分佈資料（大戶/散戶比例）
+    只更新 Portfolio 中有的股票，抓近 180 天。
+    """
+    logger.info("開始更新持股分佈資料...")
+    try:
+        from data.finmind_client import fetch_holding_shares_from_finmind
+        from db.holding_shares_cache import save_holding_shares
+        from datetime import date, timedelta
+
+        with get_session() as sess:
+            rows = sess.query(Portfolio).all()
+            stock_ids = list({r.stock_id for r in rows})
+
+        if not stock_ids:
+            logger.info("持股清單為空，跳過持股分佈更新")
+            return
+
+        end_date = date.today().isoformat()
+        start_date = (date.today() - timedelta(days=180)).isoformat()
+        updated = 0
+
+        for sid in stock_ids:
+            try:
+                data = fetch_holding_shares_from_finmind(sid, start_date=start_date, end_date=end_date)
+                if data:
+                    save_holding_shares(data)
+                    updated += 1
+                time.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"持股分佈更新失敗 {sid}: {e}")
+
+        logger.info(f"持股分佈更新完成，共更新 {updated}/{len(stock_ids)} 檔")
+    except Exception as e:
+        logger.error(f"持股分佈更新任務失敗：{e}")
+
+
 def job_weekly_performance():
     """
     每週五收盤後推播績效摘要
@@ -202,12 +240,21 @@ def run_scheduler():
         name="週報",
     )
 
+    # 每週五持股分佈更新：22:00
+    scheduler.add_job(
+        job_weekly_holding_shares,
+        CronTrigger(day_of_week="fri", hour=22, minute=0, timezone="Asia/Taipei"),
+        id="weekly_holding_shares",
+        name="週五持股分佈更新",
+    )
+
     logger.info("排程器啟動，等待任務觸發...")
     logger.info("排程時間：")
     logger.info("  盤中分K監控：週一至週五 09:00–13:30（每分鐘）")
     logger.info("  盤後選股：週一至週五 14:45")
     logger.info("  持股警示：週一至週五 13:30 / 14:35")
     logger.info("  週績效報告：週五 15:10")
+    logger.info("  持股分佈更新：週五 22:00")
 
     try:
         scheduler.start()

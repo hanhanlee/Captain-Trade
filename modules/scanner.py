@@ -217,6 +217,7 @@ def analyze_stock(
     precomputed: bool = False,        # True 時跳過 compute_indicators（已預先計算）
     ma_breakout_mode: str = "strict", # "strict"：昨日須全在三線下；"loose"：昨日只要在任一線下
     broker_df: pd.DataFrame = None,   # 分點主力買賣超序列（已含 consecutive_buy_days）
+    main_force_min_days: int = 3,     # 主力買超最低連續天數，0 = 停用此條件
 ):
     """
     分析單一股票，回傳 ScanSignal 或 None（資料不足）
@@ -334,12 +335,14 @@ def analyze_stock(
     elif inst_buying:
         sig.institutional_buy = True
 
-    # 主力連 3 日買超：以分點券商資料為準
-    # 定義：(前15買超分點總買進 − 前15賣超分點總賣出) 連續 3 日 > 0
-    if broker_df is not None and not broker_df.empty:
+    # 主力連續買超：以分點券商資料為準
+    # 定義：(前15買超分點總買進 − 前15賣超分點總賣出) 連續 N 日 > 0
+    if main_force_min_days == 0:
+        sig.main_force_buy_3d = True  # 條件停用，視為通過
+    elif broker_df is not None and not broker_df.empty:
         latest_broker = broker_df.sort_values("date").iloc[-1]
         streak = pd.to_numeric(latest_broker.get("consecutive_buy_days"), errors="coerce")
-        sig.main_force_buy_3d = bool(pd.notna(streak) and int(streak) >= 3)
+        sig.main_force_buy_3d = bool(pd.notna(streak) and int(streak) >= main_force_min_days)
 
     # 7. [v4] 突破近 20 日收盤高點（排除今日本身）
     if len(df) >= 22:
@@ -713,6 +716,7 @@ def run_scan(
     strategy_version: str = "v4",    # "v4"：領先攻擊版；"v3"：均線突破版
     fundamental_mode: str = "exclude", # "off" | "warn" | "penalty" | "exclude"
     broker_data: dict = None,         # {stock_id: DataFrame}，分點主力快取（None = 不用）
+    main_force_min_days: int = 3,     # 主力買超最低連續天數，0 = 停用此條件
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:
     """
@@ -876,6 +880,7 @@ def run_scan(
             market_close=market_close,
             ma_breakout_mode=ma_breakout_mode,
             broker_df=broker_data.get(stock_id),
+            main_force_min_days=main_force_min_days,
         )
 
         if debug:

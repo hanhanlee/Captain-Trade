@@ -1702,6 +1702,7 @@ class PrefetchWorker:
         logger.info("法人執行緒已啟動")
         while not self._stop_event.is_set():
             self._inst_next_check_at = None
+            self.current_inst_stock = "[法人] 準備中"
             try:
                 self._run_inst_phase()
             except Exception:
@@ -1881,6 +1882,7 @@ class PrefetchWorker:
         logger.info("融資執行緒已啟動")
         while not self._stop_event.is_set():
             self._margin_next_check_at = None
+            self.current_margin_stock = "[融資] 準備中"
             try:
                 self._run_margin_phase()
             except Exception:

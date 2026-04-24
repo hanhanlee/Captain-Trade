@@ -11,6 +11,7 @@ from data.cache_health_registry import get_cache_health_dataset, list_cache_heal
 from db.database import init_db, vacuum_db, get_session
 from db.cache_health import (
     get_health_run,
+    get_repair_job,
     get_run_daily_summary,
     get_run_gaps,
     list_health_runs,
@@ -457,11 +458,11 @@ else:
         _main = f"基本面快取填充中（{_fund_q} 檔待處理）"
         _sub  = f"正在抓取：{_strip_prefix(_cur_stock)}"
 
-    elif _finmind_ok and s.get("supplementary_completed_at"):
+    elif _finmind_ok and s.get("supplementary_completed_at") and s.get("supplementary_date") == _ltd:
         _sup = s["supplementary_completed_at"]
         _cls, _icon = "ok", "🟢"
-        _main = f"今日資料全部更新完成（{_sup.strftime('%H:%M')}）"
-        _sub  = "核心 OHLCV + 法人 + 融資融券 皆已就緒"
+        _main = f"{_ltd} 資料更新完成（{_sup.strftime('%H:%M')}）"
+        _sub  = "核心 OHLCV + 法人 + 融資融券 皆已更新至本交易日"
 
     elif _day_ctx["is_weekend"]:
         _cls, _icon = "info", "🔵"
@@ -1153,27 +1154,198 @@ with st.expander("🩺 完整健康度分析", expanded=False):
             str(row["dataset"]): row for _, row in latest_runs_df.iterrows()
         }
 
-    overview_rows = []
-    for spec in dataset_specs:
-        latest = latest_run_map.get(spec.key)
-        overview_rows.append({
-            "資料集": spec.label,
-            "最近狀態": latest.get("status", "尚未分析") if latest is not None else "尚未分析",
-            "最近區間": (
-                f"{latest.get('date_from', '-') } ~ {latest.get('date_to', '-') }"
-                if latest is not None else "-"
-            ),
-            "完整度": (
-                f"{float(latest.get('completeness_pct') or 0):.2f}%"
-                if latest is not None and latest.get("completeness_pct") is not None else "-"
-            ),
-            "缺漏單位": int(latest.get("total_missing_units") or 0) if latest is not None else 0,
-            "最早資料": str(latest.get("earliest_cached_date") or "-")[:10] if latest is not None else "-",
-            "最新資料": str(latest.get("latest_cached_date") or "-")[:10] if latest is not None else "-",
-            "說明": spec.description,
-        })
+    # ── 資料集健康度一覽 ─────────────────────────────────────────────
+    def _build_overview_rows(latest_run_map_arg, dataset_specs_arg):
+        rows = []
+        for spec in dataset_specs_arg:
+            latest = latest_run_map_arg.get(spec.key)
+            rows.append({
+                "資料集": spec.label,
+                "最近狀態": latest.get("status", "尚未分析") if latest is not None else "尚未分析",
+                "最近區間": (
+                    f"{latest.get('date_from', '-')} ~ {latest.get('date_to', '-')}"
+                    if latest is not None else "-"
+                ),
+                "完整度": (
+                    f"{float(latest.get('completeness_pct') or 0):.2f}%"
+                    if latest is not None and latest.get("completeness_pct") is not None else "-"
+                ),
+                "缺漏單位": int(latest.get("total_missing_units") or 0) if latest is not None else 0,
+                "最早資料": str(latest.get("earliest_cached_date") or "-")[:10] if latest is not None else "-",
+                "最新資料": str(latest.get("latest_cached_date") or "-")[:10] if latest is not None else "-",
+                "說明": spec.description,
+            })
+        return rows
 
-    st.dataframe(pd.DataFrame(overview_rows), use_container_width=True, hide_index=True)
+    overview_placeholder = st.empty()
+    overview_placeholder.dataframe(
+        pd.DataFrame(_build_overview_rows(latest_run_map, dataset_specs)),
+        use_container_width=True, hide_index=True,
+    )
+
+    # ── 整體掃描修復 ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("##### 整體掃描修復")
+    st.caption("一鍵對所有資料類型進行健康度掃描，掃描完成後自動補抓缺漏，最後再掃描一次確認修復結果。")
+
+    _RANGE_OPTIONS = {"1個月": 30, "3個月": 90, "6個月": 180, "1年": 365, "自訂": -1}
+    br1, br2, br3, br4 = st.columns([1.2, 1.1, 1.1, 1.2])
+    batch_range_sel = br1.selectbox(
+        "掃描區間",
+        options=list(_RANGE_OPTIONS.keys()),
+        index=0,
+        key="batch_range_option",
+    )
+    _today = date.today()
+    _is_custom = batch_range_sel == "自訂"
+    _default_days = _RANGE_OPTIONS.get(batch_range_sel, 30)
+    _default_batch_start = _today - timedelta(days=_default_days if not _is_custom else 30)
+    batch_date_from = br2.date_input(
+        "開始日期", value=_default_batch_start, key="batch_date_from_input",
+        disabled=not _is_custom,
+    )
+    batch_date_to = br3.date_input(
+        "結束日期", value=_today, key="batch_date_to_input",
+        disabled=not _is_custom,
+    )
+    if not _is_custom:
+        batch_date_from = _today - timedelta(days=_default_days)
+        batch_date_to = _today
+
+    start_batch_btn = br4.button(
+        "開始整體掃描修復", type="primary", use_container_width=True, key="start_batch_scan_repair"
+    )
+
+    if start_batch_btn:
+        if batch_date_from > batch_date_to:
+            st.error("開始日期不能晚於結束日期")
+        else:
+            from db.cache_health import create_health_run as _create_hr
+            _batch_ids: dict[str, int] = {}
+            for _spec in dataset_specs:
+                _rid = _create_hr(
+                    _spec.key,
+                    batch_date_from.isoformat(),
+                    batch_date_to.isoformat(),
+                    notes="整體掃描修復-第1輪",
+                )
+                health_worker.enqueue_scan(_rid)
+                _batch_ids[_spec.key] = _rid
+            st.session_state["bsr_run_ids"] = _batch_ids
+            st.session_state["bsr_repair_ids"] = {}
+            st.session_state["bsr_rescan_ids"] = {}
+            st.session_state["bsr_phase"] = "scanning"
+            st.session_state["bsr_date_from"] = batch_date_from.isoformat()
+            st.session_state["bsr_date_to"] = batch_date_to.isoformat()
+            st.rerun()
+
+    # ── 批次進度狀態 ─────────────────────────────────────────────────
+    if st.session_state.get("bsr_phase") and st.session_state["bsr_phase"] != "idle":
+        bsr_phase = st.session_state["bsr_phase"]
+        bsr_run_ids: dict[str, int] = st.session_state.get("bsr_run_ids", {})
+        bsr_repair_ids: dict[str, int] = st.session_state.get("bsr_repair_ids", {})
+        bsr_rescan_ids: dict[str, int] = st.session_state.get("bsr_rescan_ids", {})
+
+        _phase_labels = {
+            "scanning": "第1輪掃描中",
+            "repairing": "補抓中",
+            "rescanning": "第2輪掃描中",
+            "done": "完成",
+        }
+
+        # Build progress table
+        _progress_rows = []
+        for _spec in dataset_specs:
+            _r1 = get_health_run(bsr_run_ids[_spec.key]) if _spec.key in bsr_run_ids else None
+            _rjob_id = bsr_repair_ids.get(_spec.key)
+            _rjob = get_repair_job(int(_rjob_id)) if _rjob_id else None
+            _r2 = get_health_run(bsr_rescan_ids[_spec.key]) if _spec.key in bsr_rescan_ids else None
+            _progress_rows.append({
+                "資料集": _spec.label,
+                "第1輪掃描": str(_r1.get("status") or "-") if _r1 else "-",
+                "完整度(掃前)": f"{float(_r1.get('completeness_pct') or 0):.1f}%" if _r1 and _r1.get("completeness_pct") is not None else "-",
+                "缺漏": int(_r1.get("total_missing_units") or 0) if _r1 else "-",
+                "補抓": str(_rjob.get("status") or "-") if _rjob else ("略過" if bsr_phase in ("done",) and not _rjob_id else "-"),
+                "第2輪掃描": str(_r2.get("status") or "-") if _r2 else "-",
+                "完整度(修後)": f"{float(_r2.get('completeness_pct') or 0):.1f}%" if _r2 and _r2.get("completeness_pct") is not None else "-",
+            })
+
+        bsp1, bsp2 = st.columns([4, 1])
+        bsp1.markdown(f"**進度：{_phase_labels.get(bsr_phase, bsr_phase)}**　區間：{st.session_state.get('bsr_date_from', '-')} ~ {st.session_state.get('bsr_date_to', '-')}")
+        refresh_batch = bsp2.button("重新整理狀態", key="bsr_refresh_btn", use_container_width=True)
+
+        st.dataframe(pd.DataFrame(_progress_rows), use_container_width=True, hide_index=True)
+
+        # Auto-advance phases
+        if bsr_phase == "scanning":
+            _scan_states = {k: get_health_run(v) for k, v in bsr_run_ids.items()}
+            _all_scans_done = all(
+                r and r.get("status") in ("done", "failed")
+                for r in _scan_states.values()
+            )
+            if _all_scans_done:
+                _any_missing = any(
+                    int(r.get("total_missing_units") or 0) > 0
+                    for r in _scan_states.values() if r
+                )
+                if _any_missing:
+                    _new_repair_ids: dict[str, int] = {}
+                    for _spec in dataset_specs:
+                        _r = _scan_states.get(_spec.key)
+                        if _r and int(_r.get("total_missing_units") or 0) > 0:
+                            _jid = create_repair_job_for_run(int(_r["id"]))
+                            health_worker.enqueue_repair(_jid)
+                            _new_repair_ids[_spec.key] = _jid
+                    st.session_state["bsr_repair_ids"] = _new_repair_ids
+                    st.session_state["bsr_phase"] = "repairing"
+                else:
+                    # No missing data — skip repair, go straight to done
+                    st.session_state["bsr_phase"] = "done"
+                st.rerun()
+
+        elif bsr_phase == "repairing":
+            _all_repairs_done = all(
+                (get_repair_job(int(jid)) or {}).get("status") in ("done", "failed")
+                for jid in bsr_repair_ids.values()
+            ) if bsr_repair_ids else True
+            if _all_repairs_done:
+                from db.cache_health import create_health_run as _create_hr2
+                _rescan_ids: dict[str, int] = {}
+                for _spec in dataset_specs:
+                    _rid2 = _create_hr2(
+                        _spec.key,
+                        st.session_state["bsr_date_from"],
+                        st.session_state["bsr_date_to"],
+                        notes="整體掃描修復-第2輪",
+                    )
+                    health_worker.enqueue_scan(_rid2)
+                    _rescan_ids[_spec.key] = _rid2
+                st.session_state["bsr_rescan_ids"] = _rescan_ids
+                st.session_state["bsr_phase"] = "rescanning"
+                st.rerun()
+
+        elif bsr_phase == "rescanning":
+            _all_rescans_done = all(
+                (get_health_run(v) or {}).get("status") in ("done", "failed")
+                for v in bsr_rescan_ids.values()
+            ) if bsr_rescan_ids else False
+            if _all_rescans_done:
+                st.session_state["bsr_phase"] = "done"
+                st.rerun()
+
+        elif bsr_phase == "done":
+            st.success("整體掃描修復完成！上方資料集列表已顯示修復後最新健康度。")
+            bcl1, bcl2 = st.columns([1, 5])
+            if bcl1.button("清除記錄", key="bsr_clear_btn"):
+                for _k in ("bsr_phase", "bsr_run_ids", "bsr_repair_ids", "bsr_rescan_ids", "bsr_date_from", "bsr_date_to"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
+
+        if refresh_batch:
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("##### 單一資料集分析")
 
     hs1, hs2, hs3, hs4 = st.columns([1.5, 1.1, 1.1, 1])
     dataset_key = hs1.selectbox(

@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
+from datetime import date as date_type, timedelta
 from sqlalchemy import text
 
 from data.data_source import DataSourceManager, FALLBACK_WARNING
@@ -19,7 +20,10 @@ from modules.portfolio_io import (
 )
 from db.price_cache import load_prices
 from db.database import get_session, init_db
-from db.models import Portfolio
+from db.models import Portfolio, TradeJournal
+from db.holding_shares_cache import load_holding_shares
+from db.inst_cache import load_institutional_for_date
+from db.broker_cache import load_broker_main_force
 from db.settings import (
     get_intraday_monitor_scheduler_enabled,
     is_market_closed,
@@ -49,6 +53,18 @@ def _fmt_price(value) -> str:
         return f"{float(value):.2f}"
     except (TypeError, ValueError):
         return "-"
+
+
+def get_realized_pnl() -> tuple[float, int, int]:
+    """
+    回傳 (已實現損益總和, 有pnl的SELL筆數, 無pnl的SELL筆數)。
+    """
+    with get_session() as sess:
+        all_sells = sess.query(TradeJournal).filter(TradeJournal.action == "SELL").all()
+    with_pnl = [r for r in all_sells if r.pnl is not None]
+    without_pnl = len(all_sells) - len(with_pnl)
+    total = sum(float(r.pnl) for r in with_pnl)
+    return total, len(with_pnl), without_pnl
 
 
 def load_holdings() -> list:
@@ -268,33 +284,6 @@ def collect_premium_portfolio_alerts(stats_list: list[dict], price_data: dict) -
                 _add_alert(stat, AlertLevel.WARNING, f"官方風險旗標：{flag_type}")
 
         try:
-            holding_df = get_cached_holding_shares(stock_id=sid, start_date=lookback_start, end_date=latest_date)
-        except Exception:
-            holding_df = pd.DataFrame()
-        if holding_df is not None and not holding_df.empty:
-            hdf = holding_df.copy()
-            hdf["date"] = pd.to_datetime(hdf["date"], errors="coerce")
-            hdf = hdf.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-            if len(hdf) >= 2:
-                latest = hdf.iloc[-1]
-                prev = hdf.iloc[-2]
-
-                def _delta(col: str):
-                    if pd.isna(latest.get(col)) or pd.isna(prev.get(col)):
-                        return None
-                    return float(latest[col]) - float(prev[col])
-
-                d400 = _delta("above_400_pct")
-                d1000 = _delta("above_1000_pct")
-                d10 = _delta("below_10_pct")
-                if d400 is not None and d400 < 0:
-                    _add_alert(stat, AlertLevel.WARNING, f"大戶(400張+)比例下降 {d400:+.2f}pp")
-                if d1000 is not None and d1000 < 0:
-                    _add_alert(stat, AlertLevel.WARNING, f"大戶(1000張+)比例下降 {d1000:+.2f}pp")
-                if d10 is not None and d10 > 0:
-                    _add_alert(stat, AlertLevel.WARNING, f"散戶(10張以下)比例上升 {d10:+.2f}pp")
-
-        try:
             broker_dates = [
                 d.date().isoformat()
                 for d in pd.to_datetime(df["date"], errors="coerce").dropna().tail(30)
@@ -343,6 +332,74 @@ def _recompute_premium_alerts(
     priority = {AlertLevel.DANGER: 0, AlertLevel.WARNING: 1, AlertLevel.INFO: 2}
     all_alerts.sort(key=lambda a: priority.get(a.level, 9))
     return stats_list, all_alerts, premium_alerts
+
+
+def _get_today_buys() -> dict[str, list[dict]]:
+    """Return today's BUY trades from the journal, grouped by stock_id."""
+    today = date_type.today()
+    with get_session() as sess:
+        rows = (
+            sess.query(TradeJournal)
+            .filter(TradeJournal.action == "BUY", TradeJournal.trade_date == today)
+            .all()
+        )
+        result: dict[str, list[dict]] = {}
+        for r in rows:
+            result.setdefault(r.stock_id, []).append({
+                "price": float(r.price),
+                "shares": int(r.shares),
+            })
+        return result
+
+
+def _calc_today_pnl(holdings: list[dict], today_df_map: dict) -> list[dict]:
+    """
+    Calculate today's unrealised P&L per holding.
+
+    today_df_map: {stock_id: DataFrame} freshly fetched, containing at least 2 rows.
+      - iloc[-1]["close"]  → current price (today's latest)
+      - iloc[-2]["close"]  → prev_close (yesterday's close)
+
+    Logic:
+    - Holdings NOT bought today: (current_price - prev_close) × shares
+    - Holdings bought today (from TradeJournal): (current_price - buy_price) × lot_shares
+      Pre-existing shares of the same stock still use prev_close as baseline.
+    - Today's sells are excluded (realised, not shown here).
+    """
+    today_buys = _get_today_buys()
+    rows = []
+    for h in holdings:
+        sid = h["stock_id"]
+        df = today_df_map.get(sid)
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        closes = df["close"].dropna()
+        if len(closes) < 2:
+            continue
+
+        current_price = float(closes.iloc[-1])
+        prev_close = float(closes.iloc[-2])
+
+        pnl = 0.0
+        buys_today = today_buys.get(sid, [])
+        buy_shares_today = sum(b["shares"] for b in buys_today)
+        existing_shares = h["shares"] - buy_shares_today
+
+        if existing_shares > 0:
+            pnl += (current_price - prev_close) * existing_shares
+
+        for b in buys_today:
+            pnl += (current_price - b["price"]) * b["shares"]
+
+        rows.append({
+            "代碼": sid,
+            "名稱": h.get("stock_name", ""),
+            "現價": current_price,
+            "昨收": prev_close,
+            "漲跌": round(current_price - prev_close, 2),
+            "本日損益(元)": round(pnl, 0),
+        })
+    return rows
 
 
 def render_holding_chart(stock_id: str, df: pd.DataFrame, cost_price: float,
@@ -431,7 +488,9 @@ def render_holding_chart(stock_id: str, df: pd.DataFrame, cost_price: float,
 # ── 頁面主體 ─────────────────────────────────────────────────
 st.title("💼 持股監控")
 
-tab_monitor, tab_manage = st.tabs(["📊 即時監控", "✏️ 管理持股"])
+tab_monitor, tab_daily, tab_weekly, tab_realtime, tab_other, tab_manage = st.tabs([
+    "📊 即時監控", "📅 日報", "📆 週報", "⚡ 即時警示", "🚨 其他", "✏️ 管理持股"
+])
 
 # ══ Tab：即時監控 ═══════════════════════════════════════════
 with tab_monitor:
@@ -656,14 +715,12 @@ with tab_monitor:
                     label = LEVEL_LABEL.get(a.level, "Premium")
                     st.write(f"{label} **{a.stock_id} {a.stock_name}** - {a.reason}")
                 st.caption(
-                    "已檢查：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股、"
-                    "大戶持股分布、主力券商反手/賣超。"
+                    "已檢查：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股、主力券商反手/賣超。"
                 )
         else:
             with st.expander("Premium 風險檢查範圍", expanded=False):
-                st.write("已檢查：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股。")
-                st.write("已檢查：大戶持股分布、主力券商反手/賣超。")
-                st.caption("每日漲跌停價 price_limit 只是參考價，不列為風險警示。")
+                st.write("已檢查：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股、主力券商反手/賣超。")
+                st.caption("大戶/散戶持股分布請至「📆 週報」頁籤查看。每日漲跌停價 price_limit 只是參考價，不列為風險警示。")
 
         # LINE 推播
         if notify_btn:
@@ -687,14 +744,150 @@ with tab_monitor:
             total_pnl = sum(s["pnl"] for s in stats_list)
             total_cost = sum(s["cost_price"] * s["shares"] for s in stats_list)
             total_pnl_pct = total_pnl / total_cost * 100 if total_cost else 0
+            realized_pnl, pnl_count, missing_pnl_count = get_realized_pnl()
+            total_combined_pnl = total_pnl + realized_pnl
 
             m1, m2, m3 = st.columns(3)
             m1.metric("總未實現損益", f"{total_pnl:+,.0f} 元",
                       delta=f"{total_pnl_pct:+.2f}%")
-            m2.metric("持股檔數", f"{len(stats_list)} 檔")
-            m3.metric("警示數", f"{len(all_alerts)} 則",
+            m2.metric(
+                "已交易損益",
+                f"{realized_pnl:+,.0f} 元",
+                help="交易日誌中所有已平倉賣出記錄的損益合計",
+            )
+            m3.metric(
+                "股市總預估損益",
+                f"{total_combined_pnl:+,.0f} 元",
+                help="未實現損益 + 已交易損益",
+            )
+            if missing_pnl_count > 0:
+                st.caption(
+                    f"⚠️ 已交易損益僅含有填寫損益的賣出記錄（{pnl_count} 筆）；"
+                    f"尚有 **{missing_pnl_count}** 筆賣出記錄未填損益，不計入統計。"
+                    f"請至「交易日誌」補填損益欄位以取得完整數字。"
+                )
+            elif pnl_count == 0:
+                st.caption(
+                    "ℹ️ 已交易損益目前為 0，因交易日誌尚無賣出損益記錄。"
+                    "請至「交易日誌」記錄賣出交易並填寫損益欄位。"
+                )
+
+            m4, m5 = st.columns(2)
+            m4.metric("持股檔數", f"{len(stats_list)} 檔")
+            m5.metric("警示數", f"{len(all_alerts)} 則",
                       delta="需注意" if all_alerts else "正常",
                       delta_color="inverse" if all_alerts else "normal")
+
+            st.markdown("---")
+
+            # ── 本日損益 ──────────────────────────────────────────
+            st.subheader("📅 本日損益（未實現）")
+            td_col_btn, td_col_ts = st.columns([1, 3])
+            with td_col_btn:
+                update_today_pnl = st.button(
+                    "更新現價",
+                    key="update_today_pnl_btn",
+                    type="primary",
+                    use_container_width=True,
+                    help="重新抓取各持股現價，重算本日未實現損益",
+                )
+            with td_col_ts:
+                ts = st.session_state.get("today_pnl_updated_at")
+                if ts:
+                    st.caption(f"上次更新：{ts}")
+                else:
+                    st.caption("按「更新現價」載入本日損益")
+
+            if update_today_pnl:
+                from datetime import datetime as _dt
+                from data.finmind_client import get_kbar_latest, get_realtime_stock_snapshot
+                _now = _dt.now()
+                # 盤中：週一~五 09:00~14:59，且非休市模式
+                _intraday = (
+                    not market_closed_mode
+                    and _now.weekday() < 5
+                    and 9 <= _now.hour < 15
+                )
+                _today_str = _now.strftime("%Y-%m-%d")
+
+                new_df_map: dict[str, pd.DataFrame] = {}
+                dsm_today = None if market_closed_mode else DataSourceManager()
+                td_prog = st.progress(0)
+                for i, h in enumerate(holdings):
+                    td_prog.progress((i + 1) / len(holdings))
+                    try:
+                        if market_closed_mode:
+                            df_p = load_prices(h["stock_id"], start_date="2025-01-01")
+                        else:
+                            df_p = dsm_today.get_price(h["stock_id"], required_days=10)
+                        if df_p is not None and not df_p.empty and "close" in df_p.columns:
+                            if _intraday:
+                                # 盤中：補抓今日現價插入最後一列，讓 iloc[-1]=現價、iloc[-2]=昨收
+                                _cur = None
+                                try:
+                                    _snap = get_realtime_stock_snapshot(h["stock_id"])
+                                    _cur = float(_snap["close"]) if _snap and _snap.get("close") else None
+                                except Exception:
+                                    pass
+                                if _cur is None:
+                                    try:
+                                        _cur = get_kbar_latest(h["stock_id"])
+                                    except Exception:
+                                        pass
+                                if _cur is not None:
+                                    _today_row = pd.DataFrame([{
+                                        "date": pd.Timestamp(_today_str),
+                                        "open": _cur, "max": _cur, "min": _cur,
+                                        "close": _cur, "Trading_Volume": 0,
+                                    }])
+                                    df_p = pd.concat([df_p, _today_row], ignore_index=True)
+                            new_df_map[h["stock_id"]] = df_p
+                        if not market_closed_mode:
+                            time.sleep(0.05)
+                    except Exception:
+                        pass
+                td_prog.empty()
+                st.session_state["today_pnl_df_map"] = new_df_map
+                st.session_state["today_pnl_updated_at"] = (
+                    time.strftime("%Y-%m-%d %H:%M:%S")
+                )
+                st.rerun()
+
+            today_df_map = st.session_state.get("today_pnl_df_map", {})
+            if today_df_map:
+                today_rows = _calc_today_pnl(holdings, today_df_map)
+                if today_rows:
+                    total_today_pnl = sum(r["本日損益(元)"] for r in today_rows)
+                    td_m1, td_m2 = st.columns(2)
+                    td_m1.metric(
+                        "本日未實現損益合計",
+                        f"{total_today_pnl:+,.0f} 元",
+                        delta_color="normal",
+                    )
+                    td_m2.metric("涵蓋持股", f"{len(today_rows)} 檔")
+
+                    today_df = pd.DataFrame(today_rows)
+
+                    def _color_today(val):
+                        if isinstance(val, (int, float)):
+                            return "color:#e74c3c" if val > 0 else ("color:#27ae60" if val < 0 else "")
+                        return ""
+
+                    today_styled = (
+                        today_df.style
+                        .applymap(_color_today, subset=["漲跌", "本日損益(元)"])
+                        .format({
+                            "現價": "{:.2f}",
+                            "昨收": "{:.2f}",
+                            "漲跌": "{:+.2f}",
+                            "本日損益(元)": "{:+,.0f}",
+                        }, na_rep="-")
+                    )
+                    st.dataframe(today_styled, use_container_width=True, hide_index=True)
+                else:
+                    st.info("無法計算本日損益（資料不足，需至少 2 個交易日的價格）。")
+            else:
+                st.info("請按「更新現價」載入本日損益。")
 
             st.markdown("---")
 
@@ -750,6 +943,508 @@ with tab_monitor:
                         stop_loss=stat.get("stop_loss"),
                         take_profit=stat.get("take_profit"),
                     )
+
+
+# ══ Tab：日報 ════════════════════════════════════════════════
+with tab_daily:
+    st.subheader("📅 日報")
+    _daily_holdings = load_holdings()
+    if not _daily_holdings:
+        st.info("尚未新增任何持股。請前往「管理持股」頁籤新增。")
+    else:
+        _d_col1, _d_col2 = st.columns([1, 2])
+        with _d_col1:
+            _report_date = st.date_input(
+                "選擇日期",
+                value=date_type.today() - timedelta(days=1),
+                key="daily_report_date",
+            )
+        with _d_col2:
+            st.caption("主力分點通常於 21:15 後完備；三大法人通常於 15:30 後完備。")
+
+        _rdate = _report_date
+        _rdate_str = _rdate.isoformat()
+        _dates_lookback = [((_rdate - timedelta(days=i)).isoformat()) for i in range(4, -1, -1)]
+
+        # ── 主力反手 ──────────────────────────────────────────
+        st.markdown("#### 主力反手")
+        _broker_rows = []
+        for _h in _daily_holdings:
+            _sid = _h["stock_id"]
+            _bdf = load_broker_main_force(_sid, _dates_lookback)
+            if _bdf.empty:
+                _broker_rows.append({
+                    "代碼": _sid, "名稱": _h.get("stock_name", ""),
+                    "淨買賣(張)": None, "連買天數": None, "狀態": "⚪ 無快取資料",
+                })
+                continue
+            _target = _bdf[_bdf["date"].dt.date == _rdate]
+            if _target.empty:
+                _broker_rows.append({
+                    "代碼": _sid, "名稱": _h.get("stock_name", ""),
+                    "淨買賣(張)": None, "連買天數": None, "狀態": "⚪ 當日無資料",
+                })
+                continue
+            _br = _target.iloc[-1]
+            _rev = bool(pd.to_numeric(_br.get("reversal_flag"), errors="coerce"))
+            _net = float(pd.to_numeric(_br.get("net"), errors="coerce") or 0)
+            _streak = pd.to_numeric(_br.get("consecutive_buy_days"), errors="coerce")
+            _status = (
+                "⚠️ 反手訊號" if _rev else
+                ("🔴 淨賣超" if _net < 0 else ("🟢 淨買超" if _net > 0 else "➖ 中性"))
+            )
+            _broker_rows.append({
+                "代碼": _sid, "名稱": _h.get("stock_name", ""),
+                "淨買賣(張)": round(_net, 0),
+                "連買天數": int(_streak) if pd.notna(_streak) else None,
+                "狀態": _status,
+            })
+
+        _no_data = sum(1 for r in _broker_rows if "無資料" in r["狀態"])
+        if _no_data == len(_broker_rows):
+            st.warning(f"主力分點資料在 {_rdate_str} 尚未完備（通常週一至週五 21:15 後更新）。")
+        elif _no_data > 0:
+            st.caption(f"⚠️ {_no_data} 檔主力資料尚未完備")
+        st.dataframe(pd.DataFrame(_broker_rows), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # ── 法人反手 ──────────────────────────────────────────
+        st.markdown("#### 法人反手（三大法人）")
+        _inst_rows = []
+        for _h in _daily_holdings:
+            _sid = _h["stock_id"]
+            _idf = load_institutional_for_date(_sid, _rdate, days=7)
+            if _idf.empty:
+                _inst_rows.append({
+                    "代碼": _sid, "名稱": _h.get("stock_name", ""),
+                    "外資淨": None, "投信淨": None, "自營淨": None,
+                    "合計淨(張)": None, "狀態": "⚪ 無快取資料",
+                })
+                continue
+
+            _daily_total = (
+                _idf.groupby("date")["net"].sum()
+                .reset_index().sort_values("date")
+            )
+            _target_mask = _daily_total["date"].dt.date == _rdate
+            if not _target_mask.any():
+                _inst_rows.append({
+                    "代碼": _sid, "名稱": _h.get("stock_name", ""),
+                    "外資淨": None, "投信淨": None, "自營淨": None,
+                    "合計淨(張)": None, "狀態": "⚪ 當日無資料",
+                })
+                continue
+
+            _pos = _daily_total[_target_mask].index[0]
+            _iloc = _daily_total.index.get_loc(_pos)
+            _today_net = float(_daily_total.iloc[_iloc]["net"])
+
+            # FinMind name 欄位為英文：Foreign_Investor, Investment_Trust, Dealer_self/Dealer_Hedging
+            _day_detail = _idf[_idf["date"].dt.date == _rdate].groupby("name")["net"].sum()
+            def _inst_val(kw):
+                matches = [v for k, v in _day_detail.items() if kw.lower() in str(k).lower()]
+                return round(sum(matches), 0) if matches else 0.0
+
+            _reversal = (
+                _iloc >= 2
+                and _today_net < 0
+                and float(_daily_total.iloc[_iloc - 1]["net"]) > 0
+                and float(_daily_total.iloc[_iloc - 2]["net"]) > 0
+            )
+            _status = (
+                "⚠️ 反手訊號" if _reversal else
+                ("🔴 淨賣超" if _today_net < 0 else ("🟢 淨買超" if _today_net > 0 else "➖ 中性"))
+            )
+            _inst_rows.append({
+                "代碼": _sid, "名稱": _h.get("stock_name", ""),
+                "外資淨": _inst_val("Foreign"),
+                "投信淨": _inst_val("Investment_Trust"),
+                "自營淨": _inst_val("Dealer"),
+                "合計淨(張)": round(_today_net, 0),
+                "狀態": _status,
+            })
+
+        _no_data_i = sum(1 for r in _inst_rows if "無資料" in r["狀態"])
+        if _no_data_i == len(_inst_rows):
+            st.warning(f"三大法人資料在 {_rdate_str} 尚未完備（通常 15:30 後更新）。")
+        elif _no_data_i > 0:
+            st.caption(f"⚠️ {_no_data_i} 檔法人資料尚未完備")
+        st.dataframe(pd.DataFrame(_inst_rows), use_container_width=True, hide_index=True)
+
+
+# ══ Tab：週報 ════════════════════════════════════════════════
+with tab_weekly:
+    st.subheader("📆 週報")
+    _weekly_holdings = load_holdings()
+
+    _wk_btn_col, _wk_info_col = st.columns([1, 3])
+    with _wk_btn_col:
+        _update_hs = st.button(
+            "更新持股分佈資料",
+            use_container_width=True,
+            key="update_holding_shares_btn",
+            help="從 FinMind 拉取大戶/散戶持股分佈（Premium）",
+        )
+    with _wk_info_col:
+        st.caption("資料每週五晚間 22:00 自動更新，或按左側按鈕手動觸發。")
+
+    if _update_hs and _weekly_holdings:
+        from data.finmind_client import fetch_holding_shares_from_finmind
+        from db.holding_shares_cache import save_holding_shares as _save_hs
+        _hs_end = date_type.today().isoformat()
+        _hs_start = (date_type.today() - timedelta(days=180)).isoformat()
+        _hs_prog = st.progress(0)
+        _hs_updated = 0
+        for _i, _h in enumerate(_weekly_holdings):
+            _hs_prog.progress((_i + 1) / len(_weekly_holdings))
+            try:
+                _hs_rows = fetch_holding_shares_from_finmind(
+                    _h["stock_id"], start_date=_hs_start, end_date=_hs_end
+                )
+                if _hs_rows:
+                    _save_hs(_hs_rows)
+                    _hs_updated += 1
+                time.sleep(0.5)
+            except Exception as _hs_e:
+                st.warning(f"{_h['stock_id']} 更新失敗：{_hs_e}")
+        _hs_prog.empty()
+        st.success(f"持股分佈資料已更新，共更新 {_hs_updated}/{len(_weekly_holdings)} 檔。")
+        st.rerun()
+
+    if not _weekly_holdings:
+        st.info("尚未新增任何持股。請前往「管理持股」頁籤新增。")
+    else:
+        _sids = {h["stock_id"] for h in _weekly_holdings}
+        _hs_all = load_holding_shares()
+        _hs_all = _hs_all[_hs_all["stock_id"].isin(_sids)].copy()
+
+        if _hs_all.empty:
+            st.warning("尚無持股分佈資料。請按「更新持股分佈資料」取得資料，或等待週五 22:00 自動更新。")
+        else:
+            # 計算每筆資料所屬週一（ISO week start）
+            _hs_all["week_start"] = _hs_all["date"].dt.date.apply(
+                lambda d: d - timedelta(days=d.weekday())
+            )
+            _avail_weeks = sorted(_hs_all["week_start"].unique(), reverse=True)
+
+            def _week_label(ws):
+                we = ws + timedelta(days=4)
+                return f"{ws.strftime('%Y-W%V')} ({ws.strftime('%m/%d')} ~ {we.strftime('%m/%d')})"
+
+            _week_opts = {_week_label(w): w for w in _avail_weeks}
+            _sel_label = st.selectbox("選擇週期", list(_week_opts.keys()), key="weekly_week_selector")
+            _sel_ws = _week_opts[_sel_label]
+            _sel_we = _sel_ws + timedelta(days=6)
+
+            _wk_data = _hs_all[_hs_all["week_start"] == _sel_ws]
+            _prev_ws = _sel_ws - timedelta(days=7)
+            _prev_data = _hs_all[_hs_all["week_start"] == _prev_ws]
+
+            # 缺資料提示
+            _stocks_with_data = set(_wk_data["stock_id"].unique())
+            _missing = [h for h in _weekly_holdings if h["stock_id"] not in _stocks_with_data]
+            if _missing:
+                _missing_str = "、".join(
+                    f"{h['stock_id']} {h.get('stock_name','')}" for h in _missing[:5]
+                ) + ("…" if len(_missing) > 5 else "")
+                st.warning(f"以下持股在 {_sel_label} 尚無分佈資料：{_missing_str}")
+
+            # ── Section 1：大戶/散戶比例 ──────────────────────
+            st.markdown("#### 大戶(>1000張) vs 散戶(≤50張) 比例")
+            _ratio_rows = []
+            for _h in _weekly_holdings:
+                _sid = _h["stock_id"]
+                _hd = _wk_data[_wk_data["stock_id"] == _sid].sort_values("date")
+                if _hd.empty:
+                    continue
+                _latest = _hd.iloc[-1]
+                _prev_hd = _prev_data[_prev_data["stock_id"] == _sid].sort_values("date")
+                _prev_row = _prev_hd.iloc[-1] if not _prev_hd.empty else None
+
+                _c1000 = _latest.get("above_1000_pct")
+                _c50 = _latest.get("below_50_pct")
+                _p1000 = float(_prev_row["above_1000_pct"]) if _prev_row is not None else None
+                _p50 = float(_prev_row["below_50_pct"]) if _prev_row is not None and pd.notna(_prev_row.get("below_50_pct")) else None
+
+                def _fmt_delta(curr, prev):
+                    if curr is None or pd.isna(curr):
+                        return "-"
+                    if prev is None:
+                        return f"{float(curr):.2f}%"
+                    d = float(curr) - float(prev)
+                    arrow = "▲" if d > 0 else ("▼" if d < 0 else "─")
+                    return f"{float(curr):.2f}% ({arrow}{abs(d):.2f}pp)"
+
+                _ratio_rows.append({
+                    "代碼": _sid,
+                    "名稱": _h.get("stock_name", ""),
+                    "大戶(>1000張)": _fmt_delta(_c1000, _p1000),
+                    "散戶(≤50張)": _fmt_delta(_c50, _p50),
+                })
+            if _ratio_rows:
+                st.dataframe(pd.DataFrame(_ratio_rows), use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
+            # ── Section 2：背離偵測 ────────────────────────────
+            st.markdown("#### 背離偵測（大戶收貨洗盤訊號）")
+            st.caption("條件：大戶增持 + 散戶減持 + 股價跌/盤整（週漲跌 ≤ +1%）→ 疑似洗盤收貨")
+            _price_data_ss = st.session_state.get("portfolio_prices", {})
+            _div_rows = []
+            for _h in _weekly_holdings:
+                _sid = _h["stock_id"]
+                _hd = _wk_data[_wk_data["stock_id"] == _sid].sort_values("date")
+                _prev_hd = _prev_data[_prev_data["stock_id"] == _sid].sort_values("date")
+                if _hd.empty or _prev_hd.empty:
+                    continue
+
+                _c1000 = float(_hd.iloc[-1].get("above_1000_pct") or 0)
+                _p1000 = float(_prev_hd.iloc[-1].get("above_1000_pct") or 0)
+                _c50 = _hd.iloc[-1].get("below_50_pct")
+                _p50 = _prev_hd.iloc[-1].get("below_50_pct")
+                _whale_up = (_c1000 - _p1000) > 0
+                _retail_down = (
+                    (float(_c50) - float(_p50)) < 0
+                    if (pd.notna(_c50) and pd.notna(_p50))
+                    else None
+                )
+
+                _pdf = _price_data_ss.get(_sid)
+                _price_chg = None
+                if _pdf is not None and not _pdf.empty and "close" in _pdf.columns:
+                    _week_px = _pdf[
+                        pd.to_datetime(_pdf["date"]).dt.date.apply(
+                            lambda d: _sel_ws <= d <= _sel_we
+                        )
+                    ]
+                    if len(_week_px) >= 2:
+                        _price_chg = (
+                            float(_week_px.iloc[-1]["close"]) - float(_week_px.iloc[0]["close"])
+                        ) / float(_week_px.iloc[0]["close"]) * 100
+
+                _price_weak = (_price_chg is not None and _price_chg <= 1.0)
+                _signals = []
+                if _whale_up:
+                    _signals.append(f"大戶增 +{_c1000 - _p1000:.2f}pp")
+                if _retail_down:
+                    _signals.append(f"散戶減 {float(_c50)-float(_p50):.2f}pp")
+                if _price_weak and _price_chg is not None:
+                    _signals.append(f"股價{'跌' if _price_chg < -1 else '盤整'} {_price_chg:+.1f}%")
+
+                _is_signal = _whale_up and len(_signals) >= 2
+                _div_rows.append({
+                    "代碼": _sid,
+                    "名稱": _h.get("stock_name", ""),
+                    "大戶週變化": f"{_c1000-_p1000:+.2f}pp",
+                    "散戶週變化": f"{float(_c50)-float(_p50):+.2f}pp" if (pd.notna(_c50) and pd.notna(_p50)) else "-",
+                    "週漲跌%": f"{_price_chg:+.1f}%" if _price_chg is not None else "（需載入報價）",
+                    "洗盤收貨訊號": ("⚠️ " + "、".join(_signals)) if _is_signal else "—",
+                })
+            if _div_rows:
+                st.dataframe(pd.DataFrame(_div_rows), use_container_width=True, hide_index=True)
+                if not _price_data_ss:
+                    st.caption("💡 週漲跌欄位需先至「即時監控」頁籤按「更新報價」才能顯示。")
+            else:
+                st.info("無足夠資料計算背離指標（需當週及前週資料）。")
+
+            st.markdown("---")
+
+            # ── Section 3：集中度趨勢圖 ───────────────────────
+            st.markdown("#### 大戶集中度趨勢（近 12 週）")
+            _conc_df = _hs_all.copy()
+            _conc_df = _conc_df.groupby(["stock_id", "week_start"]).last().reset_index()
+            _conc_df = _conc_df.sort_values(["stock_id", "week_start"])
+
+            import plotly.graph_objects as _go_wk
+            _fig_wk = _go_wk.Figure()
+            for _h in _weekly_holdings:
+                _sid = _h["stock_id"]
+                _hd = _conc_df[_conc_df["stock_id"] == _sid].tail(12)
+                if _hd.empty or _hd["above_1000_pct"].isna().all():
+                    continue
+                _fig_wk.add_trace(_go_wk.Scatter(
+                    x=_hd["week_start"].astype(str),
+                    y=_hd["above_1000_pct"],
+                    mode="lines+markers",
+                    name=f"{_sid} {_h.get('stock_name','')}",
+                ))
+            _fig_wk.update_layout(
+                height=320, template="plotly_dark",
+                yaxis_title="大戶(>1000張)持股%",
+                legend=dict(orientation="h", yanchor="top", y=-0.25),
+                margin=dict(t=20, b=60),
+            )
+            st.plotly_chart(_fig_wk, use_container_width=True)
+
+
+# ══ Tab：即時警示 ═════════════════════════════════════════════
+with tab_realtime:
+    st.subheader("⚡ 即時警示")
+    _rt_holdings = load_holdings()
+    _rt_price_data = st.session_state.get("portfolio_prices", {})
+
+    if not _rt_holdings:
+        st.info("尚未新增任何持股。請前往「管理持股」頁籤新增。")
+    elif not _rt_price_data:
+        st.info("請先至「📊 即時監控」頁籤按「🔄 更新報價」載入價格資料，再回此頁掃描。")
+    else:
+        _rt_scan_btn = st.button("掃描即時警示", type="primary", key="scan_realtime_btn")
+        if _rt_scan_btn:
+            st.session_state["realtime_scan_done"] = True
+
+        if st.session_state.get("realtime_scan_done"):
+            from modules.indicators import sma, bollinger_bands
+
+            _rt_rows = []
+            for _h in _rt_holdings:
+                _sid = _h["stock_id"]
+                _df = _rt_price_data.get(_sid)
+                if _df is None or _df.empty or len(_df) < 20:
+                    continue
+
+                _close = pd.to_numeric(_df["close"], errors="coerce")
+                _high = pd.to_numeric(_df["max"], errors="coerce")
+                _low = pd.to_numeric(_df["min"], errors="coerce")
+                _vol_col = "Trading_Volume" if "Trading_Volume" in _df.columns else "volume"
+                _volume = pd.to_numeric(_df.get(_vol_col, pd.Series(dtype=float)), errors="coerce")
+
+                _price = float(_close.iloc[-1])
+                _ma5 = float(_close.tail(5).mean()) if len(_close) >= 5 else None
+                _ma10 = float(_close.tail(10).mean()) if len(_close) >= 10 else None
+                _ma20 = float(_close.tail(20).mean()) if len(_close) >= 20 else None
+
+                # ATR14
+                _prev_c = _close.shift(1)
+                _tr = pd.concat(
+                    [_high - _low, (_high - _prev_c).abs(), (_low - _prev_c).abs()], axis=1
+                ).max(axis=1)
+                _atr14 = float(_tr.tail(14).mean()) if len(_tr.dropna()) >= 14 else None
+                _recent_high = float(_high.tail(60).max()) if len(_high) >= 20 else None
+                _atr_stop = (_recent_high - 2 * _atr14) if (_atr14 and _recent_high) else None
+
+                # Bollinger 上緣
+                _bb_upper, _, _ = bollinger_bands(_close, 20, 2.0)
+                _cur_bb_upper = float(_bb_upper.iloc[-1]) if pd.notna(_bb_upper.iloc[-1]) else None
+
+                # 異常爆量 (> 2.5x 20日均量)
+                _avg_vol = float(_volume.tail(20).mean()) if (len(_volume.dropna()) >= 20) else None
+                _cur_vol = float(_volume.iloc[-1]) if (len(_volume.dropna()) > 0) else None
+                _vol_ratio = (_cur_vol / _avg_vol) if (_avg_vol and _avg_vol > 0 and _cur_vol) else None
+
+                _fired = []
+                if _ma5 and _price < _ma5:
+                    _fired.append(f"跌破MA5({_ma5:.2f})")
+                if _ma10 and _price < _ma10:
+                    _fired.append(f"跌破MA10({_ma10:.2f})")
+                if _ma20 and _price < _ma20:
+                    _fired.append(f"跌破MA20({_ma20:.2f})")
+                _sl = _h.get("stop_loss")
+                if _sl and _price <= _sl:
+                    _fired.append(f"觸及停損({_sl:.2f})")
+                if _atr_stop and _price <= _atr_stop:
+                    _fired.append(f"低於最高-2ATR({_atr_stop:.2f})")
+                if _cur_bb_upper and _price >= _cur_bb_upper:
+                    _fired.append(f"觸及布林上緣({_cur_bb_upper:.2f})")
+                if _vol_ratio and _vol_ratio >= 2.5:
+                    _fired.append(f"異常爆量({_vol_ratio:.1f}x均量)")
+
+                _rt_rows.append({
+                    "代碼": _sid,
+                    "名稱": _h.get("stock_name", ""),
+                    "現價": _price,
+                    "觸發警示": "、".join(_fired) if _fired else "—",
+                    "觸發數": len(_fired),
+                })
+
+            if _rt_rows:
+                _rt_df = pd.DataFrame(_rt_rows).sort_values("觸發數", ascending=False)
+                _alert_count = int((_rt_df["觸發數"] > 0).sum())
+                if _alert_count:
+                    st.warning(f"⚡ {_alert_count} 檔持股有警示觸發")
+                else:
+                    st.success("✅ 所有持股目前無即時警示")
+                st.dataframe(_rt_df.drop(columns=["觸發數"]), use_container_width=True, hide_index=True)
+            else:
+                st.info("無法計算（價格資料不足 20 日）。請在「即時監控」頁籤先更新報價。")
+        else:
+            st.info("按「掃描即時警示」開始檢查所有持股。")
+
+    st.caption(
+        "檢查條件：MA5/MA10/MA20 跌破、停損價、最高價－2×ATR14、布林上緣突破、異常爆量(>2.5x)。"
+        "  使用「即時監控」頁籤中已載入的價格資料。"
+    )
+
+
+# ══ Tab：其他 ════════════════════════════════════════════════
+with tab_other:
+    st.subheader("🚨 其他風險旗標")
+    _other_holdings = load_holdings()
+
+    if not _other_holdings:
+        st.info("尚未新增任何持股。請前往「管理持股」頁籤新增。")
+    else:
+        _ot_col, _ = st.columns([1, 2])
+        with _ot_col:
+            _other_date = st.date_input("觀察日", value=date_type.today(), key="other_flags_date")
+        _other_date_str = _other_date.isoformat()
+        _other_lookback = (pd.Timestamp(_other_date_str) - pd.Timedelta(days=60)).date().isoformat()
+
+        try:
+            from data.finmind_client import get_cached_risk_flags as _get_risk
+            _risk_ok = True
+        except ImportError:
+            _risk_ok = False
+
+        if not _risk_ok:
+            st.error("Premium 資料模組無法載入。")
+        else:
+            _FLAG_META = {
+                "disposition":            ("🔴 官方處置股",   AlertLevel.DANGER),
+                "suspended":              ("🔴 官方停止買賣", AlertLevel.DANGER),
+                "shareholding_transfer":  ("🟡 申報轉讓",     AlertLevel.WARNING),
+                "attention":              ("🟡 注意股",       AlertLevel.WARNING),
+                "treasury_shares":        ("🔵 實施庫藏股",   AlertLevel.INFO),
+            }
+
+            _all_flag_rows = []
+            for _h in _other_holdings:
+                _sid = _h["stock_id"]
+                _rdf = _get_risk(stock_id=_sid, start_date=_other_lookback, end_date=_other_date_str)
+                if _rdf is None or _rdf.empty:
+                    continue
+                for _, _row in _rdf.iterrows():
+                    _ft = str(_row.get("flag_type", ""))
+                    _label, _ = _FLAG_META.get(_ft, (f"旗標:{_ft}", AlertLevel.WARNING))
+                    _detail = _row.get("detail") or {}
+                    _detail_str = ""
+                    if isinstance(_detail, dict):
+                        if _ft == "shareholding_transfer":
+                            _sh = _detail.get("target_transfer_shares", "")
+                            _mth = _detail.get("transfer_methods") or _detail.get("transfer_method", "")
+                            _detail_str = f"{_mth}，{_sh}張" if _sh else _mth
+                        elif _ft == "disposition":
+                            _detail_str = _detail.get("measure") or _detail.get("condition", "")
+                        elif _ft == "treasury_shares":
+                            _detail_str = f"計畫買回 {_detail.get('plan_buyback_shares','')} 張"
+                        elif _ft == "attention":
+                            _detail_str = _detail.get("reason", "")
+                    _all_flag_rows.append({
+                        "代碼": _sid,
+                        "名稱": _h.get("stock_name", ""),
+                        "旗標": _label,
+                        "日期": str(_row.get("date", ""))[:10],
+                        "說明": _detail_str,
+                    })
+
+            if not _all_flag_rows:
+                st.success(f"✅ 所有持股在 {_other_date_str} 前 60 天內無官方風險旗標")
+            else:
+                st.dataframe(
+                    pd.DataFrame(_all_flag_rows),
+                    use_container_width=True, hide_index=True,
+                )
+        st.caption("涵蓋：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股（均來自本機 Premium 快取）。")
 
 
 # ══ Tab：管理持股 ═══════════════════════════════════════════
@@ -876,58 +1571,60 @@ with tab_manage:
 
         st.caption("可直接修改欄位；🔔 盤中監控：勾選後每分鐘掃描現價，觸及 MA5/10/20 或停損停利時推播 LINE。")
 
-        edited_holdings = st.data_editor(
-            holdings_df,
-            use_container_width=True,
-            hide_index=True,
-            disabled=["id", "stock_id", "stock_name"],
-            column_config={
-                "id": st.column_config.TextColumn("id", width="small"),
-                "stock_id": st.column_config.TextColumn("stock_id"),
-                "stock_name": st.column_config.TextColumn("stock_name"),
-                "shares": st.column_config.NumberColumn("shares", min_value=1, step=1, required=True),
-                "cost_price": st.column_config.NumberColumn("cost_price", min_value=0.01, step=0.01, required=True),
-                "stop_loss": st.column_config.NumberColumn("stop_loss", min_value=0.0, step=0.01),
-                "take_profit": st.column_config.NumberColumn("take_profit", min_value=0.0, step=0.01),
-                "notes": st.column_config.TextColumn("notes"),
-                "intraday_monitor": st.column_config.CheckboxColumn("🔔盤中監控", default=False),
-            },
-            key="current_holdings_editor",
-        )
+        with st.form("edit_holdings_form"):
+            edited_holdings = st.data_editor(
+                holdings_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["id", "stock_id", "stock_name"],
+                column_config={
+                    "id": st.column_config.TextColumn("id", width="small"),
+                    "stock_id": st.column_config.TextColumn("stock_id"),
+                    "stock_name": st.column_config.TextColumn("stock_name"),
+                    "shares": st.column_config.NumberColumn("shares", min_value=1, step=1, required=True),
+                    "cost_price": st.column_config.NumberColumn("cost_price", min_value=0.01, step=0.01, required=True),
+                    "stop_loss": st.column_config.NumberColumn("stop_loss", min_value=0.0, step=0.01),
+                    "take_profit": st.column_config.NumberColumn("take_profit", min_value=0.0, step=0.01),
+                    "notes": st.column_config.TextColumn("notes"),
+                    "intraday_monitor": st.column_config.CheckboxColumn("🔔盤中監控", default=False),
+                },
+            )
 
-        save_col, _ = st.columns([2, 5])
-        with save_col:
-            if st.button("儲存目前持股修改", type="primary", use_container_width=True):
-                edited_df = pd.DataFrame(edited_holdings).copy()
-                edited_df["shares"] = pd.to_numeric(edited_df["shares"], errors="coerce")
-                edited_df["cost_price"] = pd.to_numeric(edited_df["cost_price"], errors="coerce")
-                edited_df["stop_loss"] = pd.to_numeric(edited_df["stop_loss"], errors="coerce")
-                edited_df["take_profit"] = pd.to_numeric(edited_df["take_profit"], errors="coerce")
-                edited_df["notes"] = edited_df["notes"].fillna("").astype(str)
-                edited_df["intraday_monitor"] = edited_df.get("intraday_monitor", False).fillna(False).astype(bool)
+            save_col, _ = st.columns([2, 5])
+            with save_col:
+                save_submitted = st.form_submit_button("儲存目前持股修改", type="primary", use_container_width=True)
 
-                invalid = edited_df[
-                    edited_df["shares"].isna()
-                    | (edited_df["shares"] <= 0)
-                    | edited_df["cost_price"].isna()
-                    | (edited_df["cost_price"] <= 0)
-                ]
-                if not invalid.empty:
-                    bad_ids = "、".join(invalid["stock_id"].astype(str).tolist()[:5])
-                    st.error(f"以下持股的股數或成本價不合法：{bad_ids}")
-                else:
-                    for row in edited_df.to_dict("records"):
-                        update_holding(
-                            holding_id=int(row["id"]),
-                            shares=int(row["shares"]),
-                            cost_price=float(row["cost_price"]),
-                            stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) and row["stop_loss"] > 0 else None,
-                            take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) and row["take_profit"] > 0 else None,
-                            notes=row["notes"],
-                            intraday_monitor=bool(row.get("intraday_monitor", False)),
-                        )
-                    st.success("持股資料已更新")
-                    st.rerun()
+        if save_submitted:
+            edited_df = edited_holdings.copy()
+            edited_df["shares"] = pd.to_numeric(edited_df["shares"], errors="coerce")
+            edited_df["cost_price"] = pd.to_numeric(edited_df["cost_price"], errors="coerce")
+            edited_df["stop_loss"] = pd.to_numeric(edited_df["stop_loss"], errors="coerce")
+            edited_df["take_profit"] = pd.to_numeric(edited_df["take_profit"], errors="coerce")
+            edited_df["notes"] = edited_df["notes"].fillna("").astype(str)
+            edited_df["intraday_monitor"] = edited_df.get("intraday_monitor", False).fillna(False).astype(bool)
+
+            invalid = edited_df[
+                edited_df["shares"].isna()
+                | (edited_df["shares"] <= 0)
+                | edited_df["cost_price"].isna()
+                | (edited_df["cost_price"] <= 0)
+            ]
+            if not invalid.empty:
+                bad_ids = "、".join(invalid["stock_id"].astype(str).tolist()[:5])
+                st.error(f"以下持股的股數或成本價不合法：{bad_ids}")
+            else:
+                for row in edited_df.to_dict("records"):
+                    update_holding(
+                        holding_id=int(row["id"]),
+                        shares=int(row["shares"]),
+                        cost_price=float(row["cost_price"]),
+                        stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) and row["stop_loss"] > 0 else None,
+                        take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) and row["take_profit"] > 0 else None,
+                        notes=row["notes"],
+                        intraday_monitor=bool(row.get("intraday_monitor", False)),
+                    )
+                st.toast("持股資料已更新 ✅")
+                st.rerun()
 
         st.markdown("---")
         st.markdown("#### 刪除持股")

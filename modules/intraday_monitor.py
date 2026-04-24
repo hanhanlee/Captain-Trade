@@ -21,6 +21,19 @@ COOLDOWN_MINUTES = 60
 _cooldown: dict[str, dict[str, datetime]] = {}
 
 
+def _yahoo_current_price(stock_id: str) -> float | None:
+    """Yahoo Finance fallback when FinMind Premium is unavailable."""
+    try:
+        import yfinance as yf
+        for suffix in (".TW", ".TWO"):
+            hist = yf.Ticker(f"{stock_id}{suffix}").history(period="1d", interval="1m")
+            if not hist.empty:
+                return float(hist["Close"].iloc[-1])
+    except Exception as e:
+        logger.debug(f"_yahoo_current_price {stock_id}: {e}")
+    return None
+
+
 def _cooled_down(stock_id: str, key: str) -> bool:
     last = _cooldown.get(stock_id, {}).get(key)
     return last is None or (datetime.now() - last).total_seconds() >= COOLDOWN_MINUTES * 60
@@ -72,7 +85,9 @@ def _check_one(holding: dict) -> list[str]:
             price = get_kbar_latest(stock_id)
         except Exception as e:
             logger.warning(f"get_kbar_latest {stock_id}: {e}")
-            return []
+
+    if price is None:
+        price = _yahoo_current_price(stock_id)
 
     if price is None:
         return []

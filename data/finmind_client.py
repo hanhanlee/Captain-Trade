@@ -1849,6 +1849,7 @@ def _normalize_holding_shares(df: pd.DataFrame, stock_id: str = "") -> list[dict
         above_400 = 0.0
         above_1000 = 0.0
         below_10 = 0.0
+        below_50 = 0.0
         for _, row in group.iterrows():
             lower, upper = _holding_level_bounds(row.get(level_col))
             pct = float(row["_pct"])
@@ -1858,12 +1859,15 @@ def _normalize_holding_shares(df: pd.DataFrame, stock_id: str = "") -> list[dict
                 above_1000 += pct
             if upper is not None and upper <= 10_000:
                 below_10 += pct
+            if upper is not None and upper <= 50_000:
+                below_50 += pct
         rows.append({
             "stock_id": str(sid),
             "date": str(d)[:10],
             "above_400_pct": round(above_400, 4),
             "above_1000_pct": round(above_1000, 4),
             "below_10_pct": round(below_10, 4),
+            "below_50_pct": round(below_50, 4),
         })
     return rows
 

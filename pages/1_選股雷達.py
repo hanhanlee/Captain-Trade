@@ -110,6 +110,7 @@ def _render_strategy_condition_reference(
     agg_days: int,
     include_institutional: bool,
     require_institutional: bool,
+    main_force_min_days: int = 3,
 ) -> None:
     """Render the built-in strategy conditions for the current scanner settings."""
     if inst_mode == "個別法人皆須買超":
@@ -131,6 +132,15 @@ def _render_strategy_condition_reference(
         else "加分"
     )
     strategy_label = "v4 領先攻擊版" if strategy_version == "v4" else "v3 均線突破版"
+
+    if main_force_min_days == 0:
+        mf_label = "主力買超天數（停用）"
+        mf_type = "停用"
+        mf_note = "天數設為 0，此條件不生效"
+    else:
+        mf_label = f"主力連續 {main_force_min_days} 日買超"
+        mf_type = "必要"
+        mf_note = f"前15買超分點 − 前15賣超分點（主力買賣超）連續 {main_force_min_days} 個交易日為正"
 
     if strategy_version == "v4":
         ma_desc = (
@@ -159,7 +169,7 @@ def _render_strategy_condition_reference(
 | {overheat_label} | 必要 | +10 | {overheat_note} |
 | 相對強度 RS > 80 | 必要 | +10 | 個股明顯領先大盤，確認為真正強勢股 |
 | 突破 60 日收盤新高 | 必要 | +10 | 確認為真實突破，而非盤整區間反彈 |
-| 主力連續 3 日買超 | 必要 | +10 | 前15買超分點 − 前15賣超分點（主力買賣超）連續 3 個交易日為正 |
+| {mf_label} | {mf_type} | +10 | {mf_note} |
 | 布林頻寬縮減（vs 20日前） | 加分 | +10 | 盤整極致後的變盤第一天 |
 | 投信第一天買超 | 加分 | +10 | 法人資金剛開始表態的訊號 |
 | 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
@@ -178,7 +188,7 @@ def _render_strategy_condition_reference(
 | 布林正常（不低於下軌）| 必要 | +10 | 收盤不破布林下軌，避免弱勢股 |
 | MACD 黃金交叉 | 必要（擇一）| +15 | DIF 上穿 DEA，或 MACD 在零軸上方 |
 | RSI 健康區（50–70）| 必要（擇一）| +10 | RSI 在多頭健康區間，尚未超買 |
-| 主力連續 3 日買超 | 必要 | +10 | 前15買超分點 − 前15賣超分點（主力買賣超）連續 3 個交易日為正 |
+| {mf_label} | {mf_type} | +10 | {mf_note} |
 | {inst_desc} | {inst_type} | {inst_score} | {inst_note} |
 | 週線多頭 | 加分 | +10 | 週MA10 向上且收盤站上 |
 | 相對強勢 RS > 70 | 加分 | +8 | 個股表現領先大盤 |
@@ -575,7 +585,7 @@ with st.sidebar:
         "sb_use_turnover_ratio", "sb_turnover_top_n", "sb_require_weekly",
         "sb_min_rs", "sb_overheat_atr_mult", "sb_overheat_action_label",
         "sb_use_fundamental", "sb_req_eps", "sb_req_cf", "sb_min_roe", "sb_max_debt",
-        "sb_ma_mode", "sb_strategy_version",
+        "sb_ma_mode", "sb_strategy_version", "sb_main_force_days",
     ]
     _BASE = {
         "sb_min_price": 10.0, "sb_inst_mode": "個別法人皆須買超",
@@ -591,6 +601,7 @@ with st.sidebar:
         "sb_ma_mode": "嚴謹型（三線全穿）",
         "sb_vol_filter_mode": "前日量前 N 名（推薦）", "sb_min_avg_volume": 0,
         "sb_strategy_version": "v4 領先攻擊版（精準）",
+        "sb_main_force_days": 3,
     }
     _PRESETS = {
         "極速": {**_BASE,
@@ -670,6 +681,20 @@ with st.sidebar:
         ma_breakout_mode = "strict" if ma_breakout_mode_label.startswith("嚴謹") else "loose"
     else:
         ma_breakout_mode = "strict"  # v3 不使用此參數，給預設值即可
+
+    main_force_min_days = st.slider(
+        "🏦 主力連續買超天數門檻",
+        min_value=0, max_value=3, value=3, step=1,
+        key="sb_main_force_days",
+        help=(
+            "必要條件：主力買賣超（前15買超分點 − 前15賣超分點）需連續 N 個交易日為正。\n\n"
+            "**各天數語意：**\n"
+            "- 0 = 停用（不篩選主力條件）\n"
+            "- 1 = 只看今天（今天淨買超 > 0 即通過，不管昨天）\n"
+            "- 2 = 今天 + 昨天都必須 > 0\n"
+            "- 3 = 今天 + 昨天 + 前天都必須 > 0（預設，最嚴格）"
+        ),
+    )
 
     # ── 法人 & 融資條件 ────────────────────────────────────────
     _inst_exp = (
@@ -870,6 +895,7 @@ with st.sidebar:
             agg_days=agg_days,
             include_institutional=include_institutional,
             require_institutional=require_institutional,
+            main_force_min_days=main_force_min_days,
         )
 
     st.markdown("---")
@@ -1082,7 +1108,33 @@ with tab_scan:
             st.warning("股票清單為空，請確認 API Token")
             st.stop()
 
-        if scan_mode.startswith("快速"):
+        # ── 決定掃描股票清單 ──────────────────────────────────────
+        # 當啟用「前日量前 N 名」時，直接從 DB 全市場取量排前 N 名，
+        # 避免 scan_mode 的 head() 截斷造成排名母體不正確。
+        _all_ids_set = set(stock_list["stock_id"].tolist())
+        if top_volume_n > 0:
+            try:
+                from db.database import get_session as _gs
+                from sqlalchemy import text as _sqlt
+                _scan_d_str = _active_scan_date.isoformat()
+                with _gs() as _sess:
+                    _vol_rows = _sess.execute(
+                        _sqlt(
+                            "SELECT stock_id FROM price_cache "
+                            "WHERE date = :d AND volume IS NOT NULL AND volume > 0 "
+                            "ORDER BY volume DESC LIMIT :n"
+                        ),
+                        {"d": _scan_d_str, "n": top_volume_n},
+                    ).fetchall()
+                _vol_ids = [r[0] for r in _vol_rows if r[0] in _all_ids_set]
+                if _vol_ids:
+                    sample_ids = _vol_ids
+                else:
+                    raise ValueError("DB 無當日量資料，fallback")
+            except Exception:
+                # DB 無資料（今日尚未抓取）→ fallback 全清單讓 scanner 自行排名
+                sample_ids = stock_list["stock_id"].tolist()
+        elif scan_mode.startswith("快速"):
             sample_ids = stock_list["stock_id"].head(20).tolist()
         elif scan_mode.startswith("小型"):
             sample_ids = stock_list["stock_id"].head(100).tolist()
@@ -1250,9 +1302,9 @@ with tab_scan:
             except Exception:
                 pass
 
-            if not _broker_data:
+            if not _broker_data and main_force_min_days > 0:
                 st.warning(
-                    "分點主力快取無資料；v3/v4「主力連 3 日買超」條件將全部判為未達，"
+                    f"分點主力快取無資料；v3/v4「主力連 {main_force_min_days} 日買超」條件將全部判為未達，"
                     "掃描結果可能偏少。請先至「資料管理」執行分點資料補抓。"
                 )
 
@@ -1275,6 +1327,7 @@ with tab_scan:
                 ma_breakout_mode=ma_breakout_mode,
                 strategy_version=strategy_version,
                 broker_data=_broker_data,
+                main_force_min_days=main_force_min_days,
                 debug=True,
             )
 

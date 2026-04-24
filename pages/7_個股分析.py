@@ -38,6 +38,43 @@ def _load_df(stock_id: str) -> pd.DataFrame | None:
     return compute_indicators(df)
 
 
+def _try_append_intraday(df: pd.DataFrame, stock_id: str) -> tuple[pd.DataFrame, bool]:
+    """
+    盤中模式：若快取末筆不是今日，嘗試把即時快照拼成臨時今日 bar 附加到 df 尾端。
+    回傳 (df, has_intraday_bar)。
+    """
+    from datetime import date as _date_type
+    today = _date_cls.today()
+
+    if not df.empty and df["date"].iloc[-1].date() >= today:
+        return df, False
+
+    snapshot, _ = _load_realtime_snapshot(stock_id)
+    if not snapshot:
+        return df, False
+
+    snap_close = _as_float(snapshot.get("close"))
+    if snap_close is None:
+        return df, False
+
+    snap_open = _as_float(snapshot.get("open"))
+    snap_high = _as_float(snapshot.get("high"))
+    snap_low  = _as_float(snapshot.get("low"))
+    snap_vol  = _as_float(snapshot.get("total_volume"))
+
+    new_row = {
+        "date":           pd.Timestamp(today),
+        "open":           snap_open  if snap_open  is not None else snap_close,
+        "max":            snap_high  if snap_high  is not None else snap_close,
+        "min":            snap_low   if snap_low   is not None else snap_close,
+        "close":          snap_close,
+        "Trading_Volume": snap_vol   if snap_vol   is not None else 0.0,
+    }
+    new_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    new_df = compute_indicators(new_df)
+    return new_df, True
+
+
 def _load_inst(
     stock_id: str,
     *,
@@ -358,6 +395,7 @@ def render_scorecard(
     ma_mode: str = "strict",
     has_inst: bool = False,
     broker_df: pd.DataFrame | None = None,
+    main_force_min_days: int = 3,
 ):
     """v4 條件逐項評分卡"""
     latest = df.iloc[-1]
@@ -461,25 +499,42 @@ def render_scorecard(
             "rule": "今日收盤 > 過去 60 個交易日最高收盤",
         },
         {
-            "name": "主力連續買超 3 日以上",
+            "name": (
+                f"主力連續買超 {main_force_min_days} 日以上"
+                if main_force_min_days > 0 else "主力買超（條件已停用）"
+            ),
             "pass": sig.main_force_buy_3d,
             "detail": (
                 (
                     f"連續買超 **{int(_broker_streak)}** 日，"
                     f"主力淨買超 **{_broker_net:+.0f}** 張"
                     if pd.notna(_broker_streak) and pd.notna(_broker_net)
-                    else "分點資料已載入，條件未達（連續買超 < 3 日）"
+                    else f"分點資料已載入，條件未達（連續買超 < {main_force_min_days} 日）"
                 )
                 if _has_broker else
                 "未載入分點主力資料（需 Premium 並先執行預抓取）"
             ),
-            "rule": "前15買超分點 − 前15賣超分點（主力買賣超）連續 3 日 > 0",
+            "rule": (
+                f"前15買超分點 − 前15賣超分點（主力買賣超）連續 {main_force_min_days} 日 > 0"
+                if main_force_min_days > 0 else "已停用（0 = 不篩選）"
+            ),
+            "info": (
+                f"**主力連續買超天數說明**\n\n"
+                f"主力買賣超 = 前15大買超券商淨買張 − 前15大賣超券商淨賣張。\n\n"
+                f"「連續 N 日」代表**今天往前數 N 個交易日（含今天）**的主力淨買超都 > 0：\n"
+                f"- 連續 **1** 日 ＝ 只看今天（今天淨買超 > 0 即通過，不管昨天）\n"
+                f"- 連續 **2** 日 ＝ 今天 + 昨天都必須 > 0\n"
+                f"- 連續 **3** 日 ＝ 今天 + 昨天 + 前天都必須 > 0\n\n"
+                f"目前門檻：**{main_force_min_days} 日**"
+                if main_force_min_days > 0 else
+                "**主力連續買超天數（已停用）**\n\n門檻設為 0，此條件不參與判斷，視同通過。"
+            ),
         },
     ]
 
     for c in conditions_req:
         with st.container(border=True):
-            col_ic, col_info = st.columns([0.08, 0.92])
+            col_ic, col_info, col_btn = st.columns([0.08, 0.84, 0.08])
             col_ic.markdown(
                 f"<div style='font-size:1.6rem;text-align:center'>{_badge(c['pass'])}</div>",
                 unsafe_allow_html=True,
@@ -490,6 +545,9 @@ def render_scorecard(
                 unsafe_allow_html=True,
             )
             col_info.caption(c["detail"])
+            if c.get("info"):
+                with col_btn.popover("ℹ️", use_container_width=True):
+                    st.markdown(c["info"])
 
     # ── 加分條件 ────────────────────────────────────────────────
     st.markdown("##### 加分條件")
@@ -595,6 +653,7 @@ def render_scorecard_v3(
     df: pd.DataFrame,
     has_inst: bool = False,
     broker_df: pd.DataFrame | None = None,
+    main_force_min_days: int = 3,
 ):
     """v3 條件逐項評分卡"""
     latest = df.iloc[-1]
@@ -699,25 +758,42 @@ def render_scorecard_v3(
             "rule": "MACD 黃金交叉（DIF由下往上穿越DEA 或 DIF>DEA>0）OR RSI在50–70健康區",
         },
         {
-            "name": "主力連續買超 3 日以上",
+            "name": (
+                f"主力連續買超 {main_force_min_days} 日以上"
+                if main_force_min_days > 0 else "主力買超（條件已停用）"
+            ),
             "pass": sig.main_force_buy_3d,
             "detail": (
                 (
                     f"連續買超 **{int(_broker_streak)}** 日，"
                     f"主力淨買超 **{_broker_net:+.0f}** 張"
                     if pd.notna(_broker_streak) and pd.notna(_broker_net)
-                    else "分點資料已載入，條件未達（連續買超 < 3 日）"
+                    else f"分點資料已載入，條件未達（連續買超 < {main_force_min_days} 日）"
                 )
                 if _has_broker else
                 "未載入分點主力資料（需 Premium 並先執行預抓取）"
             ),
-            "rule": "前15買超分點 − 前15賣超分點（主力買賣超）連續 3 日 > 0",
+            "rule": (
+                f"前15買超分點 − 前15賣超分點（主力買賣超）連續 {main_force_min_days} 日 > 0"
+                if main_force_min_days > 0 else "已停用（0 = 不篩選）"
+            ),
+            "info": (
+                f"**主力連續買超天數說明**\n\n"
+                f"主力買賣超 = 前15大買超券商淨買張 − 前15大賣超券商淨賣張。\n\n"
+                f"「連續 N 日」代表**今天往前數 N 個交易日（含今天）**的主力淨買超都 > 0：\n"
+                f"- 連續 **1** 日 ＝ 只看今天（今天淨買超 > 0 即通過，不管昨天）\n"
+                f"- 連續 **2** 日 ＝ 今天 + 昨天都必須 > 0\n"
+                f"- 連續 **3** 日 ＝ 今天 + 昨天 + 前天都必須 > 0\n\n"
+                f"目前門檻：**{main_force_min_days} 日**"
+                if main_force_min_days > 0 else
+                "**主力連續買超天數（已停用）**\n\n門檻設為 0，此條件不參與判斷，視同通過。"
+            ),
         },
     ]
 
     for c in conditions_req:
         with st.container(border=True):
-            col_ic, col_info = st.columns([0.08, 0.92])
+            col_ic, col_info, col_btn = st.columns([0.08, 0.84, 0.08])
             col_ic.markdown(
                 f"<div style='font-size:1.6rem;text-align:center'>{_badge(c['pass'])}</div>",
                 unsafe_allow_html=True,
@@ -728,6 +804,9 @@ def render_scorecard_v3(
                 unsafe_allow_html=True,
             )
             col_info.caption(c["detail"])
+            if c.get("info"):
+                with col_btn.popover("ℹ️", use_container_width=True):
+                    st.markdown(c["info"])
 
     # ── 加分條件 ────────────────────────────────────────────────
     st.markdown("##### 加分條件")
@@ -842,7 +921,7 @@ def render_scorecard_v3(
     )
 
 
-def render_daily_chart(stock_id: str, df: pd.DataFrame):
+def render_daily_chart(stock_id: str, df: pd.DataFrame, *, intraday_last: bool = False):
     """日K線圖 + 均線 + 布林 + 成交量"""
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True,
@@ -850,12 +929,34 @@ def render_daily_chart(stock_id: str, df: pd.DataFrame):
         subplot_titles=[f"{stock_id} 日K線", "成交量", "RSI(14)"],
     )
 
-    # K 線
-    fig.add_trace(go.Candlestick(
-        x=df["date"], open=df["open"], high=df["max"],
-        low=df["min"], close=df["close"], name="K線",
-        increasing_line_color="#e74c3c", decreasing_line_color="#27ae60",
-    ), row=1, col=1)
+    # K 線（盤中最後一根用較淡顏色區別）
+    if intraday_last and len(df) > 1:
+        fig.add_trace(go.Candlestick(
+            x=df["date"].iloc[:-1], open=df["open"].iloc[:-1], high=df["max"].iloc[:-1],
+            low=df["min"].iloc[:-1], close=df["close"].iloc[:-1], name="K線",
+            increasing_line_color="#e74c3c", decreasing_line_color="#27ae60",
+        ), row=1, col=1)
+        _last = df.iloc[-1]
+        _bar_color = "rgba(231,76,60,0.55)" if _last["close"] >= _last["open"] else "rgba(39,174,96,0.55)"
+        fig.add_trace(go.Candlestick(
+            x=[_last["date"]], open=[_last["open"]], high=[_last["max"]],
+            low=[_last["min"]], close=[_last["close"]], name="盤中",
+            increasing_line_color="rgba(231,76,60,0.55)",
+            decreasing_line_color="rgba(39,174,96,0.55)",
+            showlegend=True,
+        ), row=1, col=1)
+        fig.add_annotation(
+            x=_last["date"], y=_last["max"], text="盤中",
+            showarrow=True, arrowhead=2, arrowsize=1, arrowcolor="#f39c12",
+            font=dict(color="#f39c12", size=11), ax=0, ay=-24,
+            row=1, col=1,
+        )
+    else:
+        fig.add_trace(go.Candlestick(
+            x=df["date"], open=df["open"], high=df["max"],
+            low=df["min"], close=df["close"], name="K線",
+            increasing_line_color="#e74c3c", decreasing_line_color="#27ae60",
+        ), row=1, col=1)
 
     # 均線
     for col, color, name in [
@@ -1519,6 +1620,7 @@ def render_custom_preset_checks(
 
 # ── 側邊欄 ───────────────────────────────────────────────────────
 _custom_preset = get_scanner_preset()
+_main_force_min_days = int(_custom_preset.get("sb_main_force_days") or 3)
 
 with st.sidebar:
     st.header("⚙️ 查詢設定")
@@ -1618,6 +1720,11 @@ if df is None:
     )
     st.stop()
 
+# 盤中模式：嘗試附加今日即時 bar
+_has_intraday = False
+if not _is_hist:
+    df, _has_intraday = _try_append_intraday(df, target_id)
+
 # 歷史模式：保留完整 df 供後續盤勢計算，分析用 df slice 至基準日
 _full_df = df.copy()
 if _is_hist and "date" in df.columns:
@@ -1691,7 +1798,8 @@ except Exception:
 sig = analyze_stock(df, inst_buying=inst_buying, precomputed=True,
                     margin_trend=_margin_trend,
                     ma_breakout_mode=_ma_breakout_mode,
-                    broker_df=broker_main_force if not broker_main_force.empty else None)
+                    broker_df=broker_main_force if not broker_main_force.empty else None,
+                    main_force_min_days=_main_force_min_days)
 _volume_rank = _get_daily_volume_rank(target_id, df.iloc[-1]["date"])
 _raw_custom_overheat_mult = _custom_preset.get("sb_overheat_atr_mult")
 _custom_overheat_mult = (
@@ -1715,15 +1823,19 @@ st.markdown(
 )
 if _is_hist:
     st.info(f"📅 歷史回溯：顯示 **{_active_date}** 當日技術條件（收盤後狀態）")
+if _has_intraday:
+    st.info("📡 盤中模式：技術指標已納入今日即時快照，最後一根 K 棒為未收盤資料")
 
 m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("收盤價", f"{close:.1f} 元")
+_price_label = "最新價 (盤中)" if _has_intraday else "收盤價"
+m1.metric(_price_label, f"{close:.1f} 元")
 m2.metric("漲跌幅", f"{chg_sym}{abs(chg_pct):.2f}%",
           delta=f"{close - prev['close']:+.1f} 元",
           delta_color="normal" if chg_pct >= 0 else "inverse")
 if "Trading_Volume" in df.columns:
     vol = latest["Trading_Volume"]
-    m3.metric("成交量", f"{vol/1000:.0f} 張" if vol >= 1000 else f"{vol:.0f} 股")
+    _vol_label = "累積量 (盤中)" if _has_intraday else "成交量"
+    m3.metric(_vol_label, f"{vol/1000:.0f} 張" if vol >= 1000 else f"{vol:.0f} 股")
 m4.metric("MA20 乖離", f"{latest.get('ma20_bias_ratio', 0):.2f}%")
 m5.metric("RSI(14)", f"{latest.get('rsi14', 0):.1f}")
 
@@ -1765,6 +1877,7 @@ with col_score:
             df,
             has_inst=_has_inst,
             broker_df=broker_main_force if not broker_main_force.empty else None,
+            main_force_min_days=_main_force_min_days,
         )
     else:
         st.subheader("📋 v4 條件評分卡")
@@ -1774,11 +1887,12 @@ with col_score:
             ma_mode=_ma_breakout_mode,
             has_inst=_has_inst,
             broker_df=broker_main_force if not broker_main_force.empty else None,
+            main_force_min_days=_main_force_min_days,
         )
 
 with col_chart:
     st.subheader("📈 日K線圖")
-    render_daily_chart(target_id, df.tail(120))
+    render_daily_chart(target_id, df.tail(120), intraday_last=_has_intraday)
 
 st.markdown("---")
 

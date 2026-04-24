@@ -24,6 +24,7 @@ def ensure_holding_shares_table() -> None:
                 above_400_pct  REAL,
                 above_1000_pct REAL,
                 below_10_pct   REAL,
+                below_50_pct   REAL,
                 fetched_at     TEXT,
                 PRIMARY KEY (stock_id, date)
             )
@@ -32,6 +33,13 @@ def ensure_holding_shares_table() -> None:
             CREATE INDEX IF NOT EXISTS idx_holding_shares_stock_date
             ON holding_shares_cache (stock_id, date)
         """))
+        exists = sess.execute(text(
+            "SELECT 1 FROM pragma_table_info('holding_shares_cache') WHERE name = 'below_50_pct'"
+        )).fetchone()
+        if not exists:
+            sess.execute(text(
+                "ALTER TABLE holding_shares_cache ADD COLUMN below_50_pct REAL"
+            ))
         sess.commit()
 
 
@@ -57,6 +65,7 @@ def save_holding_shares(rows: list[dict]) -> int:
             "above_400_pct": _nullable_float(row.get("above_400_pct")),
             "above_1000_pct": _nullable_float(row.get("above_1000_pct")),
             "below_10_pct": _nullable_float(row.get("below_10_pct")),
+            "below_50_pct": _nullable_float(row.get("below_50_pct")),
             "fetched_at": row.get("fetched_at") or now,
         })
 
@@ -68,12 +77,12 @@ def save_holding_shares(rows: list[dict]) -> int:
             INSERT OR REPLACE INTO holding_shares_cache
                 (
                     stock_id, date, above_400_pct, above_1000_pct,
-                    below_10_pct, fetched_at
+                    below_10_pct, below_50_pct, fetched_at
                 )
             VALUES
                 (
                     :stock_id, :date, :above_400_pct, :above_1000_pct,
-                    :below_10_pct, :fetched_at
+                    :below_10_pct, :below_50_pct, :fetched_at
                 )
         """), payload)
         sess.commit()
@@ -103,7 +112,7 @@ def load_holding_shares(
         rows = sess.execute(text(f"""
             SELECT
                 stock_id, date, above_400_pct, above_1000_pct,
-                below_10_pct, fetched_at
+                below_10_pct, below_50_pct, fetched_at
             FROM holding_shares_cache
             {where}
             ORDER BY date ASC, stock_id ASC
@@ -111,14 +120,14 @@ def load_holding_shares(
 
     cols = [
         "stock_id", "date", "above_400_pct", "above_1000_pct",
-        "below_10_pct", "fetched_at"
+        "below_10_pct", "below_50_pct", "fetched_at"
     ]
     if not rows:
         return pd.DataFrame(columns=cols)
 
     df = pd.DataFrame(rows, columns=cols)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    for col in ["above_400_pct", "above_1000_pct", "below_10_pct"]:
+    for col in ["above_400_pct", "above_1000_pct", "below_10_pct", "below_50_pct"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 

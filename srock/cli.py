@@ -343,6 +343,7 @@ def start_streamlit():
     """啟動 Streamlit。"""
     cfg = load_config()
     _run_step("啟動 Streamlit...", StreamlitService(cfg).start)
+    _notify_startup_complete(cfg, Profile(cfg.default_profile), FunnelService(cfg))
 
 
 @start_app.command("caddy")
