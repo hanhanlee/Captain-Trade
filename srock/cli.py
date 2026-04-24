@@ -15,6 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from srock import auth as auth_mod
 from srock.config import ROOT, load_config
+from srock.console import run_console
 from srock.display import console, print_status, tail_log, watch_status
 from srock.services import CaddyService, FunnelService, StreamlitService
 
@@ -178,7 +179,9 @@ def up(
     local: bool = typer.Option(False, "--local", help="僅啟動 Streamlit（等同 --profile local）"),
     no_funnel: bool = typer.Option(False, "--no-funnel", help="不啟動 Funnel（等同 --profile protected）"),
     no_watch: bool = typer.Option(False, "--no-watch",
-        help="啟動完成後不進入 watch 模式"),
+        help="啟動完成後不進入 console 模式"),
+    watchdog: bool = typer.Option(False, "--watchdog",
+        help="進入 console 後啟用 watchdog 自動復原"),
 ):
     """啟動服務（預設 full：Streamlit + Caddy + Funnel）。"""
     cfg = load_config()
@@ -215,8 +218,7 @@ def up(
         webbrowser.open(url)
 
     if not no_watch and cfg.watch_after_up:
-        console.print("\n[dim]進入監控模式（Ctrl+C 離開，服務仍繼續執行）[/dim]")
-        watch_status(cfg)
+        run_console(cfg, watchdog=watchdog, profile=profile.value)
 
 
 # ── down ───────────────────────────────────────────────────────
@@ -243,6 +245,8 @@ def down():
 def restart(
     profile: Profile = typer.Option(None, "--profile", "-p"),
     no_watch: bool = typer.Option(False, "--no-watch"),
+    watchdog: bool = typer.Option(False, "--watchdog",
+        help="進入 console 後啟用 watchdog 自動復原"),
 ):
     """重啟所有服務（down → up）。"""
     cfg = load_config()
@@ -269,8 +273,22 @@ def restart(
     _notify_startup_complete(cfg, profile, funnel)
 
     if not no_watch and cfg.watch_after_up:
-        console.print("\n[dim]進入監控模式（Ctrl+C 離開）[/dim]")
-        watch_status(cfg)
+        run_console(cfg, watchdog=watchdog, profile=profile.value)
+
+
+# ── console ────────────────────────────────────────────────────
+
+@app.command(name="console")
+def run_console_cmd(
+    watchdog: bool = typer.Option(False, "--watchdog",
+        help="啟用 watchdog 自動復原"),
+    profile: Profile = typer.Option(None, "--profile", "-p"),
+):
+    """進入互動監控台（r/s/u/t/c/f/l/q/?）。"""
+    cfg = load_config()
+    if profile is None:
+        profile = Profile(cfg.default_profile)
+    run_console(cfg, watchdog=watchdog, profile=profile.value)
 
 
 # ── status / watch ─────────────────────────────────────────────
