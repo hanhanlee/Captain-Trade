@@ -151,7 +151,17 @@ class ServiceConsole:
         act = "[yellow]執行中...[/yellow]" if self._executing else "[dim]idle[/dim]"
         t.add_row("[dim]Watchdog[/dim]", Text.from_markup(wd), "")
         t.add_row("[dim]Status[/dim]",   Text.from_markup(act), "")
-        t.add_row("[dim]Keys[/dim]",     Text("r s u t c f l q ?", style="dim"), "")
+        t.add_row()
+        t.add_row(
+            "[dim]快捷鍵[/dim]",
+            Text("r=重啟全部  s=停止  u=啟動  t=Streamlit  c=Caddy", style="dim"),
+            "",
+        )
+        t.add_row(
+            "",
+            Text("f=Tunnel  l=log  q=離開console  ?=說明", style="dim"),
+            "",
+        )
 
         now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         title = f"[bold]SROCK CONSOLE[/bold]  [dim]{now}[/dim]"
