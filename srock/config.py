@@ -101,6 +101,18 @@ class Config:
     def caddy_pid_file(self) -> Path:
         return self.runtime_dir / "caddy.pid"
 
+    @property
+    def telegram_bot_pid_file(self) -> Path:
+        return self.runtime_dir / "telegram_bot.pid"
+
+    @property
+    def telegram_bot_out_log(self) -> Path:
+        return self.runtime_dir / "telegram_bot.out.log"
+
+    @property
+    def telegram_bot_err_log(self) -> Path:
+        return self.runtime_dir / "telegram_bot.err.log"
+
     # startup
     default_profile: str = "full"
     auto_open_browser: bool = False

@@ -51,13 +51,13 @@ def _token() -> str:
     return os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 
-def _call(method: str, **kwargs) -> dict | None:
+def _call(method: str, *, http_timeout: int = 10, **kwargs) -> dict | None:
     token = _token()
     if not token:
         return None
     url = _API_BASE.format(token=token, method=method)
     try:
-        resp = requests.post(url, json=kwargs, timeout=10)
+        resp = requests.post(url, json=kwargs, timeout=http_timeout)
         return resp.json()
     except Exception as e:
         logger.error("Telegram API %s failed: %s", method, e)
@@ -67,6 +67,7 @@ def _call(method: str, **kwargs) -> dict | None:
 def _get_updates(offset: int = 0, timeout: int = 30) -> list[dict]:
     result = _call(
         "getUpdates",
+        http_timeout=timeout + 10,   # HTTP timeout must exceed Telegram polling timeout
         offset=offset,
         timeout=timeout,
         allowed_updates=["message"],   # includes new_chat_members

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -343,3 +344,85 @@ class FunnelService:
                 except Exception:
                     pass
         return None
+
+
+# ── Telegram Bot ───────────────────────────────────────────────
+
+class TelegramBotService:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+
+    @property
+    def name(self) -> str:
+        return "Telegram Bot"
+
+    def _running_pid(self) -> int | None:
+        import psutil as _psutil
+        pid_file = self.cfg.telegram_bot_pid_file
+        if not pid_file.exists():
+            return None
+        try:
+            pid = int(pid_file.read_text().strip())
+            proc = _psutil.Process(pid)
+            if proc.is_running() and proc.status() != _psutil.STATUS_ZOMBIE:
+                return pid
+        except Exception:
+            pass
+        pid_file.unlink(missing_ok=True)
+        return None
+
+    def status(self) -> ServiceStatus:
+        pid = self._running_pid()
+        detail = "long-polling" if pid else ""
+        return ServiceStatus(
+            name=self.name,
+            running=pid is not None,
+            pid=pid,
+            port=None,
+            detail=detail,
+        )
+
+    def start(self) -> str:
+        if self._running_pid():
+            return "Telegram Bot already running"
+        from dotenv import load_dotenv
+        load_dotenv()
+        if not os.getenv("TELEGRAM_BOT_TOKEN", ""):
+            raise RuntimeError("TELEGRAM_BOT_TOKEN 未設定，Bot 無法啟動")
+
+        bot_script = ROOT / "telegram_bot.py"
+        if not bot_script.exists():
+            raise FileNotFoundError(f"telegram_bot.py not found: {bot_script}")
+
+        self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+        pid = start_background(
+            args=[sys.executable, str(bot_script)],
+            cwd=ROOT,
+            stdout_log=self.cfg.telegram_bot_out_log,
+            stderr_log=self.cfg.telegram_bot_err_log,
+            pid_file=self.cfg.telegram_bot_pid_file,
+        )
+        time.sleep(1.5)
+        if not self._running_pid():
+            raise RuntimeError(
+                f"Telegram Bot 啟動後立即退出，請檢查 {self.cfg.telegram_bot_err_log}"
+            )
+        return f"Telegram Bot started — PID {pid}"
+
+    def stop(self) -> str:
+        pid = self._running_pid()
+        if pid is None:
+            return "Telegram Bot is not running"
+        try:
+            import psutil as _psutil
+            _psutil.Process(pid).terminate()
+        except Exception:
+            pass
+        self.cfg.telegram_bot_pid_file.unlink(missing_ok=True)
+        return f"Telegram Bot stopped (was PID {pid})"
+
+    def restart(self) -> str:
+        msg_stop = self.stop()
+        time.sleep(0.5)
+        msg_start = self.start()
+        return "\n".join([msg_stop, msg_start])
