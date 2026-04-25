@@ -285,6 +285,23 @@ class TelegramChatMember(Base):
     joined_via    = Column(String(20), default="message")   # "message" | "join"
 
 
+class EtfHoldingCache(Base):
+    """ETF 成分股持股快取（月度重新平衡快照）"""
+    __tablename__ = "etf_holding_cache"
+    __table_args__ = (
+        UniqueConstraint("etf_id", "date", "hold_stock_id", name="uq_etf_holding"),
+        Index("idx_etf_holding_etf_date", "etf_id", "date"),
+    )
+
+    id            = Column(Integer, primary_key=True)
+    etf_id        = Column(String(10), nullable=False)
+    date          = Column(String(10), nullable=False)   # YYYY-MM-DD，本次快照日期
+    hold_stock_id = Column(String(10), nullable=False)
+    hold_stock_name = Column(String(50), default="")
+    percentage    = Column(Float, default=0.0)           # 持股權重 %
+    fetched_at    = Column(DateTime, default=datetime.now)
+
+
 class CacheHealthRepairJob(Base):
     """健康度缺漏補抓任務。"""
     __tablename__ = "cache_health_repair_job"

@@ -813,6 +813,69 @@ def get_institutional_investors(stock_id: str, days: int = 30) -> pd.DataFrame:
     return df
 
 
+def fetch_etf_holding(etf_id: str, start_date: str = None) -> pd.DataFrame:
+    """
+    取得 ETF 成分股持股明細。
+
+    回傳 DataFrame 欄位：date, hold_stock_id, hold_stock_name, percentage
+    資料為 ETF 每次重新平衡後的持股快照，通常每月更新一次。
+    """
+    start = start_date or (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+    df = _get("TaiwanStockEtfHolding", stock_id=etf_id, start_date=start)
+    if df.empty:
+        return pd.DataFrame(columns=["date", "hold_stock_id", "hold_stock_name", "percentage"])
+
+    rename_map = {}
+    cols_lower = {c.lower(): c for c in df.columns}
+    for target, candidates in [
+        ("date",           ["date"]),
+        ("hold_stock_id",  ["hold_stock_id", "stock_id"]),
+        ("hold_stock_name",["hold_stock_name", "stock_name"]),
+        ("percentage",     ["percentage", "percent", "weight"]),
+    ]:
+        for c in candidates:
+            if c in cols_lower:
+                rename_map[cols_lower[c]] = target
+                break
+    df = df.rename(columns=rename_map)
+
+    needed = ["date", "hold_stock_id", "hold_stock_name", "percentage"]
+    for col in needed:
+        if col not in df.columns:
+            df[col] = "" if col in ("hold_stock_id", "hold_stock_name") else 0.0
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["percentage"] = pd.to_numeric(df["percentage"], errors="coerce").fillna(0.0)
+    df = df.dropna(subset=["date"]).sort_values("date")
+    return df[needed].reset_index(drop=True)
+
+
+def get_etf_holding(
+    etf_id: str,
+    start_date: str = None,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    取得 ETF 持股，優先用本機快取（TTL 24h），過期才打 API。
+
+    回傳 DataFrame 欄位：date, hold_stock_id, hold_stock_name, percentage
+    """
+    from db.etf_cache import is_etf_fresh, save_etf_holdings, load_etf_holdings
+
+    if not force_refresh and is_etf_fresh(etf_id):
+        return load_etf_holdings(etf_id, start_date=start_date)
+
+    try:
+        df = fetch_etf_holding(etf_id, start_date=start_date)
+        if not df.empty:
+            save_etf_holdings(etf_id, df)
+    except Exception as exc:
+        logger.warning("get_etf_holding %s failed: %s", etf_id, exc)
+        return load_etf_holdings(etf_id, start_date=start_date)
+
+    return load_etf_holdings(etf_id, start_date=start_date)
+
+
 def get_broker_trading_daily_report(stock_id: str, trade_date) -> pd.DataFrame:
     """
     取得單日券商分點買賣資料。

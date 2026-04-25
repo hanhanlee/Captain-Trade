@@ -131,6 +131,12 @@ DATASET_CAP: dict[str, dict] = {
         "single_day_only": True,
         "single_day_only_for_all_by_date": True,
     },
+    "TaiwanStockEtfHolding": {
+        "endpoint_type": "data",
+        "premium": False,
+        "all_by_date": False,
+        "single_day_only": False,
+    },
     "taiwan_stock_tick_snapshot": {
         "endpoint_type": "snapshot",
         "premium": True,

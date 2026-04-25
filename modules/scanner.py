@@ -14,11 +14,19 @@
 加分條件（滿足越多分數越高）：
   8. 布林頻寬縮減（今日 bandwidth < 20 日前）              +10
   9. 投信第一天買超（昨非正、今轉正）                       +10
- 10. 突破近 20 日收盤高點                                  +8
+ 10. 突破近 20 日收盤高點（breakout_20d）           不計分，僅顯示標籤
  11. 週線 MA10 扣抵值低位（10週前收盤 < 當前週MA10）        +10
  12. 融資減少 / 籌碼集中                                   +5
+ 13. 外資買超佔比新上榜（過去 N 日未進前10，今日首次進入）  +7
+ 14. 投信買超佔比新上榜（同上，投信版）                     +7
+ 15. 法人爆量（外資+投信今日買超 ≥ 10% 成交量）                   +7
+ 16. ETF 新進持股（被熱門 ETF 首次納入成分股）                     +8
+ 17. ETF 增持（被 ETF 提升持股權重）                               +5
+ ＊ ETF 減持 / 剔除：不計分，僅顯示警示標籤
 
-滿分：必要 110 + 計分加分最多 35 = 145
+滿分：必要 110 + 計分加分最多 69 = 179（breakout_20d / ETF 減持 / ETF 剔除 僅標籤）
+新上榜排名為跨股票計算，在 run_scan 層完成；ETF 訊號由 etf_tracker.get_stock_etf_signals()
+預先計算後以 etf_signal_data 參數注入 run_scan。
 """
 import pandas as pd
 import numpy as np
@@ -39,14 +47,24 @@ class ScanSignal:
     atr_overheat: bool = False         # 過熱：收盤 > MA20 + 3.5 × ATR14
     atr14: float = 0.0                 # ATR14 數值
     # ── v4 加分條件 ───────────────────────────────
-    bb_bandwidth_shrink: bool = False  # 布林頻寬縮減（vs 20日前）
-    trust_first_buy: bool = False      # 投信第一天買超（昨非正→今轉正）
-    breakout_20d: bool = False         # 突破近 20 日收盤高點
-    weekly_deduction_low: bool = False # 週線MA10扣抵值低位（10週前收盤 < 當前週MA10）
-    margin_clean: bool = False         # 融資減少 / 籌碼集中
-    rs_positive: bool = False          # 相對強度 RS > 70
-    rs_score: float = 0.0              # RS 分數（0-100）
-    main_force_buy_3d: bool = False    # 主力買賣超（前15買超分點 − 前15賣超分點）連續 3 日 > 0
+    bb_bandwidth_shrink: bool = False      # 布林頻寬縮減（vs 20日前）
+    trust_first_buy: bool = False          # 投信第一天買超（昨非正→今轉正）
+    breakout_20d: bool = False             # 突破近 20 日收盤高點
+    weekly_deduction_low: bool = False     # 週線MA10扣抵值低位（10週前收盤 < 當前週MA10）
+    margin_clean: bool = False             # 融資減少 / 籌碼集中
+    rs_positive: bool = False              # 相對強度 RS > 70
+    rs_score: float = 0.0                  # RS 分數（0-100）
+    main_force_buy_3d: bool = False        # 主力買賣超（前15買超分點 − 前15賣超分點）連續 3 日 > 0
+    inst_new_ranked_foreign: bool = False  # 外資買超佔比新上榜（過去 N 日未進前10，今日首次）
+    inst_new_ranked_trust: bool = False    # 投信買超佔比新上榜
+    inst_volume_surge: bool = False        # 法人爆量：外資+投信今日買超 ≥ 10% 成交量
+    inst_buy_ratio: float = 0.0            # 今日外資+投信買超佔比 %（僅正買超計入）
+    # ── ETF 成分股訊號 ────────────────────────────
+    etf_new_entry: bool = False            # 新進 ETF 成分股（加分）
+    etf_weight_up: bool = False            # ETF 增持（加分）
+    etf_weight_down: bool = False          # ETF 減持（不計分，警示標籤）
+    etf_ejected: bool = False              # 遭 ETF 剔除（不計分，警示標籤）
+    etf_hold_list: list = field(default_factory=list)   # 目前持有此股的 ETF 清單
     # ── 保留 v3 欄位（供顯示/回測參考，不計入主計分）──
     above_ma20: bool = False
     ma20_rising: bool = False
@@ -104,6 +122,11 @@ class ScanSignal:
             "trust_first_buy": 10,
             "weekly_deduction_low": 10,
             "margin_clean": 5,
+            "inst_new_ranked_foreign": 7,
+            "inst_new_ranked_trust": 7,
+            "inst_volume_surge": 7,
+            "etf_new_entry": 8,
+            "etf_weight_up": 5,
         }
         return round(sum(v for k, v in weights.items() if getattr(self, k, False)), 1)
 
@@ -137,6 +160,13 @@ class ScanSignal:
             "weekly_deduction_low": "週線扣抵低位",
             "margin_clean": "籌碼乾淨",
             "rs_positive": "相對強勢RS>70",
+            "inst_new_ranked_foreign": "外資佔比新上榜",
+            "inst_new_ranked_trust": "投信佔比新上榜",
+            "inst_volume_surge": "法人爆量≥10%",
+            "etf_new_entry":  "ETF新進持股",
+            "etf_weight_up":  "ETF增持",
+            "etf_weight_down": "ETF減持",
+            "etf_ejected":    "ETF剔除",
             # v3 訊號
             "above_ma20": "站上MA20",
             "ma20_rising": "MA20向上",
@@ -156,6 +186,8 @@ class ScanSignal:
                 "atr_ok", "rs_strong", "breakout_60d", "main_force_buy_3d",
                 "bb_bandwidth_shrink", "trust_first_buy",
                 "weekly_deduction_low", "margin_clean", "rs_positive",
+                "inst_new_ranked_foreign", "inst_new_ranked_trust", "inst_volume_surge",
+                "etf_new_entry", "etf_weight_up", "etf_weight_down", "etf_ejected",
             }
         elif strategy_version == "v3":
             allowed = {
@@ -334,6 +366,17 @@ def analyze_stock(
         )
     elif inst_buying:
         sig.institutional_buy = True
+
+    # 6b. [v4] 法人爆量：外資+投信今日買超 ≥ 10% 成交量（不計分，僅做標籤）
+    if isinstance(inst_buying, dict) and vol_col:
+        recent_inst = inst_buying.get("recent_inst_net", pd.DataFrame())
+        today_vol = float(latest.get(vol_col) or 0)
+        if not recent_inst.empty and today_vol > 0:
+            foreign_net = float(recent_inst["外資"].iloc[-1] if "外資" in recent_inst.columns else 0)
+            trust_net   = float(recent_inst["投信"].iloc[-1] if "投信" in recent_inst.columns else 0)
+            net_positive = max(foreign_net + trust_net, 0.0)
+            sig.inst_buy_ratio = round(net_positive / today_vol * 100, 2)
+            sig.inst_volume_surge = sig.inst_buy_ratio >= 10.0
 
     # 主力連續買超：以分點券商資料為準
     # 定義：(前15買超分點總買進 − 前15賣超分點總賣出) 連續 N 日 > 0
@@ -692,6 +735,91 @@ def compute_fundamental_penalty(
     return int(penalty), flags, missing
 
 
+def _compute_inst_new_ranked(
+    inst_data: dict,
+    price_data: dict,
+    top_n: int = 10,
+    lookback: int = 10,
+) -> tuple[set, set]:
+    """
+    計算外資/投信買超佔比新上榜集合。
+
+    新上榜定義：今日首次進入買超佔比前 top_n 名，
+    過去 lookback 個交易日皆未上榜。
+
+    買超佔比 = max(法人淨買超, 0) / 當日成交量，僅計正值避免賣超被排進前N名。
+    可用歷史天數不足 2 天時回傳兩個空集合。
+
+    回傳：(新上榜外資集合, 新上榜投信集合)
+    """
+    # Step 1: 收集各股票每天的外資/投信買超佔比
+    stock_ratios: dict[str, pd.DataFrame] = {}
+
+    for stock_id, idata in inst_data.items():
+        if not isinstance(idata, dict):
+            continue
+        inst_df = idata.get("recent_inst_net", pd.DataFrame())
+        if inst_df.empty:
+            continue
+        price_df = price_data.get(stock_id)
+        if price_df is None or price_df.empty or "Trading_Volume" not in price_df.columns:
+            continue
+
+        # 建立「日期 → 成交量」對照表
+        pf = price_df.copy()
+        if "date" in pf.columns:
+            pf["_dt"] = pd.to_datetime(pf["date"], errors="coerce")
+        else:
+            pf["_dt"] = pd.to_datetime(pf.index, errors="coerce")
+        vol_by_date = pf.set_index("_dt")["Trading_Volume"]
+
+        rows = []
+        for dt, row in inst_df.iterrows():
+            vol = vol_by_date.get(dt)
+            if pd.isna(vol) or float(vol) <= 0:
+                continue
+            vol_f = float(vol)
+            foreign = max(float(row.get("外資") or 0), 0.0)
+            trust   = max(float(row.get("投信") or 0), 0.0)
+            rows.append({
+                "date":           dt,
+                "foreign_ratio":  foreign / vol_f,
+                "trust_ratio":    trust   / vol_f,
+            })
+        if not rows:
+            continue
+        stock_ratios[stock_id] = pd.DataFrame(rows).set_index("date")
+
+    if not stock_ratios:
+        return set(), set()
+
+    all_dates = sorted({dt for df in stock_ratios.values() for dt in df.index})
+    if len(all_dates) < 2:
+        return set(), set()
+
+    today      = all_dates[-1]
+    past_dates = all_dates[-min(lookback + 1, len(all_dates)):-1]
+
+    def _top_n_on_date(col: str, date) -> set:
+        vals = {
+            sid: df.loc[date, col]
+            for sid, df in stock_ratios.items()
+            if date in df.index and pd.notna(df.loc[date, col]) and df.loc[date, col] > 0
+        }
+        return set(sorted(vals, key=vals.get, reverse=True)[:top_n])
+
+    today_foreign = _top_n_on_date("foreign_ratio", today)
+    today_trust   = _top_n_on_date("trust_ratio",   today)
+
+    past_foreign: set = set()
+    past_trust:   set = set()
+    for d in past_dates:
+        past_foreign |= _top_n_on_date("foreign_ratio", d)
+        past_trust   |= _top_n_on_date("trust_ratio",   d)
+
+    return today_foreign - past_foreign, today_trust - past_trust
+
+
 def run_scan(
     price_data: dict,
     stock_info: pd.DataFrame,
@@ -717,6 +845,9 @@ def run_scan(
     fundamental_mode: str = "exclude", # "off" | "warn" | "penalty" | "exclude"
     broker_data: dict = None,         # {stock_id: DataFrame}，分點主力快取（None = 不用）
     main_force_min_days: int = 3,     # 主力買超最低連續天數，0 = 停用此條件
+    inst_new_ranked_top_n: int = 10,  # 新上榜：買超佔比前幾名視為上榜
+    inst_new_ranked_lookback: int = 10,  # 新上榜：過去幾個交易日未上榜才算「首次」
+    etf_signal_data: dict = None,     # {stock_id: EtfStockSignal}，由 etf_tracker 預先計算
     debug: bool = False,              # True 時回傳第三個元素 debug_info
 ) -> tuple:
     """
@@ -745,9 +876,20 @@ def run_scan(
     fundamental_data = fundamental_data or {}
     fundamental_filter = fundamental_filter or {}
     broker_data = broker_data or {}
+    etf_signal_data = etf_signal_data or {}
     fundamental_mode = (fundamental_mode or "exclude").lower()
     if fundamental_mode not in {"off", "warn", "penalty", "exclude"}:
         fundamental_mode = "exclude"
+
+    # 新上榜：跨股票計算法人買超佔比排名（需要 inst_data 有足夠歷史）
+    new_ranked_foreign: set = set()
+    new_ranked_trust:   set = set()
+    if inst_data and inst_new_ranked_top_n > 0:
+        new_ranked_foreign, new_ranked_trust = _compute_inst_new_ranked(
+            inst_data, price_data,
+            top_n=inst_new_ranked_top_n,
+            lookback=inst_new_ranked_lookback,
+        )
 
     # 準備大盤收盤序列
     market_close = None
@@ -882,6 +1024,19 @@ def run_scan(
             broker_df=broker_data.get(stock_id),
             main_force_min_days=main_force_min_days,
         )
+
+        # 新上榜旗標（跨股票計算結果回寫）
+        if sig is not None:
+            sig.inst_new_ranked_foreign = stock_id in new_ranked_foreign
+            sig.inst_new_ranked_trust   = stock_id in new_ranked_trust
+            # ETF 成分股訊號回寫
+            etf_sig = etf_signal_data.get(stock_id)
+            if etf_sig:
+                sig.etf_new_entry   = bool(etf_sig.get("new_entry"))
+                sig.etf_weight_up   = bool(etf_sig.get("weight_up"))
+                sig.etf_weight_down = bool(etf_sig.get("weight_down"))
+                sig.etf_ejected     = bool(etf_sig.get("ejected"))
+                sig.etf_hold_list   = list(etf_sig.get("etfs_hold", []))
 
         if debug:
             stock_analysis[stock_id] = {

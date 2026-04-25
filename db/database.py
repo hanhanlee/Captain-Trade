@@ -278,6 +278,25 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 cache_health_repair_job 表")
 
+        if not _table_exists(conn, "etf_holding_cache"):
+            conn.execute(text("""
+                CREATE TABLE etf_holding_cache (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    etf_id          TEXT NOT NULL,
+                    date            TEXT NOT NULL,
+                    hold_stock_id   TEXT NOT NULL,
+                    hold_stock_name TEXT DEFAULT '',
+                    percentage      REAL DEFAULT 0.0,
+                    fetched_at      TEXT,
+                    CONSTRAINT uq_etf_holding UNIQUE (etf_id, date, hold_stock_id)
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_etf_holding_etf_date
+                ON etf_holding_cache (etf_id, date)
+            """))
+            logger.info("migration: 建立 etf_holding_cache 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""
