@@ -5,12 +5,14 @@
 執行方式：python scheduler/jobs.py
 或在背景常駐：搭配 run_scheduler.py
 """
+import random
 import time
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from data.finmind_client import get_stock_list, get_daily_price
 from modules.scanner import run_scan
@@ -26,6 +28,9 @@ from notifications.telegram_notify import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# 供 job_etf_holdings_update 安排一次性 retry 用；由 run_scheduler() 注入
+_scheduler = None
 
 
 def job_daily_scan(top_n: int = 5, scan_count: int = 200):
@@ -205,10 +210,104 @@ def job_weekly_performance():
         logger.error(f"週報任務失敗：{e}")
 
 
+def job_etf_holdings_update(attempt: int = 1, max_attempts: int = 3, use_today: bool = True):
+    """
+    抓取 ETF 成分股持股快照並驗證日期。
+
+    流程：
+      1. 計算目標交易日（use_today=True → 今天；False → 昨日交易日）
+      2. 已有今日快照的 ETF 直接跳過
+      3. 爬蟲抓取後比對資料日期是否等於目標日
+         - 符合 → 存入快取
+         - 不符（投信尚未更新）→ 列入 stale 清單
+      4. 若仍有 stale 且未達 max_attempts → 通知並安排 30 分鐘後重試
+         若已達上限 → 通知失敗
+    """
+    from modules.etf_scraper import fetch_etf_holdings, SUPPORTED_ETFS, last_trading_day
+    from db.etf_cache import save_etf_holdings, load_etf_holdings
+
+    target_yyyymmdd = last_trading_day(use_today=use_today)
+    target_iso = f"{target_yyyymmdd[:4]}-{target_yyyymmdd[4:6]}-{target_yyyymmdd[6:]}"
+
+    logger.info("[ETF持股] 第 %d/%d 次，目標日期：%s", attempt, max_attempts, target_iso)
+
+    updated, stale, failed = [], [], []
+
+    for etf_id in SUPPORTED_ETFS:
+        # 已有當日快照則跳過
+        cached = load_etf_holdings(etf_id, start_date=target_iso, end_date=target_iso)
+        if not cached.empty:
+            logger.info("[ETF持股] %s 已有 %s 快照，跳過", etf_id, target_iso)
+            updated.append(etf_id)
+            continue
+
+        try:
+            df = fetch_etf_holdings(etf_id, target_date=target_yyyymmdd)
+            if df.empty:
+                logger.warning("[ETF持股] %s 無資料", etf_id)
+                stale.append(etf_id)
+                time.sleep(random.uniform(1.5, 3.0))
+                continue
+
+            data_date = str(df["date"].max())[:10]
+            if data_date == target_iso:
+                saved = save_etf_holdings(etf_id, df)
+                updated.append(etf_id)
+                logger.info("[ETF持股] %s ✅ 存入 %d 筆（%s）", etf_id, saved, data_date)
+            else:
+                logger.warning("[ETF持股] %s 回傳 %s，尚非今日 %s，跳過", etf_id, data_date, target_iso)
+                stale.append(etf_id)
+
+        except Exception as exc:
+            logger.error("[ETF持股] %s 失敗：%s", etf_id, exc)
+            failed.append(etf_id)
+
+        time.sleep(random.uniform(1.5, 3.0))
+
+    # ── 結果處理 ──────────────────────────────────────────────
+    if not stale and not failed:
+        msg = (
+            f"📊 ETF持股更新完成（{target_iso}）\n"
+            f"✅ 已更新：{', '.join(updated)}"
+        )
+        send_multicast(msg)
+        tg_alert(msg)
+        logger.info("[ETF持股] 全部完成")
+        return
+
+    pending = stale + failed
+    if attempt < max_attempts and _scheduler is not None:
+        retry_at = datetime.now() + timedelta(minutes=30)
+        notify = (
+            f"⏳ ETF持股 {target_iso}：{', '.join(pending)} 尚未更新\n"
+            f"將於 {retry_at.strftime('%H:%M')} 重試（第 {attempt + 1}/{max_attempts} 次）"
+        )
+        send_multicast(notify)
+        tg_alert(notify)
+        logger.info("[ETF持股] 安排 %s 重試，pending=%s", retry_at.strftime("%H:%M"), pending)
+        _scheduler.add_job(
+            job_etf_holdings_update,
+            DateTrigger(run_date=retry_at, timezone="Asia/Taipei"),
+            kwargs={"attempt": attempt + 1, "max_attempts": max_attempts, "use_today": use_today},
+            id=f"etf_retry_{attempt}",
+            name=f"ETF持股重試#{attempt + 1}",
+            replace_existing=True,
+        )
+    else:
+        msg = (
+            f"⚠️ ETF持股 {target_iso}：{', '.join(pending)} 達最大重試次數仍未取得今日資料"
+        )
+        send_multicast(msg)
+        tg_alert(msg)
+        logger.warning("[ETF持股] 達最大重試次數，放棄：%s", pending)
+
+
 def run_scheduler():
     """啟動排程器（blocking，適合獨立程序常駐）"""
+    global _scheduler
     init_db()
     scheduler = BlockingScheduler(timezone="Asia/Taipei")
+    _scheduler = scheduler
 
     # 盤後選股：週一到週五 14:45
     scheduler.add_job(
@@ -258,11 +357,39 @@ def run_scheduler():
         name="週五持股分佈更新",
     )
 
+    # ETF成分股持股更新 — 搶頭香：週一到週五 17:30
+    scheduler.add_job(
+        job_etf_holdings_update,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Taipei"),
+        kwargs={"attempt": 1, "max_attempts": 3, "use_today": True},
+        id="etf_holdings_1730",
+        name="ETF持股更新 17:30",
+    )
+
+    # ETF成分股持股更新 — 黃金甜蜜點：週一到週五 20:00
+    scheduler.add_job(
+        job_etf_holdings_update,
+        CronTrigger(day_of_week="mon-fri", hour=20, minute=0, timezone="Asia/Taipei"),
+        kwargs={"attempt": 1, "max_attempts": 3, "use_today": True},
+        id="etf_holdings_2000",
+        name="ETF持股更新 20:00",
+    )
+
+    # ETF成分股持股更新 — 絕對防禦：週二到週六 08:10（補前一交易日）
+    scheduler.add_job(
+        job_etf_holdings_update,
+        CronTrigger(day_of_week="tue-sat", hour=8, minute=10, timezone="Asia/Taipei"),
+        kwargs={"attempt": 1, "max_attempts": 2, "use_today": False},
+        id="etf_holdings_0810",
+        name="ETF持股更新 08:10（防禦補抓）",
+    )
+
     logger.info("排程器啟動，等待任務觸發...")
     logger.info("排程時間：")
     logger.info("  盤中分K監控：週一至週五 09:00–13:30（每分鐘）")
     logger.info("  盤後選股：週一至週五 14:45")
     logger.info("  持股警示：週一至週五 13:30 / 14:35")
+    logger.info("  ETF持股更新：週一至週五 17:30 / 20:00；週二至週六 08:10")
     logger.info("  週績效報告：週五 15:10")
     logger.info("  持股分佈更新：週五 22:00")
 

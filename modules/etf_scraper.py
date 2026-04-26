@@ -114,6 +114,21 @@ def _business_days_in_range(start: str, end: str) -> list[str]:
     return result
 
 
+def last_trading_day(use_today: bool = True) -> str:
+    """
+    回傳「目標交易日」的 YYYYMMDD 字串。
+    use_today=True：若今天是週一~五，回傳今天；否則往前找最近交易日。
+    use_today=False：從昨天往前找最近交易日（適合隔天早上 07:00 補抓）。
+    """
+    today = date.today()
+    if use_today and today.weekday() < 5:
+        return today.strftime("%Y%m%d")
+    d = today - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y%m%d")
+
+
 def _prev_business_days(n: int = 5) -> list[str]:
     """回傳最近 n 個可能的交易日（YYYYMMDD 格式，從昨天往回推）。"""
     days = []
