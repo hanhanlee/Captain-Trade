@@ -2191,8 +2191,12 @@ with tab_etf:
                 df_show["delta_fmt"] = df_show["delta"].apply(
                     lambda x: f"{x:+.2f}%" if pd.notna(x) and x != 0 else "—"
                 )
-                df_show["prev_pct"] = pd.to_numeric(df_show["prev_pct"], errors="coerce").round(2)
-                df_show["curr_pct"] = pd.to_numeric(df_show["curr_pct"], errors="coerce").round(2)
+                df_show["prev_pct"] = pd.to_numeric(df_show["prev_pct"], errors="coerce").apply(
+                    lambda x: f"{x:.2f}" if pd.notna(x) else "—"
+                )
+                df_show["curr_pct"] = pd.to_numeric(df_show["curr_pct"], errors="coerce").apply(
+                    lambda x: f"{x:.2f}" if pd.notna(x) else "—"
+                )
                 df_show["_delta_raw"] = pd.to_numeric(df_show["delta"], errors="coerce").round(2)
                 # 張數格式化：非零才顯示，帶正負號
                 def _fmt_shares(x):
