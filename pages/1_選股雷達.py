@@ -2246,14 +2246,11 @@ with tab_etf:
 
                 cols_to_show = [c for c in show_cols if c in display_df.columns]
                 render_df = display_df[cols_to_show + ["_delta_raw"]].copy()
-                styled = (
-                    render_df.style
-                    .apply(_style_delta_row, axis=1)
-                    .hide(axis="columns", subset=["_delta_raw"])
-                )
+                styled = render_df.style.apply(_style_delta_row, axis=1)
                 st.dataframe(
                     styled,
                     use_container_width=True,
                     hide_index=True,
+                    column_config={"_delta_raw": None},
                 )
                 st.caption(f"共 {len(df_show)} 筆（篩選後）")
