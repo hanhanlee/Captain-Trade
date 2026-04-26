@@ -2206,7 +2206,11 @@ with tab_etf:
                         return "—"
                     if v == 0:
                         return "—"
-                    return f"{v:+,}"
+                    abs_zhang = abs(v) // 1000
+                    if abs_zhang == 0:
+                        return "+<1張" if v > 0 else "-<1張"
+                    zhang = abs_zhang if v > 0 else -abs_zhang
+                    return f"{zhang:+,}張"
                 df_show["shares_fmt"] = df_show["delta_shares"].apply(_fmt_shares)
                 display_df = df_show.rename(columns={
                     "etf_id":          "ETF",
