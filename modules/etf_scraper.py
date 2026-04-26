@@ -144,8 +144,6 @@ def _fetch_yuanta(etf_id: str, target_date: str,
     r.raise_for_status()
     data = r.json()
     stock_weights = data.get("FundWeights", {}).get("StockWeights", [])
-    if stock_weights:
-        logger.debug("元大盲盒預覽 (首筆): %s", stock_weights[0])
     rows = []
     for item in stock_weights:
         if not item.get("code") or item.get("weights") is None:
@@ -160,6 +158,8 @@ def _fetch_yuanta(etf_id: str, target_date: str,
             "stock_id": item["code"], "stock_name": item.get("name", ""),
             "weight": float(item["weights"]), "shares": shares_val,
         })
+    if rows and all(r["shares"] == 0 for r in rows) and stock_weights:
+        logger.info("元大 %s 股數欄位未命中，首筆原始資料: %s", etf_id, stock_weights[0])
     return rows
 
 
@@ -252,8 +252,6 @@ def _fetch_capital(etf_id: str, target_date: str | None = None,
     clean_date = raw_date.split(" ")[0].replace("-", "") if raw_date else ""
 
     stock_list = data.get("stocks", [])
-    if stock_list:
-        logger.debug("群益盲盒預覽 (首筆): %s", stock_list[0])
     rows = []
     for item in stock_list:
         if not item.get("stocNo") or item.get("weight") is None:
@@ -264,11 +262,13 @@ def _fetch_capital(etf_id: str, target_date: str | None = None,
         except ValueError:
             shares_val = 0
         rows.append({
-            "date": clean_date, "etf_id": etf_id,
+            "date": clean_date or target_date, "etf_id": etf_id,
             "stock_id": str(item["stocNo"]).strip(),
             "stock_name": str(item.get("stocName", "")).strip(),
             "weight": float(item["weight"]), "shares": shares_val,
         })
+    if rows and all(r["shares"] == 0 for r in rows) and stock_list:
+        logger.info("群益 %s 股數欄位未命中，首筆原始資料: %s", etf_id, stock_list[0])
     return rows
 
 
