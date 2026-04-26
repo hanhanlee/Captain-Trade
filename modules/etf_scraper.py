@@ -248,7 +248,9 @@ def _fetch_capital(etf_id: str, target_date: str | None = None,
     r.raise_for_status()
     data = r.json().get("data", {})
 
-    raw_date = data.get("pcf", {}).get("date1", "")
+    pcf = data.get("pcf", {})
+    # date1 = PCF 公布日（可能是週末），date2 = 實際交易日
+    raw_date = pcf.get("date2") or pcf.get("date1", "")
     clean_date = raw_date.split(" ")[0].replace("-", "") if raw_date else ""
 
     stock_list = data.get("stocks", [])
