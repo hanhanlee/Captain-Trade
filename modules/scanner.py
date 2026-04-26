@@ -196,6 +196,7 @@ class ScanSignal:
                 "main_force_buy_3d", "institutional_buy", "margin_clean",
                 "weekly_trend_up", "rs_positive", "ma_aligned",
                 "vol_quality", "breakout",
+                "inst_new_ranked_foreign", "inst_new_ranked_trust", "inst_volume_surge",
             }
         else:
             allowed = set(label_map)

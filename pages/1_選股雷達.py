@@ -175,6 +175,9 @@ def _render_strategy_condition_reference(
 | 週線 MA10 扣抵值低位 | 加分 | +10 | 10週前收盤 < 週MA10，週趨勢即將轉強 |
 | {inst_desc} | {inst_type} | {inst_score} | {inst_note} |
 | 融資減少 / 籌碼集中 | 加分 | +5 | 散戶下車、主力上車 |
+| 外資佔比新上榜 | 加分 | +7 | 過去 10 日未進全市場前 10 名，今日首次進榜 |
+| 投信佔比新上榜 | 加分 | +7 | 過去 10 日未進全市場前 10 名，今日首次進榜 |
+| 法人爆量 ≥ 10% | 加分 | +7 | 外資＋投信今日淨買超合計 ÷ 成交量 ≥ 10% |
 """)
     else:
         st.markdown(f"""
@@ -196,6 +199,9 @@ def _render_strategy_condition_reference(
 | 量能優質（上漲量佔比 ≥ 60%）| 加分 | +7 | 近 10 日漲日成交量比重高 |
 | 突破 60 日收盤新高 | 加分 | +8 | 突破近期壓力區 |
 | 融資減少 / 籌碼集中 | 加分 | +3 | 散戶下車、主力上車 |
+| 外資佔比新上榜 | 加分 | +7 | 過去 10 日未進全市場前 10 名，今日首次進榜 |
+| 投信佔比新上榜 | 加分 | +7 | 過去 10 日未進全市場前 10 名，今日首次進榜 |
+| 法人爆量 ≥ 10% | 加分 | +7 | 外資＋投信今日淨買超合計 ÷ 成交量 ≥ 10% |
 """)
 
 
@@ -586,6 +592,7 @@ with st.sidebar:
         "sb_min_rs", "sb_overheat_atr_mult", "sb_overheat_action_label",
         "sb_use_fundamental", "sb_req_eps", "sb_req_cf", "sb_min_roe", "sb_max_debt",
         "sb_ma_mode", "sb_strategy_version", "sb_main_force_days",
+        "sb_require_new_rank_foreign", "sb_require_new_rank_trust", "sb_require_inst_volume_surge",
     ]
     _BASE = {
         "sb_min_price": 10.0, "sb_inst_mode": "個別法人皆須買超",
@@ -602,6 +609,9 @@ with st.sidebar:
         "sb_vol_filter_mode": "前日量前 N 名（推薦）", "sb_min_avg_volume": 0,
         "sb_strategy_version": "v4 領先攻擊版（精準）",
         "sb_main_force_days": 3,
+        "sb_require_new_rank_foreign": False,
+        "sb_require_new_rank_trust": False,
+        "sb_require_inst_volume_surge": False,
     }
     _PRESETS = {
         "極速": {**_BASE,
@@ -832,12 +842,28 @@ with st.sidebar:
         st.session_state.get("sb_require_weekly", False)
         or st.session_state.get("sb_min_rs", 0) > 0
         or st.session_state.get("sb_overheat_atr_mult", 3.5) != 3.5
+        or st.session_state.get("sb_require_new_rank_foreign", False)
+        or st.session_state.get("sb_require_new_rank_trust", False)
+        or st.session_state.get("sb_require_inst_volume_surge", False)
     )
     with st.expander("🔬 進階選項", expanded=_adv_exp):
         require_weekly = st.checkbox("必須週線多頭（更嚴格，結果更少）", value=False,
                                      key="sb_require_weekly")
         min_rs = st.slider("最低相對強度 RS 分數", 0, 80, 0, 5, key="sb_min_rs",
                            help="0 = 不限制；60 以上 = 強勢股")
+        st.markdown("**📡 法人新動向（加分訊號篩選）**")
+        require_new_rank_foreign = st.checkbox(
+            "只顯示「外資佔比新上榜」", value=False, key="sb_require_new_rank_foreign",
+            help="過去 10 個交易日未進全市場外資買超佔比前 10 名，今日首次進榜",
+        )
+        require_new_rank_trust = st.checkbox(
+            "只顯示「投信佔比新上榜」", value=False, key="sb_require_new_rank_trust",
+            help="過去 10 個交易日未進全市場投信買超佔比前 10 名，今日首次進榜",
+        )
+        require_inst_volume_surge = st.checkbox(
+            "只顯示「法人爆量 ≥ 10%」", value=False, key="sb_require_inst_volume_surge",
+            help="外資 + 投信今日淨買超合計 ÷ 今日成交量 ≥ 10%",
+        )
         st.markdown("**🌡️ 過熱股防護**")
         overheat_atr_mult = st.slider(
             "過熱 ATR 倍數", min_value=0.0, max_value=6.0, value=3.5, step=0.5,
@@ -1403,6 +1429,24 @@ with tab_scan:
                 result_df = result_df[result_df["signals"].str.contains("週線多頭", na=False)]
             if min_rs > 0:
                 result_df = result_df[result_df["rs_score"] >= min_rs]
+            if require_new_rank_foreign:
+                before = len(result_df)
+                result_df = result_df[result_df["signals"].str.contains("外資佔比新上榜", na=False)]
+                filtered = before - len(result_df)
+                if filtered > 0:
+                    st.info(f"外資佔比新上榜篩選：已過濾 **{filtered}** 檔未符合")
+            if require_new_rank_trust:
+                before = len(result_df)
+                result_df = result_df[result_df["signals"].str.contains("投信佔比新上榜", na=False)]
+                filtered = before - len(result_df)
+                if filtered > 0:
+                    st.info(f"投信佔比新上榜篩選：已過濾 **{filtered}** 檔未符合")
+            if require_inst_volume_surge:
+                before = len(result_df)
+                result_df = result_df[result_df["signals"].str.contains("法人爆量≥10%", na=False)]
+                filtered = before - len(result_df)
+                if filtered > 0:
+                    st.info(f"法人爆量篩選：已過濾 **{filtered}** 檔未符合")
             if require_institutional and use_inst:
                 before = len(result_df)
                 result_df = result_df[result_df["inst_pass"]]
