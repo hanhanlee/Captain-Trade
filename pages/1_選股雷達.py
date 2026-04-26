@@ -2191,6 +2191,9 @@ with tab_etf:
                 df_show["delta_fmt"] = df_show["delta"].apply(
                     lambda x: f"{x:+.2f}%" if pd.notna(x) and x != 0 else "—"
                 )
+                df_show["prev_pct"] = pd.to_numeric(df_show["prev_pct"], errors="coerce").round(2)
+                df_show["curr_pct"] = pd.to_numeric(df_show["curr_pct"], errors="coerce").round(2)
+                df_show["_delta_raw"] = pd.to_numeric(df_show["delta"], errors="coerce").round(2)
                 display_df = df_show.rename(columns={
                     "etf_id":          "ETF",
                     "hold_stock_id":   "股票代碼",
@@ -2198,8 +2201,9 @@ with tab_etf:
                     "prev_pct":        "前次權重%",
                     "curr_pct":        "現在權重%",
                     "delta_fmt":       "權重增減",
-                    "delta":           "_delta_raw",
+                    "_delta_raw":      "_delta_raw",
                 })
+                display_df = display_df.drop(columns=["delta"], errors="ignore")
                 show_cols = ["ETF", "股票代碼", "股票名稱", "狀態", "前次權重%", "現在權重%", "權重增減"]
 
                 def _style_delta_row(row):
