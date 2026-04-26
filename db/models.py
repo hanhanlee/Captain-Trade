@@ -303,6 +303,27 @@ class EtfHoldingCache(Base):
     fetched_at    = Column(DateTime, default=datetime.now)
 
 
+class TradePlan(Base):
+    """交易計畫（進場前制定，含風控自動檢查結果）"""
+    __tablename__ = "trade_plan"
+
+    id              = Column(Integer, primary_key=True)
+    stock_id        = Column(String(10), nullable=False)
+    stock_name      = Column(String(50), default="")
+    direction       = Column(String(4), nullable=False)   # BUY / SELL
+    entry_price     = Column(Float, nullable=False)
+    stop_loss       = Column(Float, nullable=False)
+    target_price    = Column(Float)                       # 選填
+    shares          = Column(Integer, nullable=False)
+    reason          = Column(Text, nullable=False)        # 必填，進場理由
+    status          = Column(String(20), default="pending")  # pending / executed / cancelled
+    risk_check_json = Column(Text)                        # JSON snapshot of rule results
+    has_violation   = Column(Boolean, default=False)      # 是否有任何規則未通過
+    created_at      = Column(DateTime, default=datetime.now)
+    executed_at     = Column(DateTime)
+    journal_id      = Column(Integer)                     # 對應 TradeJournal.id
+
+
 class CacheHealthRepairJob(Base):
     """健康度缺漏補抓任務。"""
     __tablename__ = "cache_health_repair_job"
