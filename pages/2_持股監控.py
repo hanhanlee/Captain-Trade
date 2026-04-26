@@ -20,6 +20,7 @@ from modules.portfolio_io import (
 )
 from db.price_cache import load_prices
 from db.database import get_session, init_db
+from db.event_log import log_event
 from db.models import Portfolio, TradeJournal
 from db.holding_shares_cache import load_holding_shares
 from db.inst_cache import load_institutional_for_date
@@ -657,6 +658,29 @@ with tab_monitor:
                     all_alerts,
                     price_data,
                 )
+
+                # ── Event Log：記錄觸發的警示 ──────────────────────
+                _alert_severity_map = {
+                    AlertLevel.DANGER: "danger",
+                    AlertLevel.WARNING: "warning",
+                    AlertLevel.INFO: "info",
+                }
+                for _a in all_alerts:
+                    log_event(
+                        event_type="alert_triggered",
+                        module="portfolio",
+                        stock_id=_a.stock_id,
+                        stock_name=getattr(_a, "stock_name", ""),
+                        severity=_alert_severity_map.get(_a.level, "info"),
+                        summary=f"{_a.stock_id} 警示：{_a.reason}",
+                        payload={
+                            "alert_type": str(_a.level),
+                            "reason": _a.reason,
+                            "current_price": getattr(_a, "current_price", None),
+                            "pnl_pct": getattr(_a, "pnl_pct", None),
+                        },
+                    )
+
                 st.session_state["portfolio_stats"] = stats_list
                 st.session_state["portfolio_alerts"] = all_alerts
                 st.session_state["portfolio_premium_alerts"] = premium_alerts

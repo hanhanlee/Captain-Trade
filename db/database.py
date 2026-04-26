@@ -283,6 +283,30 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 cache_health_repair_job 表")
 
+        if not _table_exists(conn, "event_log"):
+            conn.execute(text("""
+                CREATE TABLE event_log (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at   TEXT NOT NULL,
+                    event_type   TEXT NOT NULL,
+                    module       TEXT,
+                    scan_id      TEXT,
+                    stock_id     TEXT,
+                    stock_name   TEXT,
+                    severity     TEXT DEFAULT 'info',
+                    summary      TEXT,
+                    payload_json TEXT
+                )
+            """))
+            for _idx_sql in [
+                "CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log (created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_event_log_event_type ON event_log (event_type)",
+                "CREATE INDEX IF NOT EXISTS idx_event_log_stock_id ON event_log (stock_id)",
+                "CREATE INDEX IF NOT EXISTS idx_event_log_scan_id ON event_log (scan_id)",
+            ]:
+                conn.execute(text(_idx_sql))
+            logger.info("migration: 建立 event_log 表")
+
         if not _table_exists(conn, "etf_holding_cache"):
             conn.execute(text("""
                 CREATE TABLE etf_holding_cache (

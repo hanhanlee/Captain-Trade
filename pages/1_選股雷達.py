@@ -21,6 +21,9 @@ from data.data_source import DataSourceManager, FALLBACK_WARNING
 from modules.scanner import run_scan, compute_indicators, sector_analysis
 from modules.indicators import weekly_ma_trend
 from db.scan_history import save_scan_session, load_scan_history, load_session_results, delete_scan_session
+from db.event_log import log_event, make_scan_id, STRATEGY_VERSION
+import logging as _logging
+logger = _logging.getLogger(__name__)
 from db.price_cache import load_prices_multi
 from db.database import init_db
 
@@ -1501,6 +1504,95 @@ with tab_scan:
                 )
             except Exception as _save_err:
                 st.warning(f"⚠️ 掃描結果未能儲存至歷史紀錄：{_save_err}")
+
+            # ── Event Log：記錄掃描完成與每檔入選股 ───────────────
+            try:
+                _scan_id = make_scan_id(
+                    str(_active_scan_date), scan_mode
+                )
+                st.session_state["_last_scan_id"] = _scan_id
+
+                _settings_snapshot = {
+                    "rs_score_min": float(min_rs),
+                    "volume_ratio_min": 1.5,
+                    "atr_overheat_multiplier": float(overheat_atr_mult),
+                    "main_force_buy_days": int(main_force_min_days),
+                    "use_industry_rotation": top_sector_n > 0,
+                    "top_industry_count": int(top_sector_n),
+                    "use_institutional_filter": use_inst,
+                    "require_institutional": bool(require_institutional) if "require_institutional" in dir() else False,
+                    "require_weekly": bool(require_weekly),
+                    "ma_breakout_mode": ma_breakout_mode,
+                    "min_price": float(min_price),
+                    "scan_mode": scan_mode,
+                    "fundamental_enabled": fundamental_enabled_for_scan,
+                }
+                log_event(
+                    event_type="scan_completed",
+                    module="scanner",
+                    scan_id=_scan_id,
+                    severity="info",
+                    summary=f"{strategy_version} 掃描完成：{scan_mode}，入選 {len(result_df)} 檔",
+                    payload={
+                        "scan_id": _scan_id,
+                        "strategy_name": f"{strategy_version}_leading_breakout" if strategy_version == "v4" else f"{strategy_version}_ma_breakout",
+                        "strategy_version": STRATEGY_VERSION,
+                        "base_date": str(_active_scan_date),
+                        "scan_mode": scan_mode,
+                        "universe_count": len(price_data),
+                        "selected_count": len(result_df),
+                        "settings": _settings_snapshot,
+                    },
+                )
+
+                for _rank, (_idx, _row) in enumerate(result_df.iterrows(), start=1):
+                    _signals_str = str(_row.get("signals", "") or "")
+                    _required = {
+                        "ma_triple_breakout": "三線齊穿(首日)" in _signals_str,
+                        "ma_squeeze": "均線糾結<3%" in _signals_str,
+                        "volume_explosion": "量能>均量1.5倍" in _signals_str,
+                        "atr_ok": "股價<MA20+3.5ATR" in _signals_str or "atr_ok" in _signals_str.lower(),
+                        "rs_strong": "RS>80強勢" in _signals_str,
+                        "breakout_60d": "突破60日新高" in _signals_str,
+                        "main_force_buy_3d": "主力連" in _signals_str and "日買超" in _signals_str,
+                    }
+                    _bonus = {
+                        "bb_bandwidth_shrink": "布林頻寬縮減" in _signals_str,
+                        "trust_first_buy": "投信首日買超" in _signals_str,
+                        "weekly_deduction_low": "週線扣抵低位" in _signals_str,
+                        "margin_clean": "籌碼乾淨" in _signals_str,
+                        "inst_new_ranked_foreign": "外資佔比新上榜" in _signals_str,
+                        "inst_new_ranked_trust": "投信佔比新上榜" in _signals_str,
+                        "inst_volume_surge": "法人爆量" in _signals_str,
+                        "etf_new_entry": "ETF新進持股" in _signals_str,
+                        "etf_weight_up": "ETF增持" in _signals_str,
+                    }
+                    log_event(
+                        event_type="stock_selected",
+                        module="scanner",
+                        scan_id=_scan_id,
+                        stock_id=str(_row.get("stock_id", "")),
+                        stock_name=str(_row.get("stock_name", "")),
+                        severity="info",
+                        summary=f"rank={_rank} score={_row.get('score', 0):.0f} {_row.get('stock_id', '')} {_row.get('stock_name', '')}",
+                        payload={
+                            "scan_id": _scan_id,
+                            "strategy_version": STRATEGY_VERSION,
+                            "rank": _rank,
+                            "score": float(_row.get("score", 0)),
+                            "metrics": {
+                                "close": float(_row.get("close", 0) or 0),
+                                "change_pct": float(_row.get("change_pct", 0) or 0),
+                                "volume_ratio": float(_row.get("volume_ratio", 0) or 0),
+                                "rs_score": float(_row.get("rs_score", 0) or 0),
+                                "atr14": float(_row.get("atr14", 0) or 0),
+                            },
+                            "required_rules_passed": _required,
+                            "bonus_rules_hit": _bonus,
+                        },
+                    )
+            except Exception as _elog_err:
+                logger.warning("event_log scanner 寫入失敗：%s", _elog_err)
 
     # ── 顯示結果 ──────────────────────────────────────────────
     if "scan_results" in st.session_state:

@@ -5,11 +5,15 @@
 - 執行計畫時寫入交易日誌
 """
 import json
+import logging
 from datetime import date, datetime
 from db.database import get_session
 from db.models import TradePlan
 from modules.journal import add_trade
 from db.models import TradeJournal
+from db.event_log import log_event
+
+logger = logging.getLogger(__name__)
 
 
 # ── 風控規則定義 ──────────────────────────────────────────────────────────────
@@ -146,6 +150,47 @@ def create_plan(
         sess.add(plan)
         sess.flush()
         plan_id = plan.id
+
+    _severity = "warning" if has_violation else "info"
+    _risk_event = "risk_check_failed" if has_violation else "risk_check_passed"
+    _failed_rules = [r["name"] for r in rule_results if not r["pass"]]
+    log_event(
+        event_type="trade_plan_created",
+        module="trade_plan",
+        stock_id=stock_id.strip(),
+        stock_name=(stock_name or "").strip(),
+        severity=_severity,
+        summary=f"[計畫#{plan_id}] {direction} {stock_id} {shares}張 @ {entry_price}，停損 {stop_loss}",
+        payload={
+            "plan_id": plan_id,
+            "direction": direction.upper(),
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "target_price": target_price,
+            "shares": shares,
+            "reason": reason.strip(),
+            "has_violation": has_violation,
+            "failed_rules": _failed_rules,
+        },
+    )
+    log_event(
+        event_type=_risk_event,
+        module="trade_plan",
+        stock_id=stock_id.strip(),
+        stock_name=(stock_name or "").strip(),
+        severity=_severity,
+        summary=(
+            f"[計畫#{plan_id}] 風控未通過：{', '.join(_failed_rules)}"
+            if has_violation
+            else f"[計畫#{plan_id}] 風控全部通過"
+        ),
+        payload={
+            "plan_id": plan_id,
+            "rule_results": rule_results,
+            "failed_rules": _failed_rules,
+        },
+    )
+
     return get_plan(plan_id)
 
 
@@ -193,13 +238,46 @@ def execute_plan(plan_id: int, actual_price: float | None = None) -> int:
         plan.executed_at = datetime.now()
         plan.journal_id = journal_id
         sess.add(plan)
+        _exec_payload = {
+            "plan_id": plan_id,
+            "actual_price": actual_price,
+            "planned_price": plan.entry_price,
+            "stop_loss": plan.stop_loss,
+            "shares": plan.shares,
+            "journal_id": journal_id,
+        }
+        _exec_sid = plan.stock_id
+        _exec_sname = plan.stock_name
+
+    log_event(
+        event_type="trade_executed",
+        module="trade_plan",
+        stock_id=_exec_sid,
+        stock_name=_exec_sname,
+        severity="info",
+        summary=f"[計畫#{plan_id}] 執行 {_exec_sid} @ {actual_price or _exec_payload['planned_price']}",
+        payload=_exec_payload,
+    )
 
     return journal_id
 
 
 def cancel_plan(plan_id: int) -> None:
+    _cancel_sid, _cancel_sname = None, None
     with get_session() as sess:
         plan = sess.get(TradePlan, plan_id)
         if plan and plan.status == "pending":
+            _cancel_sid = plan.stock_id
+            _cancel_sname = plan.stock_name
             plan.status = "cancelled"
             sess.add(plan)
+    if _cancel_sid:
+        log_event(
+            event_type="user_cancelled",
+            module="trade_plan",
+            stock_id=_cancel_sid,
+            stock_name=_cancel_sname,
+            severity="info",
+            summary=f"[計畫#{plan_id}] 使用者取消 {_cancel_sid}",
+            payload={"plan_id": plan_id},
+        )

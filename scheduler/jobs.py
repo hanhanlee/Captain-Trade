@@ -25,6 +25,7 @@ from notifications.telegram_notify import (
     send_stock_alert as tg_alert,
     send_scan_results as tg_scan,
 )
+from db.event_log import log_event
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -61,11 +62,18 @@ def job_daily_scan(top_n: int = 5, scan_count: int = 200):
         if result_df.empty:
             send_multicast("📊 今日選股雷達：無符合條件的股票")
             tg_alert("📊 今日選股雷達：無符合條件的股票")
+            log_event("notification_sent", module="scheduler", severity="info",
+                      summary="盤後選股推播：無入選股票",
+                      payload={"channel": "line+telegram", "message_type": "daily_scan", "selected_count": 0})
         else:
             results = result_df.to_dict("records")
             send_scan_results(results, top_n=top_n)
             tg_scan(results, top_n=top_n)
             logger.info(f"選股完成，找到 {len(result_df)} 檔，已推播前 {top_n} 名")
+            log_event("notification_sent", module="scheduler", severity="info",
+                      summary=f"盤後選股推播：入選 {len(result_df)} 檔，推播前 {top_n} 名",
+                      payload={"channel": "line+telegram", "message_type": "daily_scan",
+                               "selected_count": len(result_df), "top_n": top_n})
 
     except Exception as e:
         logger.error(f"選股任務失敗：{e}")
@@ -123,6 +131,10 @@ def job_portfolio_check():
         send_multicast(alert_msg)
         tg_alert(alert_msg)
         logger.info(f"推播 {len(all_alerts)} 則警示")
+        log_event("notification_sent", module="scheduler", severity="warning",
+                  summary=f"持股警示推播：{len(all_alerts)} 則",
+                  payload={"channel": "line+telegram", "message_type": "portfolio_alert",
+                           "alert_count": len(all_alerts)})
 
     except Exception as e:
         logger.error(f"持股警示任務失敗：{e}")

@@ -15,6 +15,7 @@ tabs = st.tabs([
     "📔 交易日誌",
     "🔎 個股分析",
     "📐 共用指標",
+    "📋 事件日誌",
 ])
 
 
@@ -718,3 +719,92 @@ BIAS = (收盤 − MA20) ÷ MA20 × 100%
 | 官方風險旗標 | FinMind Premium | 即時 |
 | 即時分 K / 快照 | FinMind Sponsor | 盤中 |
 """)
+
+
+# ══════════════════════════════════════════════════════════════
+# Tab 8：事件日誌
+# ══════════════════════════════════════════════════════════════
+with tabs[7]:
+    st.header("📋 事件日誌")
+    st.markdown("""
+事件日誌是系統的黑盒子紀錄器，自動記錄所有重要決策事件，供事後分析與 AI 輔助檢討。
+
+---
+### 記錄的事件類型
+
+| 事件類型 | 觸發模組 | 說明 |
+|---------|---------|------|
+| `scan_completed` | 選股雷達 | 每次掃描完成，含策略版本與所有門檻參數快照 |
+| `stock_selected` | 選股雷達 | 每檔入選股票，含 rank、score、各條件通過狀態 |
+| `near_miss` | 選股雷達 | 接近但未入選，可分析「差哪個條件」|
+| `alert_triggered` | 持股監控 | 警示觸發，含等級、原因、當下股價 |
+| `trade_plan_created` | 交易計畫 | 新計畫建立，含方向、價位、張數、理由 |
+| `risk_check_passed` | 交易計畫 | 風控全部通過 |
+| `risk_check_failed` | 交易計畫 | 風控未通過，含失敗規則清單 |
+| `trade_executed` | 交易計畫 | 計畫執行，含實際成交價 |
+| `user_cancelled` | 交易計畫 | 計畫取消 |
+| `notification_sent` | 排程推播 | LINE / Telegram 推播成功 |
+
+---
+### payload_json 的重要性
+
+每筆事件都有 `payload_json` 欄位，存放當時的完整細節，例如：
+
+**`scan_completed` payload**：
+```json
+{
+  "strategy_version": "v4.3",
+  "settings": {
+    "rs_score_min": 80,
+    "atr_overheat_multiplier": 3.5,
+    "main_force_buy_days": 3,
+    ...
+  },
+  "selected_count": 5,
+  "universe_count": 200
+}
+```
+
+這意味著即使未來調整了策略參數，舊事件仍保留當時的設定，回測與 AI 分析才不會失真。
+
+---
+### scan_id 串聯機制
+
+同一次掃描的所有事件（`scan_completed` + 每檔 `stock_selected`）共用相同的 `scan_id`，格式為：
+
+```
+20260427_144500_標準模式
+```
+
+透過 scan_id 可以快速撈出某次掃描的完整時間線，包括入選了哪幾檔、每檔的分數和條件通過情況。
+
+---
+### 嚴重度說明
+
+| 嚴重度 | 使用場景 |
+|--------|---------|
+| `info` | 一般事件（掃描完成、計畫建立、推播）|
+| `warning` | 警告事件（持股警示、風控未通過）|
+| `danger` | 危險事件（DANGER 等級警示、官方停止買賣）|
+
+---
+### 三種匯出格式
+
+| 格式 | 說明 | 最適合 |
+|------|------|--------|
+| **CSV** | payload 展開成獨立欄位 | Excel 預覽、批次資料處理 |
+| **JSON** | payload 保留巢狀結構 | 程式 API 使用 |
+| **JSONL** | 每行一筆，AI 友善 | **直接上傳 Claude / ChatGPT 做對話分析** |
+
+---
+### 可以問 AI 的問題（範例）
+
+下載 JSONL 後，上傳到 Claude 或 ChatGPT 提問：
+
+- 「這批 stock_selected 事件中，哪些股票最常入選？score 的分佈如何？」
+- 「我的 risk_check_failed 事件中，最常違反的是哪條風控規則？」
+- 「近 90 天的 alert_triggered 事件中，有幾次是 danger 等級？集中在哪些股票？」
+- 「v4.3 策略的入選條件中，哪些 bonus_rules 最常被觸發？」
+- 「我建立交易計畫後，最終執行了幾成？取消原因是什麼？」
+""")
+

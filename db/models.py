@@ -342,3 +342,25 @@ class CacheHealthRepairJob(Base):
     done_count = Column(Integer, default=0)
     error_count = Column(Integer, default=0)
     last_error = Column(Text)
+
+
+class EventLog(Base):
+    """系統事件日誌 — 記錄選股、警示、風控、交易計畫、推播等決策時間線，供 AI 分析使用。"""
+    __tablename__ = "event_log"
+    __table_args__ = (
+        Index("idx_event_log_created_at", "created_at"),
+        Index("idx_event_log_event_type", "event_type"),
+        Index("idx_event_log_stock_id", "stock_id"),
+        Index("idx_event_log_scan_id", "scan_id"),
+    )
+
+    id           = Column(Integer, primary_key=True)
+    created_at   = Column(String(30), nullable=False)   # YYYY-MM-DD HH:MM:SS
+    event_type   = Column(String(50), nullable=False)   # scan_completed / stock_selected / ...
+    module       = Column(String(50))                   # scanner / portfolio / trade_plan / scheduler
+    scan_id      = Column(String(50))                   # 同批次掃描的共同 key
+    stock_id     = Column(String(10))
+    stock_name   = Column(String(50))
+    severity     = Column(String(10), default="info")   # info / warning / danger
+    summary      = Column(Text)
+    payload_json = Column(Text)                         # 詳細 JSON，策略快照放這
