@@ -53,6 +53,11 @@ def _table_exists(conn, table_name: str) -> bool:
 def _migrate_schema():
     """輕量 schema migration，確保舊 DB 可相容新版欄位與新表。"""
     with ENGINE.begin() as conn:
+        # etf_holding_cache shares 欄位（舊 DB 補建）
+        if _table_exists(conn, "etf_holding_cache") and not _column_exists(conn, "etf_holding_cache", "shares"):
+            conn.execute(text("ALTER TABLE etf_holding_cache ADD COLUMN shares INTEGER DEFAULT 0"))
+            logger.info("migration: etf_holding_cache 新增 shares 欄位")
+
         # portfolio intraday_monitor 欄位（舊 DB 補建）
         if not _column_exists(conn, "portfolio", "intraday_monitor"):
             conn.execute(text("ALTER TABLE portfolio ADD COLUMN intraday_monitor INTEGER DEFAULT 0"))

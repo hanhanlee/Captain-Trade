@@ -2194,6 +2194,16 @@ with tab_etf:
                 df_show["prev_pct"] = pd.to_numeric(df_show["prev_pct"], errors="coerce").round(2)
                 df_show["curr_pct"] = pd.to_numeric(df_show["curr_pct"], errors="coerce").round(2)
                 df_show["_delta_raw"] = pd.to_numeric(df_show["delta"], errors="coerce").round(2)
+                # 張數格式化：非零才顯示，帶正負號
+                def _fmt_shares(x):
+                    try:
+                        v = int(x)
+                    except (TypeError, ValueError):
+                        return "—"
+                    if v == 0:
+                        return "—"
+                    return f"{v:+,}"
+                df_show["shares_fmt"] = df_show["delta_shares"].apply(_fmt_shares)
                 display_df = df_show.rename(columns={
                     "etf_id":          "ETF",
                     "hold_stock_id":   "股票代碼",
@@ -2201,10 +2211,11 @@ with tab_etf:
                     "prev_pct":        "前次權重%",
                     "curr_pct":        "現在權重%",
                     "delta_fmt":       "權重增減",
+                    "shares_fmt":      "張數增減",
                     "_delta_raw":      "_delta_raw",
                 })
-                display_df = display_df.drop(columns=["delta"], errors="ignore")
-                show_cols = ["ETF", "股票代碼", "股票名稱", "狀態", "前次權重%", "現在權重%", "權重增減"]
+                display_df = display_df.drop(columns=["delta", "prev_shares", "curr_shares", "delta_shares"], errors="ignore")
+                show_cols = ["ETF", "股票代碼", "股票名稱", "狀態", "前次權重%", "現在權重%", "權重增減", "張數增減"]
 
                 def _style_delta_row(row):
                     d = row.get("_delta_raw", 0)

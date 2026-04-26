@@ -299,6 +299,7 @@ class EtfHoldingCache(Base):
     hold_stock_id = Column(String(10), nullable=False)
     hold_stock_name = Column(String(50), default="")
     percentage    = Column(Float, default=0.0)           # 持股權重 %
+    shares        = Column(Integer, default=0)           # 持股股數（有資料的 ETF 才非零）
     fetched_at    = Column(DateTime, default=datetime.now)
 
 

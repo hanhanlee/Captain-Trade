@@ -57,7 +57,7 @@ _BASE_HEADERS = {
     "Connection": "keep-alive",
 }
 
-_EMPTY_COLS = ["etf_id", "date", "hold_stock_id", "hold_stock_name", "percentage"]
+_EMPTY_COLS = ["etf_id", "date", "hold_stock_id", "hold_stock_name", "percentage", "shares"]
 
 
 # ── 工具函式 ──────────────────────────────────────────────────
@@ -96,6 +96,9 @@ def _to_df(rows: list[dict]) -> pd.DataFrame:
     })
     df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
     df["percentage"] = pd.to_numeric(df["percentage"], errors="coerce").fillna(0.0)
+    if "shares" not in df.columns:
+        df["shares"] = 0
+    df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
     return df[_EMPTY_COLS].copy()
 
 
@@ -278,12 +281,18 @@ def _fetch_fuhhwa(etf_id: str, target_date: str,
             weight = float(str(raw).replace("%", "").strip())
         except ValueError:
             weight = 0.0
+        shares_raw = item.get("qshare", "0")
+        try:
+            shares_val = int(str(shares_raw).replace(",", ""))
+        except ValueError:
+            shares_val = 0
         rows.append({
             "date": target_date,
             "etf_id": etf_id,
             "stock_id": str(code).strip(),
             "stock_name": str(item.get("stockname", "")).strip(),
             "weight": weight,
+            "shares": shares_val,
         })
     return rows
 

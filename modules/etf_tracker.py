@@ -66,11 +66,14 @@ def compute_etf_changes(
 
     change_dict 格式：
       {
-        "status":   "new_entry" | "weight_up" | "weight_down" | "ejected" | "unchanged",
-        "etf_id":   str,
-        "prev_pct": float,  # 前次權重（遭剔除時為最後已知值，新進時為 0）
-        "curr_pct": float,  # 本次權重（遭剔除時為 0）
-        "delta":    float,  # curr - prev
+        "status":       "new_entry" | "weight_up" | "weight_down" | "ejected" | "unchanged",
+        "etf_id":       str,
+        "prev_pct":     float,  # 前次權重（遭剔除時為最後已知值，新進時為 0）
+        "curr_pct":     float,  # 本次權重（遭剔除時為 0）
+        "delta":        float,  # curr - prev
+        "prev_shares":  int,    # 前次持股股數（無資料時為 0）
+        "curr_shares":  int,    # 本次持股股數
+        "delta_shares": int,    # curr_shares - prev_shares
       }
 
     holdings_df 需包含 date、hold_stock_id、percentage 欄位，date 為 datetime 型別。
@@ -84,16 +87,26 @@ def compute_etf_changes(
         latest = dates[0] if dates else None
         if latest is None:
             return {}
-        snap = holdings_df[holdings_df["date"] == latest].set_index("hold_stock_id")["percentage"]
+        snap_df = holdings_df[holdings_df["date"] == latest].set_index("hold_stock_id")
+        snap_pct = snap_df["percentage"]
+        snap_shares = snap_df["shares"] if "shares" in snap_df.columns else {}
         return {
-            sid: {"status": "new_entry", "etf_id": etf_id,
-                  "prev_pct": 0.0, "curr_pct": float(pct), "delta": float(pct)}
-            for sid, pct in snap.items()
+            sid: {
+                "status": "new_entry", "etf_id": etf_id,
+                "prev_pct": 0.0, "curr_pct": float(pct), "delta": float(pct),
+                "prev_shares": 0, "curr_shares": int(snap_shares.get(sid, 0)),
+                "delta_shares": int(snap_shares.get(sid, 0)),
+            }
+            for sid, pct in snap_pct.items()
         }
 
     curr_date, prev_date = dates[0], dates[1]
-    curr = holdings_df[holdings_df["date"] == curr_date].set_index("hold_stock_id")["percentage"].to_dict()
-    prev = holdings_df[holdings_df["date"] == prev_date].set_index("hold_stock_id")["percentage"].to_dict()
+    curr_df = holdings_df[holdings_df["date"] == curr_date].set_index("hold_stock_id")
+    prev_df = holdings_df[holdings_df["date"] == prev_date].set_index("hold_stock_id")
+    curr = curr_df["percentage"].to_dict()
+    prev = prev_df["percentage"].to_dict()
+    curr_shares = curr_df["shares"].to_dict() if "shares" in curr_df.columns else {}
+    prev_shares = prev_df["shares"].to_dict() if "shares" in prev_df.columns else {}
 
     all_stocks = set(curr) | set(prev)
     result: dict[str, dict] = {}
@@ -102,6 +115,8 @@ def compute_etf_changes(
         c = float(curr.get(sid, 0.0))
         p = float(prev.get(sid, 0.0))
         delta = c - p
+        cs = int(curr_shares.get(sid, 0))
+        ps = int(prev_shares.get(sid, 0))
 
         if sid not in prev:
             status = "new_entry"
@@ -115,11 +130,14 @@ def compute_etf_changes(
             status = "unchanged"
 
         result[sid] = {
-            "status":   status,
-            "etf_id":   etf_id,
-            "prev_pct": p,
-            "curr_pct": c,
-            "delta":    round(delta, 4),
+            "status":       status,
+            "etf_id":       etf_id,
+            "prev_pct":     p,
+            "curr_pct":     c,
+            "delta":        round(delta, 4),
+            "prev_shares":  ps,
+            "curr_shares":  cs,
+            "delta_shares": cs - ps,
         }
 
     return result
@@ -203,7 +221,8 @@ def build_etf_holdings_table(
     建立「ETF 持股變化比較表」供 UI 顯示。
 
     欄位：etf_id, hold_stock_id, hold_stock_name,
-          prev_pct, curr_pct, delta, status
+          prev_pct, curr_pct, delta, status,
+          prev_shares, curr_shares, delta_shares
     """
     from data.finmind_client import get_etf_holding
 
@@ -235,6 +254,9 @@ def build_etf_holdings_table(
                 "curr_pct":       chg["curr_pct"],
                 "delta":          chg["delta"],
                 "status":         chg["status"],
+                "prev_shares":    chg.get("prev_shares", 0),
+                "curr_shares":    chg.get("curr_shares", 0),
+                "delta_shares":   chg.get("delta_shares", 0),
             })
 
     if not rows:

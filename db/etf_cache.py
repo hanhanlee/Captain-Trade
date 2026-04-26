@@ -56,6 +56,7 @@ def save_etf_holdings(etf_id: str, df: pd.DataFrame) -> int:
             "hold_stock_id":   str(row.get("hold_stock_id", "") or "").strip(),
             "hold_stock_name": str(row.get("hold_stock_name", "") or "").strip(),
             "percentage":      float(row.get("percentage") or 0),
+            "shares":          int(row.get("shares") or 0),
             "fetched_at":      now_str,
         })
 
@@ -66,12 +67,13 @@ def save_etf_holdings(etf_id: str, df: pd.DataFrame) -> int:
         conn.execute(
             text("""
                 INSERT INTO etf_holding_cache
-                    (etf_id, date, hold_stock_id, hold_stock_name, percentage, fetched_at)
+                    (etf_id, date, hold_stock_id, hold_stock_name, percentage, shares, fetched_at)
                 VALUES
-                    (:etf_id, :date, :hold_stock_id, :hold_stock_name, :percentage, :fetched_at)
+                    (:etf_id, :date, :hold_stock_id, :hold_stock_name, :percentage, :shares, :fetched_at)
                 ON CONFLICT (etf_id, date, hold_stock_id) DO UPDATE SET
                     hold_stock_name = excluded.hold_stock_name,
                     percentage      = excluded.percentage,
+                    shares          = excluded.shares,
                     fetched_at      = excluded.fetched_at
             """),
             rows,
@@ -98,7 +100,7 @@ def load_etf_holdings(
         params["ed"] = str(end_date)[:10]
 
     sql = f"""
-        SELECT etf_id, date, hold_stock_id, hold_stock_name, percentage
+        SELECT etf_id, date, hold_stock_id, hold_stock_name, percentage, COALESCE(shares, 0) AS shares
         FROM etf_holding_cache
         WHERE {' AND '.join(conditions)}
         ORDER BY date DESC, percentage DESC
@@ -107,11 +109,12 @@ def load_etf_holdings(
         result = sess.execute(text(sql), params).fetchall()
 
     if not result:
-        return pd.DataFrame(columns=["etf_id", "date", "hold_stock_id", "hold_stock_name", "percentage"])
+        return pd.DataFrame(columns=["etf_id", "date", "hold_stock_id", "hold_stock_name", "percentage", "shares"])
 
-    df = pd.DataFrame(result, columns=["etf_id", "date", "hold_stock_id", "hold_stock_name", "percentage"])
+    df = pd.DataFrame(result, columns=["etf_id", "date", "hold_stock_id", "hold_stock_name", "percentage", "shares"])
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["percentage"] = pd.to_numeric(df["percentage"], errors="coerce").fillna(0.0)
+    df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
     return df
 
 
