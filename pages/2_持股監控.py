@@ -1018,7 +1018,7 @@ with tab_daily:
             if _idf.empty:
                 _inst_rows.append({
                     "代碼": _sid, "名稱": _h.get("stock_name", ""),
-                    "外資淨": None, "投信淨": None, "自營淨": None,
+                    "外資淨(張)": None, "投信淨(張)": None, "自營淨(張)": None,
                     "合計淨(張)": None, "狀態": "⚪ 無快取資料",
                 })
                 continue
@@ -1031,7 +1031,7 @@ with tab_daily:
             if not _target_mask.any():
                 _inst_rows.append({
                     "代碼": _sid, "名稱": _h.get("stock_name", ""),
-                    "外資淨": None, "投信淨": None, "自營淨": None,
+                    "外資淨(張)": None, "投信淨(張)": None, "自營淨(張)": None,
                     "合計淨(張)": None, "狀態": "⚪ 當日無資料",
                 })
                 continue
@@ -1041,10 +1041,11 @@ with tab_daily:
             _today_net = float(_daily_total.iloc[_iloc]["net"])
 
             # FinMind name 欄位為英文：Foreign_Investor, Investment_Trust, Dealer_self/Dealer_Hedging
+            # net 原始單位為股，除以 1000 轉換為張
             _day_detail = _idf[_idf["date"].dt.date == _rdate].groupby("name")["net"].sum()
             def _inst_val(kw):
                 matches = [v for k, v in _day_detail.items() if kw.lower() in str(k).lower()]
-                return round(sum(matches), 0) if matches else 0.0
+                return round(sum(matches) / 1000, 0) if matches else 0.0
 
             _reversal = (
                 _iloc >= 2
@@ -1058,10 +1059,10 @@ with tab_daily:
             )
             _inst_rows.append({
                 "代碼": _sid, "名稱": _h.get("stock_name", ""),
-                "外資淨": _inst_val("Foreign"),
-                "投信淨": _inst_val("Investment_Trust"),
-                "自營淨": _inst_val("Dealer"),
-                "合計淨(張)": round(_today_net, 0),
+                "外資淨(張)": _inst_val("Foreign"),
+                "投信淨(張)": _inst_val("Investment_Trust"),
+                "自營淨(張)": _inst_val("Dealer"),
+                "合計淨(張)": round(_today_net / 1000, 0),
                 "狀態": _status,
             })
 
@@ -1152,6 +1153,12 @@ with tab_weekly:
 
             # ── Section 1：大戶/散戶比例 ──────────────────────
             st.markdown("#### 大戶(>1000張) vs 散戶(≤50張) 比例")
+
+            def _wk_color(val):
+                if pd.isna(val) or val == 0:
+                    return ""
+                return "color: #ff4b4b; font-weight: bold" if val > 0 else "color: #33bb77; font-weight: bold"
+
             _ratio_rows = []
             for _h in _weekly_holdings:
                 _sid = _h["stock_id"]
@@ -1162,34 +1169,41 @@ with tab_weekly:
                 _prev_hd = _prev_data[_prev_data["stock_id"] == _sid].sort_values("date")
                 _prev_row = _prev_hd.iloc[-1] if not _prev_hd.empty else None
 
-                _c1000 = _latest.get("above_1000_pct")
-                _c50 = _latest.get("below_50_pct")
-                _p1000 = float(_prev_row["above_1000_pct"]) if _prev_row is not None else None
-                _p50 = float(_prev_row["below_50_pct"]) if _prev_row is not None and pd.notna(_prev_row.get("below_50_pct")) else None
-
-                def _fmt_delta(curr, prev):
-                    if curr is None or pd.isna(curr):
-                        return "-"
-                    if prev is None:
-                        return f"{float(curr):.2f}%"
-                    d = float(curr) - float(prev)
-                    arrow = "▲" if d > 0 else ("▼" if d < 0 else "─")
-                    return f"{float(curr):.2f}% ({arrow}{abs(d):.2f}pp)"
+                _c1000 = float(_latest["above_1000_pct"]) if pd.notna(_latest.get("above_1000_pct")) else None
+                _c50   = float(_latest["below_50_pct"])   if pd.notna(_latest.get("below_50_pct"))   else None
+                _p1000 = float(_prev_row["above_1000_pct"]) if _prev_row is not None and pd.notna(_prev_row.get("above_1000_pct")) else None
+                _p50   = float(_prev_row["below_50_pct"])   if _prev_row is not None and pd.notna(_prev_row.get("below_50_pct"))   else None
 
                 _ratio_rows.append({
                     "代碼": _sid,
                     "名稱": _h.get("stock_name", ""),
-                    "大戶(>1000張)": _fmt_delta(_c1000, _p1000),
-                    "散戶(≤50張)": _fmt_delta(_c50, _p50),
+                    "大戶%": _c1000,
+                    "大戶±pp": (_c1000 - _p1000) if (_c1000 is not None and _p1000 is not None) else None,
+                    "散戶%": _c50,
+                    "散戶±pp": (_c50 - _p50) if (_c50 is not None and _p50 is not None) else None,
                 })
             if _ratio_rows:
-                st.dataframe(pd.DataFrame(_ratio_rows), use_container_width=True, hide_index=True)
+                _df_ratio = pd.DataFrame(_ratio_rows)
+                _styled_ratio = (
+                    _df_ratio.style
+                    .format({
+                        "大戶%":   lambda v: f"{v:.2f}%" if pd.notna(v) else "-",
+                        "大戶±pp": lambda v: f"{v:+.2f}" if pd.notna(v) else "-",
+                        "散戶%":   lambda v: f"{v:.2f}%" if pd.notna(v) else "-",
+                        "散戶±pp": lambda v: f"{v:+.2f}" if pd.notna(v) else "-",
+                    })
+                    .map(_wk_color, subset=["大戶±pp", "散戶±pp"])
+                )
+                st.dataframe(_styled_ratio, use_container_width=True, hide_index=True)
 
             st.markdown("---")
 
             # ── Section 2：背離偵測 ────────────────────────────
-            st.markdown("#### 背離偵測（大戶收貨洗盤訊號）")
-            st.caption("條件：大戶增持 + 散戶減持 + 股價跌/盤整（週漲跌 ≤ +1%）→ 疑似洗盤收貨")
+            st.markdown("#### 背離偵測")
+            st.caption(
+                "🟡 **洗盤收貨**：大戶增持 + 散戶減持 + 股價跌/盤整（週漲跌 ≤ +1%）→ 疑似逢低收貨　　"
+                "🔴 **高檔出貨**：大戶減持 + 散戶增持 + 股價漲/高檔盤整（週漲跌 ≥ −1%）→ 疑似高檔出貨"
+            )
             _price_data_ss = st.session_state.get("portfolio_prices", {})
             _div_rows = []
             for _h in _weekly_holdings:
@@ -1203,9 +1217,9 @@ with tab_weekly:
                 _p1000 = float(_prev_hd.iloc[-1].get("above_1000_pct") or 0)
                 _c50 = _hd.iloc[-1].get("below_50_pct")
                 _p50 = _prev_hd.iloc[-1].get("below_50_pct")
-                _whale_up = (_c1000 - _p1000) > 0
-                _retail_down = (
-                    (float(_c50) - float(_p50)) < 0
+                _whale_delta = _c1000 - _p1000
+                _retail_delta = (
+                    float(_c50) - float(_p50)
                     if (pd.notna(_c50) and pd.notna(_p50))
                     else None
                 )
@@ -1223,26 +1237,56 @@ with tab_weekly:
                             float(_week_px.iloc[-1]["close"]) - float(_week_px.iloc[0]["close"])
                         ) / float(_week_px.iloc[0]["close"]) * 100
 
-                _price_weak = (_price_chg is not None and _price_chg <= 1.0)
-                _signals = []
-                if _whale_up:
-                    _signals.append(f"大戶增 +{_c1000 - _p1000:.2f}pp")
-                if _retail_down:
-                    _signals.append(f"散戶減 {float(_c50)-float(_p50):.2f}pp")
-                if _price_weak and _price_chg is not None:
-                    _signals.append(f"股價{'跌' if _price_chg < -1 else '盤整'} {_price_chg:+.1f}%")
+                _WHALE_MIN_PP = 3.0  # 大戶增減幅度最低門檻
 
-                _is_signal = _whale_up and len(_signals) >= 2
+                # 洗盤收貨：大戶增持 ≥ 3pp + 散戶減持 + 股價跌/盤整（週漲跌 ≤ +1%）
+                # 有股價資料時，股價方向為硬性門檻（> +1% 直接排除）
+                _price_weak = _price_chg is None or _price_chg <= 1.0
+                _wash_signals = []
+                if _whale_delta >= _WHALE_MIN_PP:
+                    _wash_signals.append(f"大戶增 +{_whale_delta:.2f}pp")
+                if _retail_delta is not None and _retail_delta < 0:
+                    _wash_signals.append(f"散戶減 {_retail_delta:.2f}pp")
+                if _price_chg is not None and _price_chg <= 1.0:
+                    _wash_signals.append(f"股價{'跌' if _price_chg < -1 else '盤整'} {_price_chg:+.1f}%")
+                _is_wash = _whale_delta >= _WHALE_MIN_PP and _price_weak and len(_wash_signals) >= 2
+
+                # 高檔出貨：大戶減持 ≥ 3pp + 散戶增持 + 股價漲/高檔盤整（週漲跌 ≥ -1%）
+                # 有股價資料時，股價方向為硬性門檻（< -1% 直接排除）
+                _price_strong = _price_chg is None or _price_chg >= -1.0
+                _dump_signals = []
+                if _whale_delta <= -_WHALE_MIN_PP:
+                    _dump_signals.append(f"大戶減 {_whale_delta:.2f}pp")
+                if _retail_delta is not None and _retail_delta > 0:
+                    _dump_signals.append(f"散戶增 +{_retail_delta:.2f}pp")
+                if _price_chg is not None and _price_chg >= -1.0:
+                    _dump_signals.append(f"股價{'漲' if _price_chg > 1 else '高檔盤整'} {_price_chg:+.1f}%")
+                _is_dump = _whale_delta <= -_WHALE_MIN_PP and _price_strong and len(_dump_signals) >= 2
+
+                _signal_text = (
+                    "🔴 高檔出貨：" + "、".join(_dump_signals) if _is_dump else
+                    ("🟡 洗盤收貨：" + "、".join(_wash_signals) if _is_wash else "—")
+                )
                 _div_rows.append({
                     "代碼": _sid,
                     "名稱": _h.get("stock_name", ""),
-                    "大戶週變化": f"{_c1000-_p1000:+.2f}pp",
-                    "散戶週變化": f"{float(_c50)-float(_p50):+.2f}pp" if (pd.notna(_c50) and pd.notna(_p50)) else "-",
-                    "週漲跌%": f"{_price_chg:+.1f}%" if _price_chg is not None else "（需載入報價）",
-                    "洗盤收貨訊號": ("⚠️ " + "、".join(_signals)) if _is_signal else "—",
+                    "大戶週變(pp)": _whale_delta,
+                    "散戶週變(pp)": _retail_delta,
+                    "週漲跌%": _price_chg,
+                    "訊號": _signal_text,
                 })
             if _div_rows:
-                st.dataframe(pd.DataFrame(_div_rows), use_container_width=True, hide_index=True)
+                _df_div = pd.DataFrame(_div_rows)
+                _styled_div = (
+                    _df_div.style
+                    .format({
+                        "大戶週變(pp)": lambda v: f"{v:+.2f}" if pd.notna(v) else "-",
+                        "散戶週變(pp)": lambda v: f"{v:+.2f}" if pd.notna(v) else "-",
+                        "週漲跌%":      lambda v: f"{v:+.1f}%" if pd.notna(v) else "（需載入報價）",
+                    })
+                    .map(_wk_color, subset=["大戶週變(pp)", "散戶週變(pp)", "週漲跌%"])
+                )
+                st.dataframe(_styled_div, use_container_width=True, hide_index=True)
                 if not _price_data_ss:
                     st.caption("💡 週漲跌欄位需先至「即時監控」頁籤按「更新報價」才能顯示。")
             else:

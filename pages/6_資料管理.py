@@ -1280,7 +1280,7 @@ with st.expander("🩺 完整健康度分析", expanded=False):
         if bsr_phase == "scanning":
             _scan_states = {k: get_health_run(v) for k, v in bsr_run_ids.items()}
             _all_scans_done = all(
-                r and r.get("status") in ("done", "failed")
+                r and r.get("status") in ("completed", "done", "failed")
                 for r in _scan_states.values()
             )
             if _all_scans_done:
@@ -1305,7 +1305,7 @@ with st.expander("🩺 完整健康度分析", expanded=False):
 
         elif bsr_phase == "repairing":
             _all_repairs_done = all(
-                (get_repair_job(int(jid)) or {}).get("status") in ("done", "failed")
+                (get_repair_job(int(jid)) or {}).get("status") in ("completed", "partial", "done", "failed")
                 for jid in bsr_repair_ids.values()
             ) if bsr_repair_ids else True
             if _all_repairs_done:
@@ -1326,7 +1326,7 @@ with st.expander("🩺 完整健康度分析", expanded=False):
 
         elif bsr_phase == "rescanning":
             _all_rescans_done = all(
-                (get_health_run(v) or {}).get("status") in ("done", "failed")
+                (get_health_run(v) or {}).get("status") in ("completed", "done", "failed")
                 for v in bsr_rescan_ids.values()
             ) if bsr_rescan_ids else False
             if _all_rescans_done:

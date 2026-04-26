@@ -23,13 +23,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TRACKED_ETFS: list[str] = [
     "0050",
+    "00919",
     "00981A",
     "00982A",
-    "00985A",
     "00991A",
     "00992A",
-    "00993A",
-    "00995A",
 ]
 
 # 權重變化視為「有意義」的最小門檻（百分點）

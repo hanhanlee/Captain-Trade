@@ -815,39 +815,12 @@ def get_institutional_investors(stock_id: str, days: int = 30) -> pd.DataFrame:
 
 def fetch_etf_holding(etf_id: str, start_date: str = None) -> pd.DataFrame:
     """
-    取得 ETF 成分股持股明細。
+    取得 ETF 成分股持股明細（改用各投信官網爬蟲）。
 
-    回傳 DataFrame 欄位：date, hold_stock_id, hold_stock_name, percentage
-    資料為 ETF 每次重新平衡後的持股快照，通常每月更新一次。
+    回傳 DataFrame 欄位：etf_id, date, hold_stock_id, hold_stock_name, percentage
     """
-    start = start_date or (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
-    df = _get("TaiwanStockEtfHolding", stock_id=etf_id, start_date=start)
-    if df.empty:
-        return pd.DataFrame(columns=["date", "hold_stock_id", "hold_stock_name", "percentage"])
-
-    rename_map = {}
-    cols_lower = {c.lower(): c for c in df.columns}
-    for target, candidates in [
-        ("date",           ["date"]),
-        ("hold_stock_id",  ["hold_stock_id", "stock_id"]),
-        ("hold_stock_name",["hold_stock_name", "stock_name"]),
-        ("percentage",     ["percentage", "percent", "weight"]),
-    ]:
-        for c in candidates:
-            if c in cols_lower:
-                rename_map[cols_lower[c]] = target
-                break
-    df = df.rename(columns=rename_map)
-
-    needed = ["date", "hold_stock_id", "hold_stock_name", "percentage"]
-    for col in needed:
-        if col not in df.columns:
-            df[col] = "" if col in ("hold_stock_id", "hold_stock_name") else 0.0
-
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["percentage"] = pd.to_numeric(df["percentage"], errors="coerce").fillna(0.0)
-    df = df.dropna(subset=["date"]).sort_values("date")
-    return df[needed].reset_index(drop=True)
+    from modules.etf_scraper import fetch_etf_holdings
+    return fetch_etf_holdings(etf_id)
 
 
 def get_etf_holding(

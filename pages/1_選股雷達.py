@@ -925,8 +925,8 @@ if is_market_closed():
 
 st.markdown("---")
 
-tab_scan, tab_funnel, tab_sector, tab_chart, tab_history = st.tabs(
-    ["📊 掃描結果", "🔬 篩選漏斗", "🏭 產業族群", "📈 個股圖表", "📋 歷史紀錄"]
+tab_scan, tab_funnel, tab_sector, tab_chart, tab_history, tab_etf = st.tabs(
+    ["📊 掃描結果", "🔬 篩選漏斗", "🏭 產業族群", "📈 個股圖表", "📋 歷史紀錄", "🏦 ETF 持股追蹤"]
 )
 
 
@@ -2039,3 +2039,154 @@ with tab_history:
                     )
                     if len(df_prev) > 10:
                         st.caption(f"僅顯示前 10 筆，共 {len(df_prev)} 筆。點「載入結果」可在掃描頁查看全部。")
+
+
+# ══ Tab：ETF 持股追蹤 ═════════════════════════════════════════
+
+_STATUS_LABEL = {
+    "new_entry":   "🟢 新進",
+    "weight_up":   "⬆️ 增持",
+    "weight_down": "⬇️ 減持",
+    "ejected":     "🔴 剔除",
+    "unchanged":   "⬜ 不變",
+}
+
+_STATUS_ORDER = {"new_entry": 0, "weight_up": 1, "weight_down": 2, "ejected": 3, "unchanged": 4}
+
+with tab_etf:
+    from modules.etf_tracker import DEFAULT_TRACKED_ETFS, build_etf_holdings_table
+    from modules.etf_scraper import SUPPORTED_ETFS
+    from db.etf_cache import get_cache_info
+
+    st.subheader("ETF 成分股持股追蹤")
+    st.caption("比較最近兩次快照，顯示新進、增持、減持、剔除變化")
+
+    # ── 控制列 ────────────────────────────────────────────────
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([3, 2, 2])
+
+    with ctrl_col1:
+        selected_etfs = st.multiselect(
+            "追蹤的 ETF",
+            options=SUPPORTED_ETFS,
+            default=DEFAULT_TRACKED_ETFS,
+            key="etf_tab_selected",
+        )
+
+    with ctrl_col2:
+        status_filter = st.multiselect(
+            "狀態篩選",
+            options=["new_entry", "weight_up", "weight_down", "ejected", "unchanged"],
+            default=["new_entry", "weight_up", "weight_down", "ejected"],
+            format_func=lambda s: _STATUS_LABEL.get(s, s),
+            key="etf_tab_status_filter",
+        )
+
+    with ctrl_col3:
+        force_refresh = st.checkbox("強制重新抓取", value=False, key="etf_tab_force_refresh",
+                                    help="勾選後會從 FinMind 重新下載所有 ETF 持股資料")
+
+    # ── 快取資訊 ──────────────────────────────────────────────
+    with st.expander("快取狀態", expanded=False):
+        try:
+            cache_rows = []
+            for etf_id in SUPPORTED_ETFS:
+                info = get_cache_info(etf_id)
+                if info:
+                    cache_rows.append({
+                        "ETF": etf_id,
+                        "最新快照日期": info.get("latest_date", "—"),
+                        "快照數": info.get("snapshot_count", 0),
+                        "最後更新": info.get("updated_at", "—"),
+                    })
+                else:
+                    cache_rows.append({"ETF": etf_id, "最新快照日期": "尚無資料", "快照數": 0, "最後更新": "—"})
+            if cache_rows:
+                st.dataframe(pd.DataFrame(cache_rows), use_container_width=True, hide_index=True)
+        except Exception as _e:
+            st.caption(f"快取資訊讀取失敗：{_e}")
+
+    st.markdown("---")
+
+    # ── 載入資料 ──────────────────────────────────────────────
+    if not selected_etfs:
+        st.info("請至少選擇一個 ETF。")
+    else:
+        with st.spinner("載入 ETF 持股資料中…"):
+            try:
+                df_etf = build_etf_holdings_table(
+                    etf_ids=selected_etfs,
+                    force_refresh=force_refresh,
+                )
+            except Exception as _exc:
+                st.error(f"資料載入失敗：{_exc}")
+                df_etf = pd.DataFrame()
+
+        if df_etf.empty:
+            st.warning("目前無 ETF 持股資料，請點「強制重新抓取」後重試。")
+        else:
+            # 狀態篩選
+            if status_filter:
+                df_show = df_etf[df_etf["status"].isin(status_filter)].copy()
+            else:
+                df_show = df_etf.copy()
+
+            # 變化統計摘要
+            summary_cols = st.columns(4)
+            counts = df_etf["status"].value_counts()
+            summary_cols[0].metric("🟢 新進", counts.get("new_entry", 0))
+            summary_cols[1].metric("⬆️ 增持", counts.get("weight_up", 0))
+            summary_cols[2].metric("⬇️ 減持", counts.get("weight_down", 0))
+            summary_cols[3].metric("🔴 剔除", counts.get("ejected", 0))
+
+            st.markdown("---")
+
+            if df_show.empty:
+                st.info("目前篩選條件下無符合資料。")
+            else:
+                df_show["狀態"] = df_show["status"].map(_STATUS_LABEL).fillna(df_show["status"])
+                df_show["delta_fmt"] = df_show["delta"].apply(
+                    lambda x: f"{x:+.2f}%" if pd.notna(x) and x != 0 else "—"
+                )
+                display_df = df_show.rename(columns={
+                    "etf_id":          "ETF",
+                    "hold_stock_id":   "股票代碼",
+                    "hold_stock_name": "股票名稱",
+                    "prev_pct":        "前次權重%",
+                    "curr_pct":        "現在權重%",
+                    "delta_fmt":       "權重增減",
+                    "delta":           "_delta_raw",
+                })
+                show_cols = ["ETF", "股票代碼", "股票名稱", "狀態", "前次權重%", "現在權重%", "權重增減"]
+
+                def _style_delta_row(row):
+                    d = row.get("_delta_raw", 0)
+                    try:
+                        d = float(d)
+                    except (TypeError, ValueError):
+                        d = 0
+                    if d > 0:
+                        color = "#ff4b4b"   # 增加 → 紅
+                    elif d < 0:
+                        color = "#21ba45"   # 減少 → 綠
+                    else:
+                        color = ""
+                    styles = [""] * len(row)
+                    if "權重增減" in row.index:
+                        idx = row.index.get_loc("權重增減")
+                        if color:
+                            styles[idx] = f"color: {color}; font-weight: bold"
+                    return styles
+
+                cols_to_show = [c for c in show_cols if c in display_df.columns]
+                render_df = display_df[cols_to_show + ["_delta_raw"]].copy()
+                styled = (
+                    render_df.style
+                    .apply(_style_delta_row, axis=1)
+                    .hide(axis="columns", subset=["_delta_raw"])
+                )
+                st.dataframe(
+                    styled,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption(f"共 {len(df_show)} 筆（篩選後）")

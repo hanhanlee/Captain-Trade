@@ -134,3 +134,22 @@ def get_latest_two_snapshots(etf_id: str) -> tuple[str, str]:
     latest = dates[0] if dates else ""
     prev   = dates[1] if len(dates) >= 2 else ""
     return latest, prev
+
+
+def get_cache_info(etf_id: str) -> dict | None:
+    """回傳單一 ETF 的快取摘要：latest_date, snapshot_count, updated_at。"""
+    with get_session() as sess:
+        row = sess.execute(
+            text("""
+                SELECT COUNT(DISTINCT date), MAX(date), MAX(fetched_at)
+                FROM etf_holding_cache WHERE etf_id = :eid
+            """),
+            {"eid": etf_id},
+        ).fetchone()
+    if not row or not row[1]:
+        return None
+    return {
+        "snapshot_count": int(row[0]),
+        "latest_date":    str(row[1])[:10],
+        "updated_at":     str(row[2])[:16] if row[2] else "—",
+    }
