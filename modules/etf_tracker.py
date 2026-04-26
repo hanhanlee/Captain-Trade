@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TRACKED_ETFS: list[str] = [
     "0050",
-    "00919",
     "00981A",
     "00982A",
     "00991A",
