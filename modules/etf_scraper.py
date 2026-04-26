@@ -144,13 +144,23 @@ def _fetch_yuanta(etf_id: str, target_date: str,
     r.raise_for_status()
     data = r.json()
     stock_weights = data.get("FundWeights", {}).get("StockWeights", [])
-    return [
-        {"date": target_date, "etf_id": etf_id,
-         "stock_id": item["code"], "stock_name": item.get("name", ""),
-         "weight": float(item["weights"])}
-        for item in stock_weights
-        if item.get("code") and item.get("weights") is not None
-    ]
+    if stock_weights:
+        logger.debug("元大盲盒預覽 (首筆): %s", stock_weights[0])
+    rows = []
+    for item in stock_weights:
+        if not item.get("code") or item.get("weights") is None:
+            continue
+        shares_raw = item.get("qty") or item.get("shares") or item.get("volume") or "0"
+        try:
+            shares_val = int(str(shares_raw).replace(",", "").split(".")[0])
+        except ValueError:
+            shares_val = 0
+        rows.append({
+            "date": target_date, "etf_id": etf_id,
+            "stock_id": item["code"], "stock_name": item.get("name", ""),
+            "weight": float(item["weights"]), "shares": shares_val,
+        })
+    return rows
 
 
 # ── 統一投信 ──────────────────────────────────────────────────
@@ -241,14 +251,25 @@ def _fetch_capital(etf_id: str, target_date: str | None = None,
     raw_date = data.get("pcf", {}).get("date1", "")
     clean_date = raw_date.split(" ")[0].replace("-", "") if raw_date else ""
 
-    return [
-        {"date": clean_date, "etf_id": etf_id,
-         "stock_id": str(item["stocNo"]).strip(),
-         "stock_name": str(item.get("stocName", "")).strip(),
-         "weight": float(item["weight"])}
-        for item in data.get("stocks", [])
-        if item.get("stocNo") and item.get("weight") is not None
-    ]
+    stock_list = data.get("stocks", [])
+    if stock_list:
+        logger.debug("群益盲盒預覽 (首筆): %s", stock_list[0])
+    rows = []
+    for item in stock_list:
+        if not item.get("stocNo") or item.get("weight") is None:
+            continue
+        shares_raw = item.get("share") or item.get("shares") or item.get("qty") or item.get("volume") or "0"
+        try:
+            shares_val = int(str(shares_raw).replace(",", "").split(".")[0])
+        except ValueError:
+            shares_val = 0
+        rows.append({
+            "date": clean_date, "etf_id": etf_id,
+            "stock_id": str(item["stocNo"]).strip(),
+            "stock_name": str(item.get("stocName", "")).strip(),
+            "weight": float(item["weight"]), "shares": shares_val,
+        })
+    return rows
 
 
 # ── 復華投信 ──────────────────────────────────────────────────
