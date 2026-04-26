@@ -199,7 +199,8 @@ def _fetch_uni(etf_id: str, target_date: str,
         {"date": target_date, "etf_id": etf_id,
          "stock_id": str(item["DetailCode"]).strip(),
          "stock_name": str(item.get("DetailName", "")).split(".")[0].strip(),
-         "weight": float(item["NavRate"])}
+         "weight": float(item["NavRate"]),
+         "shares": int(item["Share"]) if item.get("Share") else 0}
         for item in stock_details
         if item.get("DetailCode") and item.get("NavRate") is not None
     ]
