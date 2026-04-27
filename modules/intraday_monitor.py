@@ -143,6 +143,7 @@ def run_intraday_check() -> int:
     from db.database import get_session
     from db.models import Portfolio
     from notifications.line_notify import send_multicast
+    from notifications.telegram_notify import send_stock_alert
 
     with get_session() as sess:
         rows = (
@@ -173,7 +174,9 @@ def run_intraday_check() -> int:
             continue
         label = f"{h['stock_id']} {h['stock_name']}".strip()
         lines = [f"📡 盤中警示 {label}（{now_str}）"] + [f"  • {a}" for a in alerts]
-        send_multicast("\n".join(lines))
+        msg = "\n".join(lines)
+        send_multicast(msg)
+        send_stock_alert(msg)
         logger.info(f"盤中警示推播：{label} → {alerts}")
         sent += 1
 
