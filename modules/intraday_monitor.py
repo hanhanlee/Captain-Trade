@@ -62,10 +62,10 @@ def _daily_mas(stock_id: str) -> dict[str, float]:
         return {}
 
 
-def _check_one(holding: dict) -> list[str]:
+def _check_one(holding: dict) -> tuple[list[str], list[str]]:
     """
     檢查單一持股的盤中警示條件。
-    回傳本次觸發的警示描述列表（已記錄 cooldown）。
+    回傳 (alerts, keys_to_mark)；呼叫端發送成功後才呼叫 _mark()。
     """
     from data.finmind_client import get_kbar_latest, get_realtime_stock_snapshot
 
@@ -91,10 +91,11 @@ def _check_one(holding: dict) -> list[str]:
         price = _yahoo_current_price(stock_id)
 
     if price is None:
-        return []
+        return [], []
 
     mas = _daily_mas(stock_id)
-    fired: list[str] = []
+    alerts: list[str] = []
+    keys: list[str] = []
 
     for label, key in [("MA5", "ma5"), ("MA10", "ma10"), ("MA20", "ma20")]:
         val = mas.get(key)
@@ -102,26 +103,26 @@ def _check_one(holding: dict) -> list[str]:
             continue
         cond = f"below_{key}"
         if price < val and _cooled_down(stock_id, cond):
-            fired.append(f"現價 {price:.2f} 跌破 {label}（{val:.2f}）")
-            _mark(stock_id, cond)
+            alerts.append(f"現價 {price:.2f} 跌破 {label}（{val:.2f}）")
+            keys.append(cond)
 
     if stop_loss and price <= stop_loss:
         if _cooled_down(stock_id, "stop_loss"):
-            fired.append(f"現價 {price:.2f} 觸及停損（{stop_loss:.2f}）")
-            _mark(stock_id, "stop_loss")
+            alerts.append(f"現價 {price:.2f} 觸及停損（{stop_loss:.2f}）")
+            keys.append("stop_loss")
 
     if take_profit and price >= take_profit:
         if _cooled_down(stock_id, "take_profit"):
-            fired.append(f"現價 {price:.2f} 觸及停利（{take_profit:.2f}）")
-            _mark(stock_id, "take_profit")
+            alerts.append(f"現價 {price:.2f} 觸及停利（{take_profit:.2f}）")
+            keys.append("take_profit")
 
     if not stop_loss and cost_price and cost_price > 0:
         pnl_pct = (price - cost_price) / cost_price * 100
         if pnl_pct <= -5 and _cooled_down(stock_id, "unrealized_loss"):
-            fired.append(f"現價 {price:.2f} / 成本 {cost_price:.2f}，未實現虧損 {pnl_pct:.1f}%，建議設定停損")
-            _mark(stock_id, "unrealized_loss")
+            alerts.append(f"現價 {price:.2f} / 成本 {cost_price:.2f}，未實現虧損 {pnl_pct:.1f}%，建議設定停損")
+            keys.append("unrealized_loss")
 
-    return fired
+    return alerts, keys
 
 
 def _to_float(value) -> float | None:
@@ -170,17 +171,23 @@ def run_intraday_check() -> int:
     now_str = datetime.now().strftime("%H:%M")
 
     for h in holdings:
-        alerts = _check_one(h)
+        alerts, keys = _check_one(h)
         if not alerts:
             continue
-        label = f"{h['stock_id']} {h['stock_name']}".strip()
+        stock_id = str(h["stock_id"])
+        label = f"{stock_id} {h['stock_name']}".strip()
         lines = [f"📡 盤中警示 {label}（{now_str}）"] + [f"  • {a}" for a in alerts]
         msg = "\n".join(lines)
-        send_multicast(msg)
+        line_ok = send_multicast(msg)
         time.sleep(1)
-        send_stock_alert(msg)
-        logger.info(f"盤中警示推播：{label} → {alerts}")
-        sent += 1
+        tg_ok = send_stock_alert(msg)
+        if line_ok or tg_ok:
+            for key in keys:
+                _mark(stock_id, key)
+            logger.info(f"盤中警示推播：{label} → {alerts}")
+            sent += 1
+        else:
+            logger.warning(f"盤中警示推播失敗（Line+Telegram 均未送出），cooldown 不記錄：{label}")
         time.sleep(1)
 
     return sent
