@@ -2,11 +2,11 @@
 盤中持股監控
 
 每分鐘掃描 intraday_monitor=True 的持股，判斷：
-  - 現價 < MA5 / MA10 / MA20（日K MA，從本機快取計算）
+  - 現價 < MA5 / MA10 / MA20（日K MA + 即時價納入視窗，與圖表工具一致）
   - 現價 <= stop_loss（若有設）
   - 現價 >= take_profit（若有設）
 
-觸發時推 LINE 群播。同一檔同一條件 60 分鐘內只推一次（in-memory cooldown）。
+觸發時同步推 LINE + Telegram。同一檔同一條件 60 分鐘內只推一次（in-memory cooldown）。
 """
 import logging
 import time
@@ -48,14 +48,20 @@ def _unmark(stock_id: str, key: str) -> None:
     _cooldown.get(stock_id, {}).pop(key, None)
 
 
-def _daily_mas(stock_id: str) -> dict[str, float]:
-    """從日K快取計算 MA5 / MA10 / MA20，回傳能算出的欄位。"""
+def _daily_mas(stock_id: str, current_price: float | None = None) -> dict[str, float]:
+    """
+    從日K快取計算 MA5 / MA10 / MA20。
+    若提供 current_price，將其附加到收盤序列末端（模擬今日收盤），
+    使結果與圖表工具的即時 MA 一致。
+    """
     try:
         from db.price_cache import load_prices
         df = load_prices(stock_id, lookback_days=25)
         if df.empty or "close" not in df.columns:
             return {}
         closes = pd.to_numeric(df["close"], errors="coerce").dropna()
+        if current_price is not None:
+            closes = pd.concat([closes, pd.Series([current_price])], ignore_index=True)
         result: dict[str, float] = {}
         for n, label in [(5, "ma5"), (10, "ma10"), (20, "ma20")]:
             if len(closes) >= n:
@@ -66,10 +72,10 @@ def _daily_mas(stock_id: str) -> dict[str, float]:
         return {}
 
 
-def _check_one(holding: dict) -> tuple[list[str], list[str]]:
+def _check_one(holding: dict) -> tuple[list[str], list[str], float | None]:
     """
     檢查單一持股的盤中警示條件。
-    回傳 (alerts, keys_to_mark)；呼叫端發送成功後才呼叫 _mark()。
+    回傳 (alerts, keys_to_mark, price)；呼叫端發送成功後才呼叫 _mark()。
     """
     from data.finmind_client import get_kbar_latest, get_realtime_stock_snapshot
 
@@ -95,9 +101,9 @@ def _check_one(holding: dict) -> tuple[list[str], list[str]]:
         price = _yahoo_current_price(stock_id)
 
     if price is None:
-        return [], []
+        return [], [], None
 
-    mas = _daily_mas(stock_id)
+    mas = _daily_mas(stock_id, current_price=price)
     alerts: list[str] = []
     keys: list[str] = []
 
@@ -126,7 +132,7 @@ def _check_one(holding: dict) -> tuple[list[str], list[str]]:
             alerts.append(f"現價 {price:.2f} / 成本 {cost_price:.2f}，未實現虧損 {pnl_pct:.1f}%，建議設定停損")
             keys.append("unrealized_loss")
 
-    return alerts, keys
+    return alerts, keys, price
 
 
 def _to_float(value) -> float | None:
@@ -150,6 +156,7 @@ def run_intraday_check() -> int:
     from db.models import Portfolio
     from notifications.line_notify import send_multicast
     from notifications.telegram_notify import send_stock_alert
+    from db.event_log import log_event
 
     with get_session() as sess:
         rows = (
@@ -175,27 +182,51 @@ def run_intraday_check() -> int:
     now_str = datetime.now().strftime("%H:%M")
 
     for h in holdings:
-        alerts, keys = _check_one(h)
+        stock_id = str(h["stock_id"])
+        stock_name = h["stock_name"]
+        alerts, keys, price = _check_one(h)
+
+        if price is None:
+            log_event("intraday_price_fail", module="intraday_monitor",
+                      stock_id=stock_id, stock_name=stock_name, severity="warning",
+                      summary=f"{stock_id} 取價失敗，跳過本輪檢查")
+            continue
+
         if not alerts:
             continue
-        stock_id = str(h["stock_id"])
-        label = f"{stock_id} {h['stock_name']}".strip()
+
+        label = f"{stock_id} {stock_name}".strip()
         lines = [f"📡 盤中警示 {label}（{now_str}）"] + [f"  • {a}" for a in alerts]
         msg = "\n".join(lines)
+
+        log_event("intraday_alert_triggered", module="intraday_monitor",
+                  stock_id=stock_id, stock_name=stock_name, severity="warning",
+                  summary=f"{label} 警示：{', '.join(alerts)}",
+                  payload={"price": price, "alerts": alerts, "conditions": keys})
+
         # 樂觀標記：送出前先鎖住 cooldown，防止 retry 等待期間重複觸發
         for key in keys:
             _mark(stock_id, key)
         line_ok = send_multicast(msg)
         time.sleep(1)
         tg_ok = send_stock_alert(msg)
+
         if line_ok or tg_ok:
             logger.info(f"盤中警示推播：{label} → {alerts}")
+            log_event("intraday_alert_sent", module="intraday_monitor",
+                      stock_id=stock_id, stock_name=stock_name, severity="info",
+                      summary=f"{label} 警示已送出（LINE={'✓' if line_ok else '✗'} TG={'✓' if tg_ok else '✗'}）",
+                      payload={"line_ok": line_ok, "tg_ok": tg_ok, "alerts": alerts})
             sent += 1
         else:
-            # 兩者均失敗，清除標記，讓下一輪重試
             for key in keys:
                 _unmark(stock_id, key)
             logger.warning(f"盤中警示推播失敗（Line+Telegram 均未送出），等待下一輪重試：{label}")
+            log_event("intraday_alert_failed", module="intraday_monitor",
+                      stock_id=stock_id, stock_name=stock_name, severity="error",
+                      summary=f"{label} 警示推播失敗，cooldown 已清除，等待下一輪重試",
+                      payload={"alerts": alerts})
+
         time.sleep(1)
 
     return sent
