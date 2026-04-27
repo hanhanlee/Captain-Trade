@@ -44,6 +44,10 @@ def _mark(stock_id: str, key: str) -> None:
     _cooldown.setdefault(stock_id, {})[key] = datetime.now()
 
 
+def _unmark(stock_id: str, key: str) -> None:
+    _cooldown.get(stock_id, {}).pop(key, None)
+
+
 def _daily_mas(stock_id: str) -> dict[str, float]:
     """從日K快取計算 MA5 / MA10 / MA20，回傳能算出的欄位。"""
     try:
@@ -178,16 +182,20 @@ def run_intraday_check() -> int:
         label = f"{stock_id} {h['stock_name']}".strip()
         lines = [f"📡 盤中警示 {label}（{now_str}）"] + [f"  • {a}" for a in alerts]
         msg = "\n".join(lines)
+        # 樂觀標記：送出前先鎖住 cooldown，防止 retry 等待期間重複觸發
+        for key in keys:
+            _mark(stock_id, key)
         line_ok = send_multicast(msg)
         time.sleep(1)
         tg_ok = send_stock_alert(msg)
         if line_ok or tg_ok:
-            for key in keys:
-                _mark(stock_id, key)
             logger.info(f"盤中警示推播：{label} → {alerts}")
             sent += 1
         else:
-            logger.warning(f"盤中警示推播失敗（Line+Telegram 均未送出），cooldown 不記錄：{label}")
+            # 兩者均失敗，清除標記，讓下一輪重試
+            for key in keys:
+                _unmark(stock_id, key)
+            logger.warning(f"盤中警示推播失敗（Line+Telegram 均未送出），等待下一輪重試：{label}")
         time.sleep(1)
 
     return sent
