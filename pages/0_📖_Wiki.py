@@ -16,6 +16,7 @@ tabs = st.tabs([
     "🔎 個股分析",
     "📐 共用指標",
     "📋 事件日誌",
+    "☁️ 備份與維運",
 ])
 
 
@@ -808,3 +809,117 @@ with tabs[7]:
 - 「我建立交易計畫後，最終執行了幾成？取消原因是什麼？」
 """)
 
+
+# ══════════════════════════════════════════════════════════════
+# Tab 9：備份與維運
+# ══════════════════════════════════════════════════════════════
+with tabs[8]:
+    st.header("☁️ 備份與維運")
+    st.markdown("""
+`srock.db` 是本工具的唯一資料來源，儲存所有持股、交易日誌、快取與設定。
+自動備份腳本會每日將資料庫加密壓縮後上傳至 Google Drive，並自動清除 14 天前的舊備份。
+
+---
+
+### 備份架構
+
+```
+srock.db
+  │  sqlite3.backup()（WAL 安全複製）
+  ▼
+temp_backup.db
+  │  gzip 壓縮（level 6）
+  ▼
+temp_backup.db.gz
+  │  rclone copyto（上傳）
+  ▼
+gdrive: srock_backup_YYYYMMDD.db.gz
+  │
+  ├─ 上傳驗證：rclone ls 確認存在
+  ├─ 刪除本機暫存
+  └─ rclone delete --min-age 14d（清舊備份）
+```
+
+---
+
+### 執行方式
+
+```bash
+cd "E:\\workspace\\srock tool"
+python scripts/backup_gdrive.py
+```
+
+流程完成後，Telegram 系統頻道會收到成功通知；任何步驟失敗時會立即推播完整 traceback。
+
+---
+
+### Rclone 設定（首次部署）
+
+| 項目 | 說明 |
+|------|------|
+| Remote 名稱 | `gdrive`（固定，腳本寫死）|
+| 綁定資料夾 | Rclone 設定時指定的 Google Drive 資料夾 |
+| 服務帳號金鑰 | `secrets/gcp_backup.json`（**已列入 .gitignore，絕對不提交**）|
+
+> ⚠️ **重要**：`secrets/gcp_backup.json` 是 Google Cloud 服務帳號金鑰，
+> 遺失或洩漏須立即到 GCP Console 停用該金鑰並重新生成。
+> 本機路徑：`E:\\workspace\\srock tool\\secrets\\gcp_backup.json`
+
+設定 Rclone 使用服務帳號（若使用 OAuth 則略過此步）：
+```bash
+rclone config
+# 選 Google Drive → 選 service_account_file → 填入 secrets/gcp_backup.json 的完整路徑
+```
+
+---
+
+### .env 必填項目
+
+```env
+TELEGRAM_BOT_TOKEN=...
+# 以下三選一（優先序由上至下）
+TELEGRAM_CHAT_ID=...          # 備份專用頻道（推薦）
+TELEGRAM_SYSTEM_CHAT_ID=...   # 系統頻道 fallback
+TELEGRAM_STOCK_CHAT_ID=...    # 股票頻道 fallback
+```
+
+---
+
+### 定期排程（Windows 工作排程器）
+
+建議每天收盤後自動執行：
+
+```
+程式：python
+引數：scripts/backup_gdrive.py
+起始位置：E:\\workspace\\srock tool
+觸發時間：每日 16:30（收盤後）
+```
+
+---
+
+### 雲端備份檔案命名規則
+
+```
+srock_backup_20260427.db.gz
+             ↑ YYYYMMDD，每日一份
+```
+
+保留最近 **14 天**，舊於 14 天的自動刪除。5 TB 空間下即使每份 50 MB 也可保留約 **280 年**，無需手動管理。
+
+---
+
+### 還原步驟（緊急時）
+
+```bash
+# 1. 從雲端下載
+rclone copyto "gdrive:srock_backup_20260427.db.gz" temp_restore.db.gz
+
+# 2. 解壓縮
+python -c "import gzip,shutil; shutil.copyfileobj(gzip.open('temp_restore.db.gz','rb'), open('srock_restore.db','wb'))"
+
+# 3. 備份現有（保險）並替換
+move srock.db srock.db.bak
+move srock_restore.db srock.db
+```
+""")

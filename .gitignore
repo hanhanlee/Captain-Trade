@@ -12,6 +12,7 @@
 *.sqlite3
 
 # Local tools / secrets / runtime state
+# secrets/ 包含 gcp_backup.json（Google Cloud 服務帳號金鑰），絕對不提交
 tools/
 secrets/
 runtime/
