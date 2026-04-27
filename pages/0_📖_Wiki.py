@@ -852,7 +852,17 @@ cd "E:\\workspace\\srock tool"
 python scripts/backup_gdrive.py
 ```
 
-流程完成後，Telegram 系統頻道會收到成功通知；任何步驟失敗時會立即推播完整 traceback。
+流程完成後 Telegram 會收到成功通知，任何步驟失敗時也會立即推播完整錯誤訊息。
+
+### Telegram 推播行為
+
+| 情況 | 推播內容 |
+|------|---------|
+| 備份成功 | `[srock 備份成功] YYYY-MM-DD HH:MM`<br>上傳檔名 + 舊備份已清除 |
+| 備份失敗 | `[srock 備份失敗] YYYY-MM-DD HH:MM`<br>完整 Python traceback（最多 3800 字元）|
+
+> ⚠️ **靜默例外**：`.env` 未設定 `TELEGRAM_BOT_TOKEN` 或任何 chat_id 時，推播會被略過且不報錯。
+> 若某天沒收到 21:30 的通知，請先確認 `.env` 設定是否正確。
 
 ---
 
