@@ -113,6 +113,7 @@ def count_events(
     event_type: str | None = None,
     module: str | None = None,
     stock_id: str | None = None,
+    severity: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> int:
@@ -129,6 +130,9 @@ def count_events(
         if stock_id:
             clauses.append("stock_id = :stock_id")
             params["stock_id"] = stock_id
+        if severity:
+            clauses.append("severity = :severity")
+            params["severity"] = severity
         if date_from:
             clauses.append("created_at >= :date_from")
             params["date_from"] = date_from
