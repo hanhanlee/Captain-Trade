@@ -1758,6 +1758,7 @@ class PrefetchWorker:
 
         self.inst_supplementary_total = max(active_count, 1)
         self.inst_supplementary_done = done_count
+        self._inst_last_checked_at = datetime.now()
 
         if self._hour_count() >= self._current_hourly_limit():
             return
@@ -1939,6 +1940,7 @@ class PrefetchWorker:
 
         self.margin_supplementary_total = max(active_count, 1)
         self.margin_supplementary_done = done_count
+        self._margin_last_checked_at = datetime.now()
 
         if self._hour_count() >= self._current_hourly_limit():
             return
