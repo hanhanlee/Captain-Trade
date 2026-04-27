@@ -844,6 +844,9 @@ gdrive: srock_backup_YYYYMMDD.db.gz
 
 ### 執行方式
 
+備份已整合進排程器，**每週一到週五 21:30 自動執行**，不需手動操作。
+
+若要手動觸發：
 ```bash
 cd "E:\\workspace\\srock tool"
 python scripts/backup_gdrive.py
@@ -885,16 +888,13 @@ TELEGRAM_STOCK_CHAT_ID=...    # 股票頻道 fallback
 
 ---
 
-### 定期排程（Windows 工作排程器）
+### 排程時間
 
-建議每天收盤後自動執行：
+備份已整合進 `scheduler/jobs.py`，**排程器啟動後即自動執行，無需另外設定**。
 
-```
-程式：python
-引數：scripts/backup_gdrive.py
-起始位置：E:\\workspace\\srock tool
-觸發時間：每日 16:30（收盤後）
-```
+| 執行時間 | 說明 |
+|---------|------|
+| 週一至週五 **21:30** | ETF 更新完成後（最晚 21:00）、週五持股分佈（22:00）開始前的最空閒時段 |
 
 ---
 

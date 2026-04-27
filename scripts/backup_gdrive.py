@@ -167,14 +167,14 @@ def run_backup() -> None:
             f"（14 天前舊備份已自動清除）"
         )
         logger.info("=== 備份流程全部完成 ===")
-    except Exception:
+    except Exception as exc:
         tb = traceback.format_exc()
         logger.error("備份失敗:\n%s", tb)
         _notify_error(
             f"[srock 備份失敗] {datetime.now():%Y-%m-%d %H:%M}\n\n{tb[:3800]}"  # Telegram 上限 4096 字元
         )
         _cleanup(TEMP_DB, TEMP_GZ)  # 確保清除殘留暫存
-        sys.exit(1)
+        raise RuntimeError("srock.db 備份失敗") from exc
 
 
 if __name__ == "__main__":
@@ -183,4 +183,7 @@ if __name__ == "__main__":
         format="%(asctime)s  %(levelname)-8s  %(message)s",
         datefmt="%H:%M:%S",
     )
-    run_backup()
+    try:
+        run_backup()
+    except RuntimeError:
+        sys.exit(1)

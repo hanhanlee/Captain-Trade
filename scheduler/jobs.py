@@ -26,6 +26,7 @@ from notifications.telegram_notify import (
     send_scan_results as tg_scan,
 )
 from db.event_log import log_event
+from scripts.backup_gdrive import run_backup as _run_backup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -314,6 +315,24 @@ def job_etf_holdings_update(attempt: int = 1, max_attempts: int = 3, use_today: 
         logger.warning("[ETF持股] 達最大重試次數，放棄：%s", pending)
 
 
+def job_db_backup():
+    """
+    每日 21:30（週一到週五）自動備份 srock.db 至 Google Drive。
+    失敗時 Telegram 已由 run_backup() 內部推播，此處只補記 event_log。
+    """
+    logger.info("開始 DB 備份...")
+    try:
+        _run_backup()
+        log_event("notification_sent", module="scheduler", severity="info",
+                  summary="DB 備份成功並上傳 Google Drive",
+                  payload={"job": "db_backup", "remote": "gdrive:"})
+    except Exception as e:
+        logger.error("DB 備份任務失敗：%s", e)
+        log_event("notification_sent", module="scheduler", severity="warning",
+                  summary=f"DB 備份失敗：{e}",
+                  payload={"job": "db_backup"})
+
+
 def run_scheduler():
     """啟動排程器（blocking，適合獨立程序常駐）"""
     global _scheduler
@@ -396,6 +415,15 @@ def run_scheduler():
         name="ETF持股更新 08:10（防禦補抓）",
     )
 
+    # DB 備份至 Google Drive：週一到週五 21:30
+    # ETF 更新最晚 21:00 結束，週五持股分佈 22:00 開始，此時段最空閒
+    scheduler.add_job(
+        job_db_backup,
+        CronTrigger(day_of_week="mon-fri", hour=21, minute=30, timezone="Asia/Taipei"),
+        id="db_backup",
+        name="DB 備份 Google Drive 21:30",
+    )
+
     logger.info("排程器啟動，等待任務觸發...")
     logger.info("排程時間：")
     logger.info("  盤中分K監控：週一至週五 09:00–13:30（每分鐘）")
@@ -404,6 +432,7 @@ def run_scheduler():
     logger.info("  ETF持股更新：週一至週五 17:30 / 20:00；週二至週六 08:10")
     logger.info("  週績效報告：週五 15:10")
     logger.info("  持股分佈更新：週五 22:00")
+    logger.info("  DB 備份 Google Drive：週一至週五 21:30")
 
     try:
         scheduler.start()
