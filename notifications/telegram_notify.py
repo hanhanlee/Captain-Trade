@@ -7,6 +7,7 @@ Telegram 推播模組
   TELEGRAM_SYSTEM_CHAT_ID=...      ← 系統訊息群組（選填；未設定時 fallback 到 STOCK）
 """
 import os
+import time
 import logging
 import requests
 from dotenv import load_dotenv
@@ -19,17 +20,25 @@ _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 # ── Internal ────────────────────────────────────────────────────
 
-def _post(method: str, token: str, **kwargs) -> dict | None:
+def _post(method: str, token: str, max_retries: int = 3, **kwargs) -> dict | None:
     url = _API_BASE.format(token=token, method=method)
-    try:
-        resp = requests.post(url, json=kwargs, timeout=10)
-        data = resp.json()
-        if not data.get("ok"):
-            logger.warning("Telegram %s error: %s", method, data.get("description"))
-        return data
-    except Exception as e:
-        logger.error("Telegram request failed (%s): %s", method, e)
-        return None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(url, json=kwargs, timeout=10)
+            if resp.status_code == 429:
+                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
+                logger.warning("Telegram 429 rate limit，等待 %s 秒後重試", retry_after)
+                time.sleep(retry_after)
+                continue
+            data = resp.json()
+            if not data.get("ok"):
+                logger.warning("Telegram %s error: %s", method, data.get("description"))
+            return data
+        except Exception as e:
+            logger.error("Telegram request failed (%s): %s", method, e)
+            return None
+    logger.error("Telegram %s 超過最大重試次數（%s）", method, max_retries)
+    return None
 
 
 def _token() -> str:

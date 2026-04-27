@@ -9,6 +9,7 @@
 觸發時推 LINE 群播。同一檔同一條件 60 分鐘內只推一次（in-memory cooldown）。
 """
 import logging
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -176,8 +177,10 @@ def run_intraday_check() -> int:
         lines = [f"📡 盤中警示 {label}（{now_str}）"] + [f"  • {a}" for a in alerts]
         msg = "\n".join(lines)
         send_multicast(msg)
+        time.sleep(1)
         send_stock_alert(msg)
         logger.info(f"盤中警示推播：{label} → {alerts}")
         sent += 1
+        time.sleep(1)
 
     return sent
