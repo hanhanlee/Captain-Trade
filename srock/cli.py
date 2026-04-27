@@ -153,10 +153,13 @@ def _notify_startup_complete(cfg, profile: Profile, funnel: FunnelService) -> No
         if str(ROOT) not in sys.path:
             sys.path.insert(0, str(ROOT))
         from notifications.line_notify import send_multicast
-        if send_multicast(msg):
+        from notifications.telegram_notify import send_system_message as tg_system
+        line_ok = send_multicast(msg)
+        tg_ok = tg_system(msg)
+        if line_ok or tg_ok:
             _ok("已推播服務啟動通知")
         else:
-            _warn("服務已啟動，但 LINE 啟動通知未送出")
+            _warn("服務已啟動，但啟動通知未送出（LINE + Telegram 均失敗）")
     except Exception as e:
         _warn(f"服務已啟動，但 LINE 啟動通知失敗：{e}")
 

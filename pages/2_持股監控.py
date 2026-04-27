@@ -31,6 +31,7 @@ from db.settings import (
     set_intraday_monitor_scheduler_enabled,
 )
 from notifications.line_notify import send_multicast
+from notifications.telegram_notify import send_stock_alert as tg_alert
 
 st.set_page_config(page_title="持股監控", page_icon="💼", layout="wide")
 init_db()
@@ -746,11 +747,12 @@ with tab_monitor:
                 st.write("已檢查：申報轉讓、注意股、官方處置股、官方停止買賣、實施庫藏股、主力券商反手/賣超。")
                 st.caption("大戶/散戶持股分布請至「📆 週報」頁籤查看。每日漲跌停價 price_limit 只是參考價，不列為風險警示。")
 
-        # LINE 推播
+        # 推播
         if notify_btn:
             if not all_alerts:
-                ok = send_multicast("💼 持股監控：所有持股目前無警示")
-                st.toast("已群播：無警示" if ok else "LINE 群播失敗", icon="📲" if ok else "❌")
+                msg = "💼 持股監控：所有持股目前無警示"
+                ok = send_multicast(msg) or tg_alert(msg)
+                st.toast("已推播：無警示" if ok else "推播失敗", icon="📲" if ok else "❌")
             else:
                 lines = ["💼 持股監控警示"]
                 for a in all_alerts[:8]:
@@ -758,8 +760,9 @@ with tab_monitor:
                     lines.append(f"\n{emoji} {a.stock_id} {a.stock_name}")
                     lines.append(f"   {a.reason}")
                     lines.append(f"   現價 {a.current_price:.2f} 元  損益 {a.pnl_pct:+.1f}%")
-                ok = send_multicast("\n".join(lines))
-                st.toast("警示已群播到 LINE" if ok else "LINE 群播失敗", icon="📲" if ok else "❌")
+                msg = "\n".join(lines)
+                ok = send_multicast(msg) or tg_alert(msg)
+                st.toast("警示已推播" if ok else "推播失敗", icon="📲" if ok else "❌")
 
         st.markdown("---")
 

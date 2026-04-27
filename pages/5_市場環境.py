@@ -10,6 +10,7 @@ import time
 from data.finmind_client import get_daily_price, get_institutional_investors
 from modules.indicators import sma, rsi, macd
 from notifications.line_notify import send_multicast
+from notifications.telegram_notify import send_stock_alert as tg_alert
 
 st.set_page_config(page_title="市場環境", page_icon="🌐", layout="wide")
 st.title("🌐 市場環境 & 排程控制")
@@ -186,8 +187,9 @@ with tab_scheduler:
     st.subheader("自訂 LINE 推播測試")
     test_msg = st.text_area("訊息內容", value="台股工具測試訊息", height=80)
     if st.button("發送測試訊息"):
-        ok = send_multicast(test_msg)
-        if ok:
-            st.success("群播成功！")
+        line_ok = send_multicast(test_msg)
+        tg_ok = tg_alert(test_msg)
+        if line_ok or tg_ok:
+            st.success(f"推播成功！{'LINE ✓' if line_ok else ''} {'Telegram ✓' if tg_ok else ''}")
         else:
-            st.error("群播失敗，請確認 LINE Token 與訂閱者設定")
+            st.error("推播失敗，請確認 LINE Token 與 Telegram Bot 設定")
