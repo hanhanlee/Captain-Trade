@@ -72,7 +72,7 @@ def compute_etf_changes(
         "delta":        float,  # curr - prev
         "prev_shares":  int,    # 前次持股股數（無資料時為 0）
         "curr_shares":  int,    # 本次持股股數
-        "delta_shares": int,    # curr_shares - prev_shares
+        "delta_shares": int | None,  # curr_shares - prev_shares；None 表示兩次快照均無股數資料
       }
 
     holdings_df 需包含 date、hold_stock_id、percentage 欄位，date 為 datetime 型別。
@@ -93,8 +93,10 @@ def compute_etf_changes(
             sid: {
                 "status": "new_entry", "etf_id": etf_id,
                 "prev_pct": 0.0, "curr_pct": float(pct), "delta": float(pct),
-                "prev_shares": 0, "curr_shares": int(snap_shares.get(sid, 0)),
-                "delta_shares": int(snap_shares.get(sid, 0)),
+                "prev_shares": 0,
+                "curr_shares": int(snap_shares.get(sid, 0)),
+                # 只有一個快照，前次為 0 無從比較，直接標 None
+                "delta_shares": None,
             }
             for sid, pct in snap_pct.items()
         }
@@ -128,6 +130,13 @@ def compute_etf_changes(
         else:
             status = "unchanged"
 
+        # cs==0 and ps==0 表示兩個快照都沒有股數資料，用 None 標記「無資料」
+        # 與「有資料但 delta=0」的 0 值區分
+        if cs == 0 and ps == 0:
+            delta_s = None
+        else:
+            delta_s = cs - ps
+
         result[sid] = {
             "status":       status,
             "etf_id":       etf_id,
@@ -136,7 +145,7 @@ def compute_etf_changes(
             "delta":        round(delta, 4),
             "prev_shares":  ps,
             "curr_shares":  cs,
-            "delta_shares": cs - ps,
+            "delta_shares": delta_s,
         }
 
     return result
@@ -255,7 +264,7 @@ def build_etf_holdings_table(
                 "status":         chg["status"],
                 "prev_shares":    chg.get("prev_shares", 0),
                 "curr_shares":    chg.get("curr_shares", 0),
-                "delta_shares":   chg.get("delta_shares", 0),
+                "delta_shares":   chg.get("delta_shares"),   # None = 無資料
             })
 
     if not rows:

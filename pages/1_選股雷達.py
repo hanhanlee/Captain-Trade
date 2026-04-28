@@ -2219,25 +2219,76 @@ with tab_etf:
 
     with ctrl_col3:
         force_refresh = st.checkbox("強制重新抓取", value=False, key="etf_tab_force_refresh",
-                                    help="勾選後會從 FinMind 重新下載所有 ETF 持股資料")
+                                    help="勾選後會從各投信官網重新下載最新一筆持股資料")
 
-    # ── 快取資訊 ──────────────────────────────────────────────
-    with st.expander("快取狀態", expanded=False):
+    # ── 快取狀態 + 補抓缺漏日期 ────────────────────────────────
+    with st.expander("快取狀態 / 補抓缺漏日期", expanded=False):
         try:
+            from db.etf_cache import get_cached_dates
+            from modules.etf_scraper import _prev_business_days as _pbd, backfill_etf_holdings
+
+            # 最近 7 個交易日（作為「應有資料」基準）
+            _recent_yyyymmdd = _pbd(7)
+            _recent_iso = [f"{d[:4]}-{d[4:6]}-{d[6:8]}" for d in _recent_yyyymmdd]
+
             cache_rows = []
-            for etf_id in SUPPORTED_ETFS:
-                info = get_cache_info(etf_id)
+            _missing_map: dict[str, list[str]] = {}   # {etf_id: [yyyymmdd, ...]}
+
+            for _etf_id in SUPPORTED_ETFS:
+                _cached = set(get_cached_dates(_etf_id))
+                _missing = [d for d, iso in zip(_recent_yyyymmdd, _recent_iso) if iso not in _cached]
+                _missing_map[_etf_id] = _missing
+                info = get_cache_info(_etf_id)
                 if info:
+                    _miss_label = (
+                        "✓ 完整"
+                        if not _missing
+                        else "、".join(f"{d[4:6]}/{d[6:8]}" for d in _missing)
+                    )
                     cache_rows.append({
-                        "ETF": etf_id,
-                        "最新快照日期": info.get("latest_date", "—"),
+                        "ETF": _etf_id,
+                        "最新快照": info.get("latest_date", "—"),
                         "快照數": info.get("snapshot_count", 0),
                         "最後更新": info.get("updated_at", "—"),
+                        "近7日缺漏": _miss_label,
                     })
                 else:
-                    cache_rows.append({"ETF": etf_id, "最新快照日期": "尚無資料", "快照數": 0, "最後更新": "—"})
+                    _missing_map[_etf_id] = _recent_yyyymmdd   # 全缺
+                    cache_rows.append({
+                        "ETF": _etf_id, "最新快照": "尚無資料", "快照數": 0,
+                        "最後更新": "—", "近7日缺漏": "全部缺漏",
+                    })
+
             if cache_rows:
                 st.dataframe(pd.DataFrame(cache_rows), use_container_width=True, hide_index=True)
+
+            # 統計有缺漏的 ETF
+            _etfs_with_missing = [e for e, ms in _missing_map.items() if ms]
+            if _etfs_with_missing:
+                st.warning(
+                    f"{len(_etfs_with_missing)} 支 ETF 有缺漏日期：{', '.join(_etfs_with_missing)}"
+                )
+                if st.button("補抓缺漏日期", key="etf_backfill_btn"):
+                    # 收集所有缺漏日期的 min/max 當作補抓範圍（skip_existing=True 會略過已有的）
+                    _all_missing_days = sorted({d for ms in _missing_map.values() for d in ms})
+                    if _all_missing_days:
+                        _bf_start, _bf_end = _all_missing_days[0], _all_missing_days[-1]
+                        with st.spinner(f"補抓 {_bf_start[:4]}-{_bf_start[4:6]}-{_bf_start[6:]} ～ {_bf_end[:4]}-{_bf_end[4:6]}-{_bf_end[6:]}…"):
+                            try:
+                                _summary = backfill_etf_holdings(
+                                    etf_ids=_etfs_with_missing,
+                                    start_date=_bf_start,
+                                    end_date=_bf_end,
+                                    skip_existing=True,
+                                )
+                                _total = sum(_summary.values())
+                                st.success(f"補抓完成，共新增 {_total} 筆。明細：{_summary}")
+                                st.rerun()
+                            except Exception as _bf_err:
+                                st.error(f"補抓失敗：{_bf_err}")
+            else:
+                st.success("近 7 個交易日快取完整，無需補抓。")
+
         except Exception as _e:
             st.caption(f"快取資訊讀取失敗：{_e}")
 
@@ -2290,12 +2341,14 @@ with tab_etf:
                     lambda x: f"{x:.2f}" if pd.notna(x) else "—"
                 )
                 df_show["_delta_raw"] = pd.to_numeric(df_show["delta"], errors="coerce").round(2)
-                # 張數格式化：非零才顯示，帶正負號
+                # 張數格式化：None=無資料、0=無變化、其他=帶正負號張數
                 def _fmt_shares(x):
+                    if x is None:
+                        return "N/A"
                     try:
                         v = int(x)
                     except (TypeError, ValueError):
-                        return "—"
+                        return "N/A"
                     if v == 0:
                         return "—"
                     abs_zhang = abs(v) // 1000

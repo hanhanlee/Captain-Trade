@@ -118,6 +118,20 @@ def load_etf_holdings(
     return df
 
 
+def get_cached_dates(etf_id: str, limit: int = 30) -> list[str]:
+    """回傳 ETF 已有快照的日期列表（ISO 格式 YYYY-MM-DD，最近 limit 筆，降冪排列）。"""
+    with get_session() as sess:
+        rows = sess.execute(
+            text("""
+                SELECT DISTINCT date FROM etf_holding_cache
+                WHERE etf_id = :eid
+                ORDER BY date DESC LIMIT :lim
+            """),
+            {"eid": etf_id, "lim": limit},
+        ).fetchall()
+    return [str(r[0])[:10] for r in rows]
+
+
 def get_latest_two_snapshots(etf_id: str) -> tuple[str, str]:
     """
     回傳最近兩個持股快照的日期 (latest, prev)。
