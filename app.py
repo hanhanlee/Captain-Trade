@@ -54,7 +54,7 @@ st.title("📈 台股交易輔助工具")
 st.caption(f"v{__version__}")
 st.markdown("---")
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 with col1:
     st.metric(label="選股雷達", value="已啟用", delta="正常")
@@ -66,6 +66,25 @@ with col4:
     st.metric(label="市場環境", value="已啟用", delta="正常")
 with col5:
     st.metric(label="交易日誌", value="已啟用", delta="正常")
+with col6:
+    try:
+        from broker.shioaji_adapter import get_adapter
+        _broker_ok = get_adapter().is_logged_in()
+    except Exception:
+        _broker_ok = False
+    st.metric(
+        label="Broker API",
+        value="已連線" if _broker_ok else "未連線",
+        delta="正常" if _broker_ok else "前往連線",
+        delta_color="normal" if _broker_ok else "inverse",
+    )
+
+if not _broker_ok:
+    st.warning(
+        "⚠️ **Shioaji 尚未連線**：盤中監控目前使用 FinMind/Yahoo 報價。"
+        "請至 **📡 Broker 市場輔助** 頁面登入以啟用即時報價與漲跌停警示。",
+        icon=None,
+    )
 
 st.markdown("---")
 st.markdown("""

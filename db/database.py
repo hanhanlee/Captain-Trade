@@ -326,6 +326,28 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 etf_holding_cache 表")
 
+        if not _table_exists(conn, "broker_api_events"):
+            conn.execute(text("""
+                CREATE TABLE broker_api_events (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at  TEXT NOT NULL,
+                    broker_name TEXT NOT NULL DEFAULT 'shioaji',
+                    event_type  TEXT NOT NULL,
+                    status      TEXT,
+                    summary     TEXT,
+                    payload_json TEXT
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_broker_api_events_created_at
+                ON broker_api_events (created_at)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_broker_api_events_event_type
+                ON broker_api_events (event_type)
+            """))
+            logger.info("migration: 建立 broker_api_events 表")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

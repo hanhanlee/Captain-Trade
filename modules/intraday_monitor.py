@@ -72,9 +72,13 @@ def _daily_mas(stock_id: str, current_price: float | None = None) -> dict[str, f
         return {}
 
 
-def _check_one(holding: dict) -> tuple[list[str], list[str], float | None]:
+def _check_one(
+    holding: dict,
+    broker_data: dict | None = None,
+) -> tuple[list[str], list[str], float | None]:
     """
     檢查單一持股的盤中警示條件。
+    broker_data 由 run_intraday_check() 批次預取（Shioaji snapshot），有則優先使用。
     回傳 (alerts, keys_to_mark, price)；呼叫端發送成功後才呼叫 _mark()。
     """
     from data.finmind_client import get_kbar_latest, get_realtime_stock_snapshot
@@ -84,12 +88,23 @@ def _check_one(holding: dict) -> tuple[list[str], list[str], float | None]:
     take_profit = holding.get("take_profit")
     cost_price = _to_float(holding.get("cost_price"))
 
-    try:
-        snapshot = get_realtime_stock_snapshot(stock_id)
-        price = _to_float(snapshot.get("close")) if snapshot else None
-    except Exception as e:
-        logger.warning(f"get_realtime_stock_snapshot {stock_id}: {e}")
-        price = None
+    # 優先使用 Shioaji 批次預取的即時報價
+    price: float | None = None
+    limit_up: float | None = None
+    limit_down: float | None = None
+
+    if broker_data:
+        price = _to_float(broker_data.get("last_price"))
+        limit_up = _to_float(broker_data.get("limit_up"))
+        limit_down = _to_float(broker_data.get("limit_down"))
+
+    # Fallback：FinMind → Yahoo
+    if price is None:
+        try:
+            snapshot = get_realtime_stock_snapshot(stock_id)
+            price = _to_float(snapshot.get("close")) if snapshot else None
+        except Exception as e:
+            logger.warning(f"get_realtime_stock_snapshot {stock_id}: {e}")
 
     if price is None:
         try:
@@ -131,6 +146,19 @@ def _check_one(holding: dict) -> tuple[list[str], list[str], float | None]:
         if pnl_pct <= -5 and _cooled_down(stock_id, "unrealized_loss"):
             alerts.append(f"現價 {price:.2f} / 成本 {cost_price:.2f}，未實現虧損 {pnl_pct:.1f}%，建議設定停損")
             keys.append("unrealized_loss")
+
+    # ── Shioaji 加強警示（需要 broker_data 提供漲跌停）─────────────────────
+    if limit_up and price:
+        dist_up_pct = (limit_up - price) / price * 100
+        if dist_up_pct <= 3.0 and _cooled_down(stock_id, "near_limit_up"):
+            alerts.append(f"現價 {price:.2f} 接近漲停 {limit_up:.2f}（距離 {dist_up_pct:.1f}%），不建議追價")
+            keys.append("near_limit_up")
+
+    if limit_down and price:
+        dist_down_pct = (price - limit_down) / price * 100
+        if dist_down_pct <= 5.0 and _cooled_down(stock_id, "near_limit_down"):
+            alerts.append(f"現價 {price:.2f} 接近跌停 {limit_down:.2f}（距離 {dist_down_pct:.1f}%）")
+            keys.append("near_limit_down")
 
     return alerts, keys, price
 
@@ -178,13 +206,27 @@ def run_intraday_check() -> int:
     if not holdings:
         return 0
 
+    # Shioaji 批次預取（一次 API call 取得所有持股的即時報價 + 漲跌停）
+    broker_snapshots: dict[str, dict] = {}
+    try:
+        from broker.shioaji_adapter import get_adapter
+        adapter = get_adapter()
+        if adapter.is_logged_in():
+            all_ids = [str(h["stock_id"]) for h in holdings]
+            broker_snapshots = adapter.get_snapshots(all_ids)
+            if broker_snapshots:
+                logger.info("Shioaji 批次報價：取得 %d 檔", len(broker_snapshots))
+    except Exception as exc:
+        logger.debug("Shioaji batch fetch skipped: %s", exc)
+
     sent = 0
     now_str = datetime.now().strftime("%H:%M")
 
     for h in holdings:
         stock_id = str(h["stock_id"])
         stock_name = h["stock_name"]
-        alerts, keys, price = _check_one(h)
+        broker_data = broker_snapshots.get(stock_id)
+        alerts, keys, price = _check_one(h, broker_data=broker_data)
 
         if price is None:
             log_event("intraday_price_fail", module="intraday_monitor",
