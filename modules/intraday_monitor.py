@@ -11,15 +11,18 @@
 import logging
 import time
 from datetime import datetime, timedelta
+from typing import Optional
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 COOLDOWN_MINUTES = 60
+_SHIOAJI_LOGIN_RETRY_MINUTES = 10   # 登入失敗後至少等幾分鐘再重試
 
 # {stock_id: {condition_key: last_alert_datetime}}
 _cooldown: dict[str, dict[str, datetime]] = {}
+_last_shioaji_login_attempt: Optional[datetime] = None
 
 
 def _yahoo_current_price(stock_id: str) -> float | None:
@@ -75,11 +78,11 @@ def _daily_mas(stock_id: str, current_price: float | None = None) -> dict[str, f
 def _check_one(
     holding: dict,
     broker_data: dict | None = None,
-) -> tuple[list[str], list[str], float | None]:
+) -> tuple[list[str], list[str], float | None, str]:
     """
     檢查單一持股的盤中警示條件。
     broker_data 由 run_intraday_check() 批次預取（Shioaji snapshot），有則優先使用。
-    回傳 (alerts, keys_to_mark, price)；呼叫端發送成功後才呼叫 _mark()。
+    回傳 (alerts, keys_to_mark, price, source)；呼叫端發送成功後才呼叫 _mark()。
     """
     from data.finmind_client import get_kbar_latest, get_realtime_stock_snapshot
 
@@ -90,33 +93,42 @@ def _check_one(
 
     # 優先使用 Shioaji 批次預取的即時報價
     price: float | None = None
+    source: str = ""
     limit_up: float | None = None
     limit_down: float | None = None
 
     if broker_data:
         price = _to_float(broker_data.get("last_price"))
-        limit_up = _to_float(broker_data.get("limit_up"))
-        limit_down = _to_float(broker_data.get("limit_down"))
+        if price is not None:
+            source = "Shioaji"
+            limit_up = _to_float(broker_data.get("limit_up"))
+            limit_down = _to_float(broker_data.get("limit_down"))
 
-    # Fallback：FinMind → Yahoo
+    # Fallback：FinMind 即時快照 → FinMind 分K → Yahoo
     if price is None:
         try:
             snapshot = get_realtime_stock_snapshot(stock_id)
             price = _to_float(snapshot.get("close")) if snapshot else None
+            if price is not None:
+                source = "FinMind 即時"
         except Exception as e:
             logger.warning(f"get_realtime_stock_snapshot {stock_id}: {e}")
 
     if price is None:
         try:
             price = get_kbar_latest(stock_id)
+            if price is not None:
+                source = "FinMind 分K"
         except Exception as e:
             logger.warning(f"get_kbar_latest {stock_id}: {e}")
 
     if price is None:
         price = _yahoo_current_price(stock_id)
+        if price is not None:
+            source = "Yahoo Finance"
 
     if price is None:
-        return [], [], None
+        return [], [], None, ""
 
     mas = _daily_mas(stock_id, current_price=price)
     alerts: list[str] = []
@@ -160,7 +172,7 @@ def _check_one(
             alerts.append(f"現價 {price:.2f} 接近跌停 {limit_down:.2f}（距離 {dist_down_pct:.1f}%）")
             keys.append("near_limit_down")
 
-    return alerts, keys, price
+    return alerts, keys, price, source
 
 
 def _to_float(value) -> float | None:
@@ -211,6 +223,21 @@ def run_intraday_check() -> int:
     try:
         from broker.shioaji_adapter import get_adapter
         adapter = get_adapter()
+
+        # 尚未登入時嘗試自動登入（失敗後等 _SHIOAJI_LOGIN_RETRY_MINUTES 分鐘再重試）
+        if not adapter.is_logged_in():
+            global _last_shioaji_login_attempt
+            now = datetime.now()
+            retry_ok = (
+                _last_shioaji_login_attempt is None
+                or (now - _last_shioaji_login_attempt).total_seconds()
+                >= _SHIOAJI_LOGIN_RETRY_MINUTES * 60
+            )
+            if retry_ok:
+                logger.info("Shioaji 尚未登入，嘗試自動登入…")
+                _last_shioaji_login_attempt = now
+                adapter.login()
+
         if adapter.is_logged_in():
             all_ids = [str(h["stock_id"]) for h in holdings]
             broker_snapshots = adapter.get_snapshots(all_ids)
@@ -226,7 +253,7 @@ def run_intraday_check() -> int:
         stock_id = str(h["stock_id"])
         stock_name = h["stock_name"]
         broker_data = broker_snapshots.get(stock_id)
-        alerts, keys, price = _check_one(h, broker_data=broker_data)
+        alerts, keys, price, source = _check_one(h, broker_data=broker_data)
 
         if price is None:
             log_event("intraday_price_fail", module="intraday_monitor",
@@ -239,6 +266,8 @@ def run_intraday_check() -> int:
 
         label = f"{stock_id} {stock_name}".strip()
         lines = [f"📡 盤中警示 {label}（{now_str}）"] + [f"  • {a}" for a in alerts]
+        if source:
+            lines.append(f"📊 報價來源：{source}")
         msg = "\n".join(lines)
 
         log_event("intraday_alert_triggered", module="intraday_monitor",

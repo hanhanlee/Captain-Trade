@@ -36,6 +36,21 @@ worker = _start_prefetch_worker()
 
 
 @st.cache_resource
+def _auto_login_shioaji():
+    """App 啟動時嘗試自動登入 Shioaji（credentials 來自 .env）。"""
+    try:
+        from broker.shioaji_adapter import get_adapter
+        adapter = get_adapter()
+        if not adapter.is_logged_in():
+            adapter.login()
+    except Exception:
+        pass
+
+
+_auto_login_shioaji()
+
+
+@st.cache_resource
 def _sync_intraday_monitor_scheduler():
     """啟動或停止內建盤中持股監控排程器。"""
     try:
