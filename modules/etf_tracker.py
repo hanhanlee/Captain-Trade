@@ -1,16 +1,18 @@
 """
 ETF 成分股資金流追蹤
 
-核心邏輯：比較 ETF 最近兩次持股快照，偵測：
+核心邏輯：比較 ETF 最近兩次持股快照，偵測五種狀態：
   - 新進持股（new_entry）：前次快照中不存在，本次出現
-  - 權重增加（weight_up）：權重上升超過 threshold
-  - 權重下降（weight_down）：權重下降超過 threshold
+  - 權重增持（weight_up）：權重上升超過 threshold
+  - 權重減持（weight_down）：權重下降超過 threshold
+  - 小幅加碼（shares_up）：權重未達門檻，但股數增加
+  - 小幅減碼（shares_down）：權重未達門檻，但股數減少
   - 遭剔除（ejected）：前次存在，本次消失
 
 所有偵測結果都以 stock_id 為 key，供 scanner.run_scan 注入 ScanSignal。
 
 預設追蹤 ETF（DEFAULT_TRACKED_ETFS）：
-  0050、00981A、00982A、00985A、00991A、00992A、00993A、00995A
+  0050、00981A、00982A、00991A、00992A
 """
 from __future__ import annotations
 
@@ -31,6 +33,28 @@ DEFAULT_TRACKED_ETFS: list[str] = [
 
 # 權重變化視為「有意義」的最小門檻（百分點）
 WEIGHT_CHANGE_THRESHOLD = 0.1
+
+
+def classify_holding_change(weight_delta: float | None, delta_shares: int | None) -> str:
+    """
+    判斷持股變化狀態。優先以權重變化為準，門檻內才看股數。
+
+    回傳 status 字串：
+      weight_up / weight_down / shares_up / shares_down / unchanged
+    （new_entry / ejected 由呼叫端在比對快照時判斷，不在此處處理）
+    """
+    wd = float(weight_delta) if weight_delta is not None else 0.0
+    ds = int(delta_shares)   if delta_shares  is not None else 0
+
+    if wd >= WEIGHT_CHANGE_THRESHOLD:
+        return "weight_up"
+    if wd <= -WEIGHT_CHANGE_THRESHOLD:
+        return "weight_down"
+    if ds > 0:
+        return "shares_up"
+    if ds < 0:
+        return "shares_down"
+    return "unchanged"
 
 
 class EtfStockSignal(TypedDict):
@@ -118,24 +142,14 @@ def compute_etf_changes(
         delta = c - p
         cs = int(curr_shares.get(sid, 0))
         ps = int(prev_shares.get(sid, 0))
+        delta_s = None if (cs == 0 and ps == 0) else cs - ps
 
         if sid not in prev:
             status = "new_entry"
         elif sid not in curr:
             status = "ejected"
-        elif delta >= weight_threshold:
-            status = "weight_up"
-        elif delta <= -weight_threshold:
-            status = "weight_down"
         else:
-            status = "unchanged"
-
-        # cs==0 and ps==0 表示兩個快照都沒有股數資料，用 None 標記「無資料」
-        # 與「有資料但 delta=0」的 0 值區分
-        if cs == 0 and ps == 0:
-            delta_s = None
-        else:
-            delta_s = cs - ps
+            status = classify_holding_change(delta, delta_s)
 
         result[sid] = {
             "status":       status,
@@ -199,17 +213,17 @@ def get_stock_etf_signals(
             if status == "new_entry":
                 sig["new_entry"] = True
                 sig["etfs_new"].append(etf_id)
-            elif status == "weight_up":
+            elif status in ("weight_up", "shares_up"):
                 sig["weight_up"] = True
                 sig["etfs_up"].append(etf_id)
-            elif status == "weight_down":
+            elif status in ("weight_down", "shares_down"):
                 sig["weight_down"] = True
                 sig["etfs_down"].append(etf_id)
             elif status == "ejected":
                 sig["ejected"] = True
                 sig["etfs_ejected"].append(etf_id)
 
-            if status in ("new_entry", "weight_up", "weight_down", "unchanged"):
+            if status in ("new_entry", "weight_up", "shares_up", "weight_down", "shares_down", "unchanged"):
                 if etf_id not in sig["etfs_hold"]:
                     sig["etfs_hold"].append(etf_id)
                 if curr_pct > sig["max_weight"]:
@@ -271,7 +285,7 @@ def build_etf_holdings_table(
         return pd.DataFrame()
 
     df_out = pd.DataFrame(rows)
-    order = {"new_entry": 0, "weight_up": 1, "weight_down": 2, "ejected": 3, "unchanged": 4}
+    order = {"new_entry": 0, "weight_up": 1, "shares_up": 2, "weight_down": 3, "shares_down": 4, "ejected": 5, "unchanged": 6}
     df_out["_sort"] = df_out["status"].map(order).fillna(9)
     return (
         df_out.sort_values(["_sort", "delta"], ascending=[True, False])

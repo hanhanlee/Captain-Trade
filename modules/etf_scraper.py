@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 _YUANTA_ETFS = {"0050", "0056"}
 
 _UNI_ETF_MAP = {
-    "00981A": "61YTW",
+    "00981A": "49YTW",
 }
 
 _CAPITAL_ETF_MAP = {

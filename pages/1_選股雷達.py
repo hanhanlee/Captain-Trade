@@ -2180,14 +2180,16 @@ with tab_history:
 # ══ Tab：ETF 持股追蹤 ═════════════════════════════════════════
 
 _STATUS_LABEL = {
-    "new_entry":   "🟢 新進",
-    "weight_up":   "⬆️ 增持",
-    "weight_down": "⬇️ 減持",
-    "ejected":     "🔴 剔除",
-    "unchanged":   "⬜ 不變",
+    "new_entry":    "🟢 新進",
+    "weight_up":    "⬆️ 權重增持",
+    "shares_up":    "📈 小幅加碼",
+    "weight_down":  "⬇️ 權重減持",
+    "shares_down":  "📉 小幅減碼",
+    "ejected":      "🔴 剔除",
+    "unchanged":    "➖ 無明顯變化",
 }
 
-_STATUS_ORDER = {"new_entry": 0, "weight_up": 1, "weight_down": 2, "ejected": 3, "unchanged": 4}
+_STATUS_ORDER = {"new_entry": 0, "weight_up": 1, "shares_up": 2, "weight_down": 3, "shares_down": 4, "ejected": 5, "unchanged": 6}
 
 with tab_etf:
     from modules.etf_tracker import DEFAULT_TRACKED_ETFS, build_etf_holdings_table
@@ -2211,8 +2213,8 @@ with tab_etf:
     with ctrl_col2:
         status_filter = st.multiselect(
             "狀態篩選",
-            options=["new_entry", "weight_up", "weight_down", "ejected", "unchanged"],
-            default=["new_entry", "weight_up", "weight_down", "ejected"],
+            options=["new_entry", "weight_up", "shares_up", "weight_down", "shares_down", "ejected", "unchanged"],
+            default=["new_entry", "weight_up", "shares_up", "weight_down", "shares_down", "ejected"],
             format_func=lambda s: _STATUS_LABEL.get(s, s),
             key="etf_tab_status_filter",
         )
@@ -2324,6 +2326,39 @@ with tab_etf:
             summary_cols[1].metric("⬆️ 增持", counts.get("weight_up", 0))
             summary_cols[2].metric("⬇️ 減持", counts.get("weight_down", 0))
             summary_cols[3].metric("🔴 剔除", counts.get("ejected", 0))
+
+            # ── 各 ETF 快照日期標註 ──────────────────────────────
+            try:
+                from db.etf_cache import get_cached_dates as _gcd
+                _snap_infos = []
+                _all_latest = []
+                for _eid in selected_etfs:
+                    _dates = _gcd(_eid, limit=2)
+                    if len(_dates) >= 2:
+                        _all_latest.append(_dates[0])
+                        _snap_infos.append((_eid, _dates[0], _dates[1]))
+                    elif len(_dates) == 1:
+                        _all_latest.append(_dates[0])
+                        _snap_infos.append((_eid, _dates[0], None))
+                if _snap_infos and _all_latest:
+                    _newest = max(_all_latest)
+                    _parts = []
+                    _delayed = []
+                    for _eid, _cur, _prv in _snap_infos:
+                        _lag = "⚠ 慢一天" if _cur < _newest else ""
+                        _prv_str = f"vs {_prv}" if _prv else "僅一筆"
+                        _parts.append(f"**{_eid}** {_cur} ({_prv_str}){' — ' + _lag if _lag else ''}")
+                        if _lag:
+                            _delayed.append(_eid)
+                    st.caption("快照比較基準：" + "　|　".join(_parts))
+                    if _delayed:
+                        st.info(
+                            f"{'、'.join(_delayed)} 為群益投信 ETF，官網 PCF 資料通常比其他投信**晚一個交易日更新**，"
+                            "目前顯示的是前一交易日資料，請留意。",
+                            icon="⏰",
+                        )
+            except Exception:
+                pass
 
             st.markdown("---")
 
