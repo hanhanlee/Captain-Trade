@@ -12,6 +12,8 @@ from datetime import datetime, time as dtime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from scheduler._guards import is_today_trading_day
+
 logger = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
@@ -26,6 +28,11 @@ def _job_intraday_monitor(*, ignore_cutoff: bool = False) -> None:
 
     now = datetime.now()
     if not ignore_cutoff and now.time() > dtime(13, 30):
+        return
+
+    # 國定假日（如勞動節）也會落在週一到週五，cron 的 mon-fri 過濾不了，
+    # 必須再用台股交易日曆守門。手動測試（ignore_cutoff=True）由使用者自負其責。
+    if not ignore_cutoff and not is_today_trading_day():
         return
 
     _last_run_at = now

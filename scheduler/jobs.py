@@ -26,6 +26,7 @@ from notifications.telegram_notify import (
     send_scan_results as tg_scan,
 )
 from db.event_log import log_event
+from scheduler._guards import is_today_trading_day, skip_if_not_trading_day
 from scripts.backup_gdrive import run_backup as _run_backup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 _scheduler = None
 
 
+@skip_if_not_trading_day
 def job_daily_scan(top_n: int = 5, scan_count: int = 200):
     """
     盤後選股掃描任務（預設掃描前 200 檔）
@@ -82,6 +84,7 @@ def job_daily_scan(top_n: int = 5, scan_count: int = 200):
         tg_alert(f"⚠️ 選股掃描失敗：{e}")
 
 
+@skip_if_not_trading_day
 def job_portfolio_check():
     """
     持股警示任務
@@ -141,6 +144,7 @@ def job_portfolio_check():
         logger.error(f"持股警示任務失敗：{e}")
 
 
+@skip_if_not_trading_day
 def job_intraday_monitor():
     """
     盤中持股監控任務
@@ -238,6 +242,12 @@ def job_etf_holdings_update(attempt: int = 1, max_attempts: int = 3, use_today: 
     """
     from modules.etf_scraper import fetch_etf_holdings, SUPPORTED_ETFS, last_trading_day
     from db.etf_cache import save_etf_holdings, load_etf_holdings
+
+    # use_today=True 代表抓「今日」快照；今日非交易日時直接跳過。
+    # use_today=False 是補抓「前一交易日」，今日是不是交易日不影響其目的，故不擋。
+    if use_today and not is_today_trading_day():
+        logger.info("[ETF持股] 今日非台股交易日，跳過 use_today=True 的更新")
+        return
 
     target_yyyymmdd = last_trading_day(use_today=use_today)
     target_iso = f"{target_yyyymmdd[:4]}-{target_yyyymmdd[4:6]}-{target_yyyymmdd[6:]}"
