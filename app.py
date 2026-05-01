@@ -6,6 +6,7 @@ import streamlit as st
 from db.database import init_db
 from modules.auth import require_login
 from version import __version__
+from scheduler._backup_lock import read_lock
 
 
 st.set_page_config(
@@ -16,6 +17,49 @@ st.set_page_config(
 )
 
 require_login()
+
+
+# ── 備份運行警示（必須在 init_db 之前；備份期間 srock.db 被 VACUUM 鎖住） ──
+def _render_backup_warning() -> None:
+    """
+    讀 runtime/backup.lock 顯示醒目警示。
+    備份期間任何寫入 DB 的操作（手動補抓、批次掃描、寫快取）會被 VACUUM
+    擋住最多 120 秒（busy_timeout）才放棄；讀取不受影響。
+    任務結束時 backup_gdrive.py 會刪除 lock 檔，下次頁面 rerun 時警示自動消失。
+    """
+    info = read_lock()
+    if info is None:
+        return
+    started_at = info.get("started_at", "未知")
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(90deg, #b91c1c 0%, #dc2626 100%);
+            color: #ffffff;
+            padding: 18px 24px;
+            border-radius: 10px;
+            border-left: 8px solid #fbbf24;
+            font-size: 17px;
+            font-weight: 700;
+            margin: 0 0 18px 0;
+            box-shadow: 0 4px 12px rgba(220, 38, 38, 0.35);
+            line-height: 1.5;
+        ">
+        📦 系統正在備份資料庫（VACUUM INTO + gzip + 上傳 Google Drive）
+        <div style="font-size: 14px; font-weight: 400; margin-top: 8px; color: #fef3c7;">
+        ⚠️ 此期間 <b>不要</b> 執行：手動補抓持股 / 批次選股 / 寫入快取等任何 <b>寫入 DB</b> 的操作（讀取頁面不受影響）。<br>
+        備份預計耗時 3–5 分鐘，結束後此提示會自動消失。<br>
+        <span style="opacity: 0.85;">開始時間：{started_at}　｜　PID：{info.get("pid", "?")}</span>
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("🔄 我已等候 5 分鐘，重新檢查狀態", key="_backup_lock_recheck"):
+        st.rerun()
+
+
+_render_backup_warning()
 
 # 資料庫初始化
 init_db()

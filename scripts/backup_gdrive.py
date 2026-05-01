@@ -31,6 +31,13 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+# 確保 scheduler/db 等專案模組可被 import（直接執行 python scripts/backup_gdrive.py 時）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from scheduler._backup_lock import acquire_lock, release_lock
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -89,6 +96,27 @@ def _notify(msg: str) -> None:
 
 def _notify_error(msg: str) -> None:
     _notify(msg)
+
+
+def _log_event_safe(severity: str, summary: str, payload: dict | None = None) -> None:
+    """
+    寫入 event_log；任何失敗都吞掉，不影響備份流程。
+
+    刻意延後 import：
+      - 避免和 scheduler/jobs.py 的 import 形成循環
+      - 部分執行情境（單純測試 rclone）可能沒有 DB
+    """
+    try:
+        from db.event_log import log_event
+        log_event(
+            event_type="db_backup",
+            module="backup_gdrive",
+            severity=severity,
+            summary=summary,
+            payload=payload or {},
+        )
+    except Exception as exc:
+        logger.warning("event_log 寫入失敗（severity=%s）：%s", severity, exc)
 
 
 # ── 暫存清理 ───────────────────────────────────────────────────────
@@ -228,9 +256,19 @@ def list_remote_backups() -> list[str]:
 # ── 主流程 ─────────────────────────────────────────────────────────
 
 def run_backup() -> None:
-    logger.info("=== srock.db 備份開始 [%s] ===", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    started_at = datetime.now()
+    logger.info("=== srock.db 備份開始 [%s] ===", started_at.strftime("%Y-%m-%d %H:%M:%S"))
 
     src_size_mb = DB_PATH.stat().st_size / 1024 / 1024 if DB_PATH.exists() else 0.0
+
+    # ── 建立 lock（給 Streamlit UI 顯示警示用）+ 寫入「開始」事件 ──
+    # event_log 寫入 srock.db；必須在 VACUUM INTO 之前，否則會卡 SHARED lock
+    acquire_lock()
+    _log_event_safe(
+        severity="info",
+        summary="DB 備份開始（VACUUM INTO + gzip + 上傳 Google Drive）",
+        payload={"phase": "started", "src_db_mb": round(src_size_mb, 1)},
+    )
 
     try:
         step_preflight_remote()
@@ -245,6 +283,7 @@ def run_backup() -> None:
         step_delete_old_backups()
         remote_files = list_remote_backups()
 
+        elapsed_sec = int((datetime.now() - started_at).total_seconds())
         msg_lines = [
             f"[srock 備份成功] {datetime.now():%Y-%m-%d %H:%M}",
             f"srock_backup_{datetime.now():%Y%m%d}.db.gz 已上傳至 gdrive:",
@@ -252,9 +291,23 @@ def run_backup() -> None:
             f"原始 DB：{src_size_mb:.1f} MB",
             f"VACUUM 後：{vacuum_size_mb:.1f} MB",
             f"gzip 壓縮：{gz_size_mb:.1f} MB",
+            f"耗時：{elapsed_sec // 60} 分 {elapsed_sec % 60} 秒",
             f"雲端目前保留：{len(remote_files)} 份（>{RETENTION_DAYS} 天自動清除）",
         ]
         _notify("\n".join(msg_lines))
+        # VACUUM 已結束，可以安全寫 event_log
+        _log_event_safe(
+            severity="info",
+            summary=f"DB 備份成功（{src_size_mb:.0f}MB → {gz_size_mb:.0f}MB，{elapsed_sec}s）",
+            payload={
+                "phase": "finished",
+                "src_db_mb": round(src_size_mb, 1),
+                "vacuum_mb": round(vacuum_size_mb, 1),
+                "gz_mb": round(gz_size_mb, 1),
+                "elapsed_sec": elapsed_sec,
+                "remote_count": len(remote_files),
+            },
+        )
         logger.info("=== 備份流程全部完成（雲端共 %d 份） ===", len(remote_files))
     except Exception as exc:
         tb = traceback.format_exc()
@@ -263,7 +316,16 @@ def run_backup() -> None:
             f"[srock 備份失敗] {datetime.now():%Y-%m-%d %H:%M}\n\n{tb[:3800]}"
         )
         _cleanup(TEMP_DB, TEMP_GZ)
+        # 失敗時 srock.db 鎖應已釋放（VACUUM 結束/未開始），event_log 可寫
+        _log_event_safe(
+            severity="warning",
+            summary=f"DB 備份失敗：{exc}",
+            payload={"phase": "failed", "error": str(exc)[:500]},
+        )
         raise RuntimeError("srock.db 備份失敗") from exc
+    finally:
+        # 不論成功失敗，一律釋放 lock — 否則 UI 會永遠掛著警示
+        release_lock()
 
 
 if __name__ == "__main__":

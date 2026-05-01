@@ -327,20 +327,16 @@ def job_etf_holdings_update(attempt: int = 1, max_attempts: int = 3, use_today: 
 
 def job_db_backup():
     """
-    每日 21:30（週一到週五）自動備份 srock.db 至 Google Drive。
-    失敗時 Telegram 已由 run_backup() 內部推播，此處只補記 event_log。
+    每日 06:50（週一到週五）自動備份 srock.db 至 Google Drive。
+    開始/結束/失敗的 event_log 與 file lock 都由 run_backup() 內部處理。
+    Telegram 推播也由 run_backup() 處理。
     """
     logger.info("開始 DB 備份...")
     try:
         _run_backup()
-        log_event("notification_sent", module="scheduler", severity="info",
-                  summary="DB 備份成功並上傳 Google Drive",
-                  payload={"job": "db_backup", "remote": "gdrive:"})
     except Exception as e:
+        # run_backup() 已經處理 Telegram、event_log、lock 釋放
         logger.error("DB 備份任務失敗：%s", e)
-        log_event("notification_sent", module="scheduler", severity="warning",
-                  summary=f"DB 備份失敗：{e}",
-                  payload={"job": "db_backup"})
 
 
 def run_scheduler():
@@ -425,13 +421,15 @@ def run_scheduler():
         name="ETF持股更新 08:10（防禦補抓）",
     )
 
-    # DB 備份至 Google Drive：週一到週五 21:30
-    # ETF 更新最晚 21:00 結束，週五持股分佈 22:00 開始，此時段最空閒
+    # DB 備份至 Google Drive：週一到週五 06:50
+    # 機器約 06:30 開機，6:50 開始備份 → 約 06:54 結束 → 09:00 開盤前完成。
+    # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響），
+    # 此時段非交易時間，影響最小。
     scheduler.add_job(
         job_db_backup,
-        CronTrigger(day_of_week="mon-fri", hour=21, minute=30, timezone="Asia/Taipei"),
+        CronTrigger(day_of_week="mon-fri", hour=6, minute=50, timezone="Asia/Taipei"),
         id="db_backup",
-        name="DB 備份 Google Drive 21:30",
+        name="DB 備份 Google Drive 06:50",
     )
 
     logger.info("排程器啟動，等待任務觸發...")
@@ -442,7 +440,7 @@ def run_scheduler():
     logger.info("  ETF持股更新：週一至週五 17:30 / 20:00；週二至週六 08:10")
     logger.info("  週績效報告：週五 15:10")
     logger.info("  持股分佈更新：週五 22:00")
-    logger.info("  DB 備份 Google Drive：週一至週五 21:30")
+    logger.info("  DB 備份 Google Drive：週一至週五 06:50")
 
     try:
         scheduler.start()
