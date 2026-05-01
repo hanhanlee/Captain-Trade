@@ -828,28 +828,32 @@ with tabs[8]:
     st.header("☁️ 備份與維運")
     st.markdown("""
 `srock.db` 是本工具的唯一資料來源，儲存所有持股、交易日誌、快取與設定。
-自動備份腳本會每日將資料庫加密壓縮後上傳至 Google Drive，並自動清除 14 天前的舊備份。
+自動備份腳本每日將資料庫經 VACUUM 瘦身、gzip 壓縮後上傳至 Google Drive，並自動清除 30 天前的舊備份。
 
 ---
 
 ### 備份架構
 
 ```
+（preflight）rclone lsd gdrive:    確認 OAuth token 有效，失敗立刻 abort
+  │
 srock.db
-  │  sqlite3.backup()（WAL 安全複製）
+  │  VACUUM INTO（SQLite 引擎層 defrag、WAL 安全、不卡背景 Worker）
   ▼
 temp_backup.db
   │  gzip 壓縮（level 6）
   ▼
 temp_backup.db.gz
-  │  rclone copyto（上傳）
+  │  rclone copyto（subprocess list 傳參，路徑含空格安全）
   ▼
 gdrive: srock_backup_YYYYMMDD.db.gz
   │
   ├─ 上傳驗證：rclone ls 確認存在
-  ├─ 刪除本機暫存
-  └─ rclone delete --min-age 14d（清舊備份）
+  ├─ 刪除本機暫存（temp_backup.db.gz）
+  └─ rclone delete --min-age 30d（限定 srock_backup_*.db.gz pattern，不誤刪其他檔）
 ```
+
+> **為何不用 `sqlite3.backup()` 或 `shutil.copy`**：背景 Worker 對 srock.db 隨時在大量寫入，WAL 檔很大；`sqlite3.backup()` pages=100 會反覆讓鎖；`shutil.copy` 完全不安全會拷到半成品。`VACUUM INTO` 直接在 SQLite 引擎層執行，順帶 defrag，2GB DB 通常縮到 1GB 以下。
 
 ---
 
@@ -881,18 +885,35 @@ python scripts/backup_gdrive.py
 
 | 項目 | 說明 |
 |------|------|
-| Remote 名稱 | `gdrive`（固定，腳本寫死）|
-| 綁定資料夾 | Rclone 設定時指定的 Google Drive 資料夾 |
-| 服務帳號金鑰 | `secrets/gcp_backup.json`（**已列入 .gitignore，絕對不提交**）|
+| Remote 名稱 | `gdrive`（固定，腳本寫死，不要改名）|
+| 授權方式 | **OAuth 個人帳號**（綁定 5TB 個人 Drive）|
+| 綁定資料夾 | `root_folder_id` 指定的個人 Drive 子資料夾 |
 
-> ⚠️ **重要**：`secrets/gcp_backup.json` 是 Google Cloud 服務帳號金鑰，
-> 遺失或洩漏須立即到 GCP Console 停用該金鑰並重新生成。
-> 本機路徑：`E:\\workspace\\srock tool\\secrets\\gcp_backup.json`
+> ⚠️ **不要用 Service Account**：SA 沒有個人 Drive 配額，上傳會 403 storageQuotaExceeded。
+> 過去殘留的 `secrets/gcp_backup.json` 已不再使用，可手動刪除（檔案已列入 `.gitignore`）。
 
-設定 Rclone 使用服務帳號（若使用 OAuth 則略過此步）：
+#### OAuth 設定步驟
+
 ```bash
+rclone config delete gdrive   # 清掉舊的 SA 設定
 rclone config
-# 選 Google Drive → 選 service_account_file → 填入 secrets/gcp_backup.json 的完整路徑
+# n (New remote)
+# name: gdrive
+# storage type: drive (Google Drive)
+# client_id: 留空（用 rclone 預設 OAuth client）
+# client_secret: 留空
+# scope: 1 (drive — 完整存取)
+# service_account_file: 留空 ← 切換 OAuth 的關鍵
+# root_folder_id: 貼個人 Drive 中 srock_backups 資料夾的 ID
+# advanced config: n
+# auto config: y → 瀏覽器登入個人 Google 帳號
+# team drive: n
+```
+
+完成後驗證：
+```bash
+rclone config show gdrive       # 應該有 token 那行、沒有 service_account_file
+rclone lsd gdrive:              # 列出資料夾即代表 OK
 ```
 
 ---
@@ -928,7 +949,9 @@ srock_backup_20260427.db.gz
              ↑ YYYYMMDD，每日一份
 ```
 
-保留最近 **14 天**，舊於 14 天的自動刪除。5 TB 空間下即使每份 50 MB 也可保留約 **280 年**，無需手動管理。
+保留最近 **30 天**，舊於 30 天的自動刪除。5 TB 空間下即使每份 250 MB 也可保留 **600 年以上**，無需手動管理。
+
+成功推播會包含**原始 DB 大小、VACUUM 後大小、gzip 壓縮後大小、雲端目前份數**，方便監控資料庫膨脹趨勢。
 
 ---
 
