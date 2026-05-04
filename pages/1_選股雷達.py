@@ -856,16 +856,16 @@ with st.sidebar:
                            help="0 = 不限制；60 以上 = 強勢股")
         st.markdown("**📡 法人新動向（加分訊號篩選）**")
         require_new_rank_foreign = st.checkbox(
-            "只顯示「外資佔比新上榜」", value=False, key="sb_require_new_rank_foreign",
-            help="過去 10 個交易日未進全市場外資買超佔比前 10 名，今日首次進榜",
+            "優先顯示「外資佔比新上榜」", value=False, key="sb_require_new_rank_foreign",
+            help="過去 10 個交易日未進全市場外資買超佔比前 10 名，今日首次進榜（加分排序，不過濾）",
         )
         require_new_rank_trust = st.checkbox(
-            "只顯示「投信佔比新上榜」", value=False, key="sb_require_new_rank_trust",
-            help="過去 10 個交易日未進全市場投信買超佔比前 10 名，今日首次進榜",
+            "優先顯示「投信佔比新上榜」", value=False, key="sb_require_new_rank_trust",
+            help="過去 10 個交易日未進全市場投信買超佔比前 10 名，今日首次進榜（加分排序，不過濾）",
         )
         require_inst_volume_surge = st.checkbox(
-            "只顯示「法人爆量 ≥ 10%」", value=False, key="sb_require_inst_volume_surge",
-            help="外資 + 投信今日淨買超合計 ÷ 今日成交量 ≥ 10%",
+            "優先顯示「法人爆量 ≥ 10%」", value=False, key="sb_require_inst_volume_surge",
+            help="外資 + 投信今日淨買超合計 ÷ 今日成交量 ≥ 10%（加分排序，不過濾）",
         )
         st.markdown("**🌡️ 過熱股防護**")
         overheat_atr_mult = st.slider(
@@ -1432,24 +1432,22 @@ with tab_scan:
                 result_df = result_df[result_df["signals"].str.contains("週線多頭", na=False)]
             if min_rs > 0:
                 result_df = result_df[result_df["rs_score"] >= min_rs]
+            _bonus_signals = []
             if require_new_rank_foreign:
-                before = len(result_df)
-                result_df = result_df[result_df["signals"].str.contains("外資佔比新上榜", na=False)]
-                filtered = before - len(result_df)
-                if filtered > 0:
-                    st.info(f"外資佔比新上榜篩選：已過濾 **{filtered}** 檔未符合")
+                _bonus_signals.append("外資佔比新上榜")
             if require_new_rank_trust:
-                before = len(result_df)
-                result_df = result_df[result_df["signals"].str.contains("投信佔比新上榜", na=False)]
-                filtered = before - len(result_df)
-                if filtered > 0:
-                    st.info(f"投信佔比新上榜篩選：已過濾 **{filtered}** 檔未符合")
+                _bonus_signals.append("投信佔比新上榜")
             if require_inst_volume_surge:
-                before = len(result_df)
-                result_df = result_df[result_df["signals"].str.contains("法人爆量≥10%", na=False)]
-                filtered = before - len(result_df)
-                if filtered > 0:
-                    st.info(f"法人爆量篩選：已過濾 **{filtered}** 檔未符合")
+                _bonus_signals.append("法人爆量≥10%")
+            if _bonus_signals:
+                _pattern = "|".join(_bonus_signals)
+                _has_bonus = result_df["signals"].str.contains(_pattern, na=False)
+                _matched = _has_bonus.sum()
+                result_df = pd.concat([
+                    result_df[_has_bonus],
+                    result_df[~_has_bonus],
+                ]).reset_index(drop=True)
+                st.info(f"法人新動向加分排序：**{_matched}** 檔符合（{'、'.join(_bonus_signals)}）已置頂，其餘 {len(result_df) - _matched} 檔仍顯示")
             if require_institutional and use_inst:
                 before = len(result_df)
                 result_df = result_df[result_df["inst_pass"]]
