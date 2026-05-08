@@ -96,6 +96,7 @@ def _check_one(
     source: str = ""
     limit_up: float | None = None
     limit_down: float | None = None
+    reference_price: float | None = None
 
     if broker_data:
         price = _to_float(broker_data.get("last_price"))
@@ -103,6 +104,7 @@ def _check_one(
             source = "Shioaji"
             limit_up = _to_float(broker_data.get("limit_up"))
             limit_down = _to_float(broker_data.get("limit_down"))
+            reference_price = _to_float(broker_data.get("reference_price"))
 
     # Fallback：FinMind 即時快照 → FinMind 分K → Yahoo
     if price is None:
@@ -161,14 +163,27 @@ def _check_one(
 
     # ── Shioaji 加強警示（需要 broker_data 提供漲跌停）─────────────────────
     if limit_up and price:
+        limit_up_suspect = False
+        if reference_price and reference_price > 0:
+            expected = reference_price * 1.10
+            if abs(limit_up - expected) / expected > 0.01:
+                limit_up_suspect = True
+                logger.warning(
+                    f"{stock_id} limit_up 資料可疑：limit_up={limit_up}, "
+                    f"reference={reference_price}, expected≈{expected:.2f}"
+                )
+
         dist_up_pct = (limit_up - price) / price * 100
         if dist_up_pct <= 3.0 and _cooled_down(stock_id, "near_limit_up"):
-            alerts.append(f"現價 {price:.2f} 接近漲停 {limit_up:.2f}（距離 {dist_up_pct:.1f}%），不建議追價")
+            msg = f"現價 {price:.2f} 接近漲停 {limit_up:.2f}（距離 {dist_up_pct:.1f}%），不建議追價"
+            if limit_up_suspect:
+                msg += "，目前漲停價資料可能有誤，請再人工確認"
+            alerts.append(msg)
             keys.append("near_limit_up")
 
     if limit_down and price:
         dist_down_pct = (price - limit_down) / price * 100
-        if dist_down_pct <= 5.0 and _cooled_down(stock_id, "near_limit_down"):
+        if 0 <= dist_down_pct <= 5.0 and _cooled_down(stock_id, "near_limit_down"):
             alerts.append(f"現價 {price:.2f} 接近跌停 {limit_down:.2f}（距離 {dist_down_pct:.1f}%）")
             keys.append("near_limit_down")
 
