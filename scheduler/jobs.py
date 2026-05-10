@@ -339,6 +339,44 @@ def job_db_backup():
         logger.error("DB 備份任務失敗：%s", e)
 
 
+@skip_if_not_trading_day
+def job_n_pattern_watchlist_build():
+    """
+    每日開盤前 08:50 重建盤中 N 字底候選清單。
+    結果寫入 db.n_pattern_watchlist，由 P2 盤中突破檢查使用。
+    建構完成後推一則 Telegram 摘要，方便使用者確認名單規模。
+    """
+    logger.info("開始建構 N 字底 watchlist...")
+    try:
+        from modules.n_pattern_watchlist_builder import build_watchlist
+        stats = build_watchlist()
+        msg = (
+            f"📋 盤中 N 字底候選清單建構完成\n"
+            f"  掃描 {stats['scanned']} 檔｜命中 {stats['hits']} 檔\n"
+            f"  actionable {stats['written']} 檔（C 太舊 {stats['skipped_old_c']}、"
+            f"距B太遠 {stats['skipped_far']}、已遠突破 {stats['skipped_already_broken']}）"
+        )
+        tg_alert(msg)
+        log_event(
+            "n_pattern_watchlist_built",
+            module="scheduler",
+            severity="info",
+            summary=msg,
+            payload=stats,
+        )
+        logger.info("N 字底 watchlist 完成：%s", stats)
+    except Exception as e:
+        err = f"⚠️ N 字底 watchlist 建構失敗：{e}"
+        tg_alert(err)
+        logger.exception("N 字底 watchlist 建構失敗")
+        log_event(
+            "n_pattern_watchlist_failed",
+            module="scheduler",
+            severity="error",
+            summary=err,
+        )
+
+
 def run_scheduler():
     """啟動排程器（blocking，適合獨立程序常駐）"""
     global _scheduler
@@ -419,6 +457,14 @@ def run_scheduler():
         kwargs={"attempt": 1, "max_attempts": 2, "use_today": False},
         id="etf_holdings_0810",
         name="ETF持股更新 08:10（防禦補抓）",
+    )
+
+    # 盤中 N 字底候選清單建構：週一到週五 08:00（開盤前 1 小時，留時間人工審視名單）
+    scheduler.add_job(
+        job_n_pattern_watchlist_build,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=0, timezone="Asia/Taipei"),
+        id="n_pattern_watchlist",
+        name="盤中 N 字底候選清單建構",
     )
 
     # DB 備份至 Google Drive：週一到週五 06:50

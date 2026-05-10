@@ -20,6 +20,8 @@ _scheduler: BackgroundScheduler | None = None
 _last_run_at: datetime | None = None
 _last_sent_count: int = 0
 _last_error: str = ""
+_last_n_pattern_sent: int = 0
+_last_n_pattern_error: str = ""
 
 
 def _job_intraday_monitor(*, ignore_cutoff: bool = False) -> None:
@@ -47,6 +49,20 @@ def _job_intraday_monitor(*, ignore_cutoff: bool = False) -> None:
     except Exception as exc:
         _last_error = str(exc)
         logger.exception("內建盤中持股監控失敗")
+
+    # 同一輪順帶跑 N 字底突破檢查（共用 Shioaji 連線、共用排程節奏）
+    global _last_n_pattern_sent, _last_n_pattern_error
+    try:
+        from modules.intraday_n_pattern import run_n_pattern_check
+
+        n_sent = int(run_n_pattern_check() or 0)
+        _last_n_pattern_sent = n_sent
+        _last_n_pattern_error = ""
+        if n_sent:
+            logger.info("盤中 N 字底突破：推播 %s 則", n_sent)
+    except Exception as exc:
+        _last_n_pattern_error = str(exc)
+        logger.exception("盤中 N 字底突破檢查失敗")
 
 
 def start_intraday_scheduler() -> bool:
@@ -118,5 +134,7 @@ def status() -> dict:
         "last_run_at": _last_run_at,
         "last_sent_count": _last_sent_count,
         "last_error": _last_error,
+        "last_n_pattern_sent": _last_n_pattern_sent,
+        "last_n_pattern_error": _last_n_pattern_error,
         "next_run_time": next_run,
     }

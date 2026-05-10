@@ -364,3 +364,38 @@ class EventLog(Base):
     severity     = Column(String(10), default="info")   # info / warning / danger
     summary      = Column(Text)
     payload_json = Column(Text)                         # 詳細 JSON，策略快照放這
+
+
+class NPatternWatchlist(Base):
+    """
+    盤中 N 字底候選清單（每日早盤 8:50 重建）
+
+    用途：盤前掃描全市場（指定產業）日 K 找出已成形 A→B→C 的股票，
+    盤中只需對名單檢查即時價是否突破 B（D 點），即可推 Telegram 警示。
+    """
+    __tablename__ = "n_pattern_watchlist"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "scan_date", name="uq_n_pattern_stock_date"),
+        Index("idx_n_pattern_scan_date", "scan_date"),
+    )
+
+    id                  = Column(Integer, primary_key=True)
+    scan_date           = Column(Date, nullable=False)         # 候選清單建立日期（通常 = 當日）
+    stock_id            = Column(String(10), nullable=False)
+    stock_name          = Column(String(50))
+    industry            = Column(String(50))                   # 產業分類
+    a_date              = Column(Date)
+    a_price             = Column(Float)
+    b_date              = Column(Date)
+    b_price             = Column(Float, nullable=False)        # 突破目標價（D > B）
+    c_date              = Column(Date)
+    c_price             = Column(Float)
+    b_rise_pct          = Column(Float)                        # B 對 A 漲幅 %
+    c_retrace_pct       = Column(Float)                        # C 從 B 回測 %
+    vol_a_to_b_increase = Column(Boolean)                      # A→B 量增？
+    vol_b_to_c_decrease = Column(Boolean)                      # B→C 量縮？
+    avg_volume_b_to_c   = Column(Float)                        # B→C 平均量（盤中算突破量倍數的基準）
+    last_close          = Column(Float)                        # 建表當下最新收盤
+    distance_to_b_pct   = Column(Float)                        # 現價距 B 還差 %（負值=已突破）
+    alerted_today       = Column(Boolean, default=False)       # 今日是否已推播
+    created_at          = Column(DateTime, default=datetime.now)
