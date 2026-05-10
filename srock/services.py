@@ -346,6 +346,95 @@ class FunnelService:
         return None
 
 
+# ── Scheduler (APScheduler 常駐) ────────────────────────────────
+
+class SchedulerService:
+    """
+    包住 ``python -m scheduler.jobs``：盤後選股、持股警示、週報、
+    ETF 持股更新、N 字底 watchlist 建構、06:50 DB 備份等所有 cron 排程。
+
+    為什麼要當作 service 包進 srock：
+    - 開機自動啟動 (srock up) 才能保證每天 06:50 備份真的有跑
+    - pid file 讓 status / watchdog / down 可以一致管理
+    - Streamlit 內嵌的 intraday_service 只是替代品，不含備份等其他 job
+    """
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+
+    @property
+    def name(self) -> str:
+        return "Scheduler"
+
+    def _running_pid(self) -> int | None:
+        import psutil as _psutil
+        pid_file = self.cfg.scheduler_pid_file
+        if not pid_file.exists():
+            return None
+        try:
+            pid = int(pid_file.read_text().strip())
+            proc = _psutil.Process(pid)
+            if proc.is_running() and proc.status() != _psutil.STATUS_ZOMBIE:
+                return pid
+        except Exception:
+            pass
+        pid_file.unlink(missing_ok=True)
+        return None
+
+    def status(self) -> ServiceStatus:
+        pid = self._running_pid()
+        return ServiceStatus(
+            name=self.name,
+            running=pid is not None,
+            pid=pid,
+            port=None,
+            detail="cron jobs (備份/選股/警示)" if pid else "",
+        )
+
+    def start(self) -> str:
+        if self._running_pid():
+            return "Scheduler already running"
+
+        # Sanity check：jobs.py 必須存在於專案根目錄
+        jobs_module = ROOT / "scheduler" / "jobs.py"
+        if not jobs_module.exists():
+            raise FileNotFoundError(f"scheduler/jobs.py not found: {jobs_module}")
+
+        self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+        pid = start_background(
+            args=[sys.executable, "-m", "scheduler.jobs"],
+            cwd=ROOT,
+            stdout_log=self.cfg.scheduler_out_log,
+            stderr_log=self.cfg.scheduler_err_log,
+            pid_file=self.cfg.scheduler_pid_file,
+        )
+        # APScheduler 啟動很快；給它 1.5 秒驗證沒有立刻 crash
+        time.sleep(1.5)
+        if not self._running_pid():
+            raise RuntimeError(
+                f"Scheduler 啟動後立即退出，請檢查 {self.cfg.scheduler_err_log}"
+            )
+        return f"Scheduler started — PID {pid}"
+
+    def stop(self) -> str:
+        pid = self._running_pid()
+        if pid is None:
+            return "Scheduler is not running"
+        try:
+            import psutil as _psutil
+            _psutil.Process(pid).terminate()
+        except Exception:
+            pass
+        self.cfg.scheduler_pid_file.unlink(missing_ok=True)
+        return f"Scheduler stopped (was PID {pid})"
+
+    def restart(self) -> str:
+        msg_stop = self.stop()
+        time.sleep(0.5)
+        msg_start = self.start()
+        return "\n".join([msg_stop, msg_start])
+
+
 # ── Telegram Bot ───────────────────────────────────────────────
 
 class TelegramBotService:

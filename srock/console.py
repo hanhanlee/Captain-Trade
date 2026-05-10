@@ -11,7 +11,8 @@ srock 互動監控台
   r  重啟全部    s  停止全部    u  啟動全部
   t  重啟 Streamlit             c  重啟 Auth Proxy
   f  重啟 Tunnel                b  重啟 Telegram Bot
-  l  顯示最近 log               q  離開 console（服務繼續執行）
+  j  重啟 Scheduler              l  顯示最近 log
+  q  離開 console（服務繼續執行）
   ?  說明
 """
 from __future__ import annotations
@@ -31,7 +32,13 @@ from rich.table import Table
 from rich.text import Text
 
 from srock.config import Config
-from srock.services import CaddyService, FunnelService, StreamlitService, TelegramBotService
+from srock.services import (
+    CaddyService,
+    FunnelService,
+    SchedulerService,
+    StreamlitService,
+    TelegramBotService,
+)
 
 
 def _setup_windows_terminal():
@@ -101,6 +108,7 @@ class ServiceConsole:
         self.caddy        = CaddyService(cfg)
         self.funnel       = FunnelService(cfg)
         self.telegram_bot = TelegramBotService(cfg)
+        self.scheduler    = SchedulerService(cfg)
 
         self._running    = True
         self._executing  = False          # True while a bg action is in progress
@@ -111,7 +119,7 @@ class ServiceConsole:
         # Watchdog per-service state
         self._wd: dict[str, dict] = {
             name: {"was_running": None, "retries": 0, "last_restart": 0.0}
-            for name in ("streamlit", "caddy", "funnel", "telegram")
+            for name in ("streamlit", "caddy", "funnel", "telegram", "scheduler")
         }
 
     # ── Message log ─────────────────────────────────────────────
@@ -129,7 +137,13 @@ class ServiceConsole:
         t.add_column(min_width=18)
         t.add_column(style="dim", no_wrap=True)
 
-        for svc in [self.streamlit.status(), self.caddy.status(), self.funnel.status(), self.telegram_bot.status()]:
+        for svc in [
+            self.streamlit.status(),
+            self.caddy.status(),
+            self.funnel.status(),
+            self.telegram_bot.status(),
+            self.scheduler.status(),
+        ]:
             pid_str = f"PID {svc.pid}" if svc.pid else "—"
             badge   = Text("● RUNNING", style="bold green") if svc.running \
                       else Text("○ STOPPED", style="bold red")
@@ -160,7 +174,7 @@ class ServiceConsole:
         )
         t.add_row(
             "",
-            Text("f=Tunnel  b=TgBot  l=log  q=離開console  ?=說明", style="dim"),
+            Text("f=Tunnel  b=TgBot  j=Scheduler  l=log  q=離開  ?=說明", style="dim"),
             "",
         )
 
@@ -198,6 +212,7 @@ class ServiceConsole:
         threading.Thread(target=_bg, daemon=True).start()
 
     def _restart_all(self):
+        self.scheduler.stop()
         self.funnel.stop()
         self.caddy.stop()
         self.streamlit.stop()
@@ -213,9 +228,14 @@ class ServiceConsole:
             self.telegram_bot.start()
         except Exception as e:
             self._msg(f"[yellow]⚠ Telegram Bot 啟動失敗 — {e}[/yellow]")
+        try:
+            self.scheduler.start()
+        except Exception as e:
+            self._msg(f"[yellow]⚠ Scheduler 啟動失敗 — {e}[/yellow]")
         self._msg("[green]✓ 全部重啟完成[/green]")
 
     def _stop_all(self):
+        self.scheduler.stop()
         self.funnel.stop()
         self.caddy.stop()
         self.streamlit.stop()
@@ -233,6 +253,10 @@ class ServiceConsole:
             self.telegram_bot.start()
         except Exception as e:
             self._msg(f"[yellow]⚠ Telegram Bot 啟動失敗 — {e}[/yellow]")
+        try:
+            self.scheduler.start()
+        except Exception as e:
+            self._msg(f"[yellow]⚠ Scheduler 啟動失敗 — {e}[/yellow]")
         self._msg("[green]✓ 全部服務已啟動[/green]")
 
     def _restart_tunnel(self):
@@ -281,7 +305,7 @@ class ServiceConsole:
         elif key == "?":
             self._msg(
                 "r=重啟全部  s=停止全部  u=啟動全部  "
-                "t=Streamlit  c=Caddy  f=Tunnel  b=TgBot  l=log  q=離開"
+                "t=Streamlit  c=Caddy  f=Tunnel  b=TgBot  j=Scheduler  l=log  q=離開"
             )
         elif key == "r":
             self._run_action(self._restart_all, "重啟全部服務")
@@ -315,6 +339,14 @@ class ServiceConsole:
                 ),
                 "重啟 Telegram Bot",
             )
+        elif key == "j":
+            self._run_action(
+                lambda: (
+                    self.scheduler.restart(),
+                    self._msg("[green]✓ Scheduler 重啟完成[/green]"),
+                ),
+                "重啟 Scheduler",
+            )
         elif key == "l":
             self._show_logs()
 
@@ -333,6 +365,7 @@ class ServiceConsole:
             ("caddy",     self.caddy),
             ("funnel",    self.funnel),
             ("telegram",  self.telegram_bot),
+            ("scheduler", self.scheduler),
         ]
         for key, svc in checks:
             state      = self._wd[key]

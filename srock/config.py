@@ -113,6 +113,18 @@ class Config:
     def telegram_bot_err_log(self) -> Path:
         return self.runtime_dir / "telegram_bot.err.log"
 
+    @property
+    def scheduler_pid_file(self) -> Path:
+        return self.runtime_dir / "scheduler.pid"
+
+    @property
+    def scheduler_out_log(self) -> Path:
+        return self.runtime_dir / "scheduler.out.log"
+
+    @property
+    def scheduler_err_log(self) -> Path:
+        return self.runtime_dir / "scheduler.err.log"
+
     # startup
     default_profile: str = "full"
     auto_open_browser: bool = False
