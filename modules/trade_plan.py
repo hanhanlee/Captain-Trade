@@ -150,6 +150,7 @@ def create_plan(
         sess.add(plan)
         sess.flush()
         plan_id = plan.id
+        sess.commit()
 
     _severity = "warning" if has_violation else "info"
     _risk_event = "risk_check_failed" if has_violation else "risk_check_passed"
@@ -238,6 +239,7 @@ def execute_plan(plan_id: int, actual_price: float | None = None) -> int:
         plan.executed_at = datetime.now()
         plan.journal_id = journal_id
         sess.add(plan)
+        sess.commit()
         _exec_payload = {
             "plan_id": plan_id,
             "actual_price": actual_price,
@@ -271,6 +273,7 @@ def cancel_plan(plan_id: int) -> None:
             _cancel_sname = plan.stock_name
             plan.status = "cancelled"
             sess.add(plan)
+            sess.commit()
     if _cancel_sid:
         log_event(
             event_type="user_cancelled",
