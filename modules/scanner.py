@@ -381,12 +381,20 @@ def analyze_stock(
 
     # 主力連續買超：以分點券商資料為準
     # 定義：(前15買超分點總買進 − 前15賣超分點總賣出) 連續 N 日 > 0
+    # 注意：不從 DB 的 consecutive_buy_days 欄位讀取（該欄位因逐日單筆寫入，streak 永遠被覆蓋為 0/1）
+    # 改為直接從 net 欄位往回數，最多能看到 load_broker_main_force_batch 載入的天數（預設 5 日）
     if main_force_min_days == 0:
         sig.main_force_buy_3d = True  # 條件停用，視為通過
     elif broker_df is not None and not broker_df.empty:
-        latest_broker = broker_df.sort_values("date").iloc[-1]
-        streak = pd.to_numeric(latest_broker.get("consecutive_buy_days"), errors="coerce")
-        sig.main_force_buy_3d = bool(pd.notna(streak) and int(streak) >= main_force_min_days)
+        nets = pd.to_numeric(
+            broker_df.sort_values("date")["net"], errors="coerce"
+        ).tolist()
+        streak = 0
+        for net in reversed(nets):
+            if pd.isna(net) or net <= 0:
+                break
+            streak += 1
+        sig.main_force_buy_3d = streak >= main_force_min_days
 
     # 7. [v4] 突破近 20 日收盤高點（排除今日本身）
     if len(df) >= 22:
