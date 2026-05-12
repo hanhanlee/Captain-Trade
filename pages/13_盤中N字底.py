@@ -30,27 +30,46 @@ st.caption(
 st.markdown("---")
 
 # ── 服務狀態 ──────────────────────────────────────────────────────────────────
+# 盤中 N 字底突破偵測現由 srock scheduler 進程（scheduler/jobs.py 的 job_intraday_monitor）
+# 負責；本頁從 scheduler.pid + event_log 觀察其狀態。
 st.subheader("⚙ 服務狀態")
-try:
-    from scheduler.intraday_service import status as intraday_status
-    s = intraday_status()
-except Exception as exc:
-    s = {}
-    st.warning(f"無法取得排程器狀態：{exc}")
+
+from pathlib import Path
+import os
+
+_scheduler_pid_file = Path(__file__).resolve().parents[1] / "runtime" / "scheduler.pid"
+_scheduler_running = False
+if _scheduler_pid_file.exists():
+    try:
+        import psutil
+        _pid = int(_scheduler_pid_file.read_text().strip())
+        _proc = psutil.Process(_pid)
+        _scheduler_running = _proc.is_running() and _proc.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        _scheduler_running = False
+
+today_iso = date.today().isoformat()
+events_today = query_events(
+    event_type="n_pattern_breakout_alert",
+    date_from=today_iso,
+    date_to=today_iso,
+    limit=500,
+)
+items_today = wl.today_all()
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("排程器", "🟢 執行中" if s.get("running") else "🔴 未啟動")
-c2.metric("最近一輪推播數", s.get("last_n_pattern_sent", 0))
+c1.metric("srock scheduler", "🟢 執行中" if _scheduler_running else "🔴 未啟動")
+c2.metric("今日已推播", len(events_today))
 c3.metric(
-    "最近執行時間",
-    s.get("last_run_at").strftime("%H:%M:%S") if s.get("last_run_at") else "—",
+    "最近一次突破",
+    events_today[0]["created_at"][11:19] if events_today else "—",
 )
-c4.metric(
-    "下次預定執行",
-    s.get("next_run_time", "—").split("T")[1][:8] if s.get("next_run_time") else "—",
-)
-if s.get("last_n_pattern_error"):
-    st.error(f"上輪 N 字底檢查錯誤：{s['last_n_pattern_error']}")
+c4.metric("今日 watchlist 總數", len(items_today))
+if not _scheduler_running:
+    st.warning(
+        "srock scheduler 未執行，盤中 N 字底突破偵測不會自動跑。"
+        "請於終端機執行 `srock up` 或 `srock start scheduler`。"
+    )
 
 st.markdown("---")
 

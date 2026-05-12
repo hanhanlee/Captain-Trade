@@ -47,6 +47,7 @@ class BuildStats:
     skipped_old_c: int = 0 # 因 C 太舊而剔除
     skipped_far: int = 0   # 因現價距 B 太遠而剔除
     skipped_already_broken: int = 0  # 已遠遠突破 B（多單追不上）→ 剔除
+    skipped_deep_retrace: int = 0    # C 回測過深（>=max_c_retrace_pct）→ 剔除
     errors: int = 0
 
     def as_dict(self) -> dict:
@@ -57,6 +58,7 @@ class BuildStats:
             "skipped_old_c": self.skipped_old_c,
             "skipped_far": self.skipped_far,
             "skipped_already_broken": self.skipped_already_broken,
+            "skipped_deep_retrace": self.skipped_deep_retrace,
             "errors": self.errors,
         }
 
@@ -83,6 +85,7 @@ def build_from_data(
     fractal_k: int = 3,
     min_b_rise_pct: float = 5.0,
     min_c_retrace_pct: float = 30.0,
+    max_c_retrace_pct: float = 50.0,
     require_prior_downtrend: bool = True,
     lookback: int = 80,
     max_c_age_days: int = 15,
@@ -98,6 +101,7 @@ def build_from_data(
       stock_info: {stock_id: {'stock_name': str, 'industry_category': str}}
       today: 用來計算 C 點離今天幾天
       max_c_age_days: C 形成後超過這個交易日數則視為過時，剔除
+      max_c_retrace_pct: C 回測超過此百分比則視為回調過深，剔除（預設 50%）
       max_distance_to_b_pct: 現價需在 B 下方這個 % 以內（即將突破才有意義）
       max_above_b_pct: 現價已超過 B 多少 % 之內仍可加入名單（剛突破第一天）
                       超過則視為已遠遠突破、追進效益低，剔除
@@ -128,6 +132,11 @@ def build_from_data(
         if pat is None:
             continue
         stats.hits += 1
+
+        # C 回測過深過濾：回測比例太高代表反彈力道不足，勝率較低
+        if pat.c_retrace_pct >= max_c_retrace_pct:
+            stats.skipped_deep_retrace += 1
+            continue
 
         c_d = _parse_date(pat.C.date)
         if c_d is None:
@@ -192,6 +201,7 @@ def build_watchlist(
     fractal_k: int = 3,
     min_b_rise_pct: float = 5.0,
     min_c_retrace_pct: float = 30.0,
+    max_c_retrace_pct: float = 50.0,
     require_prior_downtrend: bool = True,
     lookback: int = 80,
     max_c_age_days: int = 15,
@@ -240,6 +250,7 @@ def build_watchlist(
         fractal_k=fractal_k,
         min_b_rise_pct=min_b_rise_pct,
         min_c_retrace_pct=min_c_retrace_pct,
+        max_c_retrace_pct=max_c_retrace_pct,
         require_prior_downtrend=require_prior_downtrend,
         lookback=lookback,
         max_c_age_days=max_c_age_days,

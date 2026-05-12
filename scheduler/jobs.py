@@ -147,21 +147,40 @@ def job_portfolio_check():
 @skip_if_not_trading_day
 def job_intraday_monitor():
     """
-    盤中持股監控任務
+    盤中持股監控 + N 字底突破偵測（同輪順帶跑，共用 Shioaji 連線）。
     週一到週五 09:00–13:30，每分鐘執行一次。
     CronTrigger 設 hour="9-13"，函式內自行截止在 13:30。
+    兩段獨立 try/except，N 字底失敗不影響持股監控。
+    N 字底事件由 run_n_pattern_check 內部在推播成功/失敗時寫 event_log，
+    本函式不額外寫 heartbeat。
     """
     now = datetime.now().time()
     if now > dtime(13, 30):
         return
 
-    from modules.intraday_monitor import run_intraday_check
     try:
+        from modules.intraday_monitor import run_intraday_check
         sent = run_intraday_check()
         if sent:
             logger.info(f"盤中監控：推播 {sent} 則警示")
     except Exception as e:
         logger.error(f"盤中監控任務失敗：{e}")
+
+    try:
+        from modules.intraday_n_pattern import run_n_pattern_check
+        n_sent = run_n_pattern_check()
+        if n_sent:
+            logger.info(f"盤中 N 字底突破：推播 {n_sent} 則")
+    except Exception as e:
+        logger.error(f"盤中 N 字底突破檢查失敗：{e}")
+
+    try:
+        from modules.intraday_v3_breakout import run_v3_breakout_check
+        v3_sent = run_v3_breakout_check()
+        if v3_sent:
+            logger.info(f"盤中 V3 三線齊穿：推播 {v3_sent} 則")
+    except Exception as e:
+        logger.error(f"盤中 V3 三線齊穿檢查失敗：{e}")
 
 
 def job_weekly_holding_shares():
@@ -340,6 +359,44 @@ def job_db_backup():
 
 
 @skip_if_not_trading_day
+def job_v3_breakout_watchlist_build():
+    """
+    每日開盤前 08:50 重建 V3 三線齊穿候選清單。
+    條件：昨日收盤在 5/10/20MA 全線以下 + 三線糾結度 < 3%。
+    結果寫入 db.v3_breakout_watchlist，由盤中突破檢查使用。
+    """
+    logger.info("開始建構 V3 三線齊穿 watchlist...")
+    try:
+        from modules.v3_breakout_watchlist_builder import build_watchlist
+        stats = build_watchlist()
+        msg = (
+            f"📋 V3 三線齊穿候選清單建構完成\n"
+            f"  掃描 {stats['scanned']} 檔｜命中 {stats['written']} 檔\n"
+            f"  剔除：未在線下 {stats['skipped_not_below']}、"
+            f"未糾結 {stats['skipped_no_squeeze']}、無量能 {stats['skipped_no_vol']}"
+        )
+        tg_alert(msg)
+        log_event(
+            "v3_breakout_watchlist_built",
+            module="scheduler",
+            severity="info",
+            summary=msg,
+            payload=stats,
+        )
+        logger.info("V3 三線齊穿 watchlist 完成：%s", stats)
+    except Exception as e:
+        err = f"⚠️ V3 三線齊穿 watchlist 建構失敗：{e}"
+        tg_alert(err)
+        logger.exception("V3 三線齊穿 watchlist 建構失敗")
+        log_event(
+            "v3_breakout_watchlist_failed",
+            module="scheduler",
+            severity="error",
+            summary=err,
+        )
+
+
+@skip_if_not_trading_day
 def job_n_pattern_watchlist_build():
     """
     每日開盤前 08:50 重建盤中 N 字底候選清單。
@@ -354,7 +411,8 @@ def job_n_pattern_watchlist_build():
             f"📋 盤中 N 字底候選清單建構完成\n"
             f"  掃描 {stats['scanned']} 檔｜命中 {stats['hits']} 檔\n"
             f"  actionable {stats['written']} 檔（C 太舊 {stats['skipped_old_c']}、"
-            f"距B太遠 {stats['skipped_far']}、已遠突破 {stats['skipped_already_broken']}）"
+            f"距B太遠 {stats['skipped_far']}、已遠突破 {stats['skipped_already_broken']}、"
+            f"回測過深 {stats.get('skipped_deep_retrace', 0)}）"
         )
         tg_alert(msg)
         log_event(
@@ -467,6 +525,14 @@ def run_scheduler():
         name="盤中 N 字底候選清單建構",
     )
 
+    # V3 三線齊穿候選清單建構：週一到週五 08:50（與 N 字底錯開 50 分鐘避免資源衝突）
+    scheduler.add_job(
+        job_v3_breakout_watchlist_build,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=50, timezone="Asia/Taipei"),
+        id="v3_breakout_watchlist",
+        name="盤中 V3 三線齊穿候選清單建構",
+    )
+
     # DB 備份至 Google Drive：週一到週五 06:50
     # 機器約 06:30 開機，6:50 開始備份 → 約 06:54 結束 → 09:00 開盤前完成。
     # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響），
@@ -487,6 +553,7 @@ def run_scheduler():
     logger.info("  週績效報告：週五 15:10")
     logger.info("  持股分佈更新：週五 22:00")
     logger.info("  DB 備份 Google Drive：週一至週五 06:50")
+    logger.info("  V3 三線齊穿 watchlist：週一至週五 08:50")
 
     try:
         scheduler.start()

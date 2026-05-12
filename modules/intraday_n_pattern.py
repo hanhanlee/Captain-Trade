@@ -170,6 +170,11 @@ def run_n_pattern_check() -> int:
         if not is_breakout(price, b_price):
             continue
 
+        # C 回測過深守門：確保不推播已被 builder 排除條件的舊 watchlist 殘留資料
+        c_retrace = _to_float(it.get("c_retrace_pct"))
+        if c_retrace is not None and c_retrace >= 50.0:
+            continue
+
         total_volume = _to_float(snap.get("total_volume"))
         msg = format_breakout_alert(
             it,

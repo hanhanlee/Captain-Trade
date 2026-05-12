@@ -399,3 +399,31 @@ class NPatternWatchlist(Base):
     distance_to_b_pct   = Column(Float)                        # 現價距 B 還差 %（負值=已突破）
     alerted_today       = Column(Boolean, default=False)       # 今日是否已推播
     created_at          = Column(DateTime, default=datetime.now)
+
+
+class V3BreakoutWatchlist(Base):
+    """
+    盤中 V3 三線齊穿候選清單（每日 08:50 重建）
+
+    條件：昨日收盤在 5/10/20MA 全線以下 + 三線糾結度 < 3%。
+    盤中以即時價確認是否同時突破三線，且量能超過前五日均量 1.5 倍，即推 Telegram。
+    """
+    __tablename__ = "v3_breakout_watchlist"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "scan_date", name="uq_v3_breakout_stock_date"),
+        Index("idx_v3_breakout_scan_date", "scan_date"),
+    )
+
+    id            = Column(Integer, primary_key=True)
+    scan_date     = Column(Date, nullable=False)
+    stock_id      = Column(String(10), nullable=False)
+    stock_name    = Column(String(50))
+    industry      = Column(String(50))
+    ma5           = Column(Float, nullable=False)   # 昨日 MA5（盤中突破閾值）
+    ma10          = Column(Float, nullable=False)   # 昨日 MA10
+    ma20          = Column(Float, nullable=False)   # 昨日 MA20
+    vol_ma5       = Column(Float, nullable=False)   # 前五日均量（盤中量能閾值基準）
+    last_close    = Column(Float)                   # 昨日收盤（參考）
+    ma_spread_pct = Column(Float)                   # 昨日三線糾結度 %（參考）
+    alerted_today = Column(Boolean, default=False)
+    created_at    = Column(DateTime, default=datetime.now)
