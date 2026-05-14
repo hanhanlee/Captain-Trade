@@ -401,6 +401,33 @@ class NPatternWatchlist(Base):
     created_at          = Column(DateTime, default=datetime.now)
 
 
+class NPatternAlertHistory(Base):
+    """
+    N 字底突破推播歷史——跨日去重用。
+
+    唯一鍵：stock_id + b_date（B 點日期代表同一組突破結構）。
+    設計取捨：若偵測器因新 C 點而識別出「同 B date 但不同 C date」的結構，
+    該 B 點已在 history 中則仍會被擋掉，不會重複通知。
+    寧可在 B 點附近多次盤整時保持安靜，也不重複騷擾。
+
+    purge 建議保留 90 天，確保覆蓋 watchlist builder 的最大回看範圍
+    （lookback=80 交易日），讓任何仍可能出現在 watchlist 的 B 點都還在歷史中。
+    """
+    __tablename__ = "n_pattern_alert_history"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "b_date", name="uq_n_pattern_alert_b"),
+        Index("idx_n_pattern_alert_stock", "stock_id"),
+    )
+
+    id         = Column(Integer, primary_key=True)
+    stock_id   = Column(String(10), nullable=False)
+    b_date     = Column(Date, nullable=False)   # B 點日期（結構識別鍵）
+    b_price    = Column(Float)
+    a_date     = Column(Date)                   # 記錄完整結構供追蹤
+    c_date     = Column(Date)
+    alerted_at = Column(DateTime, default=datetime.now)
+
+
 class V3BreakoutWatchlist(Base):
     """
     盤中 V3 三線齊穿候選清單（每日 08:50 重建）

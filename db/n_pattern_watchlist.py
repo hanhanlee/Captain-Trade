@@ -5,6 +5,7 @@
   - scan_date 為單日鍵（每日 8:50 重建）
   - 同檔同日 upsert（stock_id + scan_date 為唯一鍵）
   - 提供清理舊紀錄、批次寫入、今日尚未推播清單、推播後標記等基礎操作
+  - NPatternAlertHistory 提供跨日去重：同 stock_id + b_date 只推一次
 """
 from __future__ import annotations
 
@@ -12,9 +13,10 @@ from datetime import date, datetime, timedelta
 from typing import Iterable
 
 from sqlalchemy import text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .database import get_session, init_db
-from .models import NPatternWatchlist
+from .models import NPatternAlertHistory, NPatternWatchlist
 
 
 def _today() -> date:
@@ -149,6 +151,77 @@ def mark_alerted(stock_id: str, scan_date: date | None = None) -> bool:
         row.alerted_today = True
         sess.commit()
         return True
+
+
+# ---------------------------------------------------------------------------
+# 跨日去重：NPatternAlertHistory
+# ---------------------------------------------------------------------------
+
+def is_b_point_alerted(stock_id: str, b_date: date | None) -> bool:
+    """
+    查詢此 B 點（stock_id + b_date）是否已在歷史中推播過。
+
+    注意：唯一鍵為 stock_id + b_date，因此即使偵測器因新的 C 點而重新識別
+    出「同 B date 但不同 C date」的結構，該 B 點已推播過仍會被擋掉。
+    """
+    if b_date is None:
+        return False
+    init_db()
+    with get_session() as sess:
+        return (
+            sess.query(NPatternAlertHistory)
+            .filter_by(stock_id=str(stock_id), b_date=b_date)
+            .first()
+        ) is not None
+
+
+def record_b_point_alert(
+    stock_id: str,
+    b_date: date | None,
+    b_price: float | None = None,
+    a_date: date | None = None,
+    c_date: date | None = None,
+) -> None:
+    """
+    推播成功後寫入歷史，供後續同 B 點跨日去重使用。
+    若 unique constraint 衝突（極罕見的並發重入），靜默略過，不拋錯。
+    """
+    if b_date is None:
+        return
+    init_db()
+    stmt = (
+        sqlite_insert(NPatternAlertHistory)
+        .values(
+            stock_id=str(stock_id),
+            b_date=b_date,
+            b_price=b_price,
+            a_date=a_date,
+            c_date=c_date,
+            alerted_at=datetime.now(),
+        )
+        .on_conflict_do_nothing(index_elements=["stock_id", "b_date"])
+    )
+    with get_session() as sess:
+        sess.execute(stmt)
+        sess.commit()
+
+
+def purge_alert_history(older_than_days: int = 90) -> int:
+    """
+    清理超過 older_than_days 天的推播歷史。
+    預設 90 天，大於 watchlist builder 的最大回看範圍（lookback=80 交易日），
+    確保任何仍可能出現在 watchlist 的 B 點都還在歷史記憶中。
+    """
+    init_db()
+    cutoff = date.today() - timedelta(days=older_than_days)
+    with get_session() as sess:
+        deleted = (
+            sess.query(NPatternAlertHistory)
+            .filter(NPatternAlertHistory.b_date < cutoff)
+            .delete(synchronize_session=False)
+        )
+        sess.commit()
+    return int(deleted or 0)
 
 
 def _row_to_dict(r: NPatternWatchlist) -> dict:

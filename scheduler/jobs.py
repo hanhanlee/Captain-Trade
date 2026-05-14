@@ -372,7 +372,7 @@ def job_v3_breakout_watchlist_build():
         msg = (
             f"📋 V3 三線齊穿候選清單建構完成\n"
             f"  掃描 {stats['scanned']} 檔｜命中 {stats['written']} 檔\n"
-            f"  剔除：未在線下 {stats['skipped_not_below']}、"
+            f"  剔除：遠離均線 {stats['skipped_far_from_ma']}、"
             f"未糾結 {stats['skipped_no_squeeze']}、無量能 {stats['skipped_no_vol']}"
         )
         tg_alert(msg)
@@ -406,6 +406,8 @@ def job_n_pattern_watchlist_build():
     logger.info("開始建構 N 字底 watchlist...")
     try:
         from modules.n_pattern_watchlist_builder import build_watchlist
+        from db.n_pattern_watchlist import purge_alert_history
+        purge_alert_history(older_than_days=90)
         stats = build_watchlist()
         msg = (
             f"📋 盤中 N 字底候選清單建構完成\n"

@@ -175,6 +175,12 @@ def run_n_pattern_check() -> int:
         if c_retrace is not None and c_retrace >= 50.0:
             continue
 
+        # 跨日去重：同 stock_id + b_date 的 B 點只推一次，不論是否為不同交易日或不同 C 點
+        b_date = it.get("b_date")
+        if wl.is_b_point_alerted(sid, b_date):
+            logger.debug("N 字底 %s B=%s 已推播過，本輪略過", sid, b_date)
+            continue
+
         total_volume = _to_float(snap.get("total_volume"))
         msg = format_breakout_alert(
             it,
@@ -191,6 +197,16 @@ def run_n_pattern_check() -> int:
         except Exception as exc:
             ok = False
             logger.warning("Telegram 推播失敗 %s: %s", sid, exc)
+
+        if ok:
+            # 寫入跨日歷史，確保同 B 點未來不再重複推播
+            wl.record_b_point_alert(
+                sid,
+                b_date=b_date,
+                b_price=b_price,
+                a_date=it.get("a_date"),
+                c_date=it.get("c_date"),
+            )
 
         log_event(
             "n_pattern_breakout_alert" if ok else "n_pattern_breakout_alert_failed",
