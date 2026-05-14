@@ -125,6 +125,18 @@ class Config:
     def scheduler_err_log(self) -> Path:
         return self.runtime_dir / "scheduler.err.log"
 
+    @property
+    def prefetch_pid_file(self) -> Path:
+        return self.runtime_dir / "prefetch.pid"
+
+    @property
+    def prefetch_out_log(self) -> Path:
+        return self.runtime_dir / "prefetch.out.log"
+
+    @property
+    def prefetch_err_log(self) -> Path:
+        return self.runtime_dir / "prefetch.err.log"
+
     # startup
     default_profile: str = "full"
     auto_open_browser: bool = False

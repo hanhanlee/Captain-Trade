@@ -15,6 +15,7 @@ from srock.config import Config
 from srock.services import (
     CaddyService,
     FunnelService,
+    PrefetchService,
     SchedulerService,
     ServiceStatus,
     StreamlitService,
@@ -50,6 +51,7 @@ def _build_status_table(
     caddy: CaddyService,
     funnel: FunnelService,
     scheduler: SchedulerService,
+    prefetch: PrefetchService,
     public_url: str | None = None,
 ) -> Panel:
     table = Table.grid(padding=(0, 2))
@@ -57,7 +59,7 @@ def _build_status_table(
     table.add_column(min_width=16)
     table.add_column(style="dim", no_wrap=True)
 
-    for svc in [streamlit.status(), caddy.status(), funnel.status(), scheduler.status()]:
+    for svc in [streamlit.status(), caddy.status(), funnel.status(), scheduler.status(), prefetch.status()]:
         pid_str = f"PID {svc.pid}" if svc.pid else ""
         table.add_row(svc.name, _status_badge(svc.running), f"{pid_str}  {svc.detail}")
 
@@ -80,8 +82,9 @@ def print_status(cfg: Config) -> None:
     caddy = CaddyService(cfg)
     funnel = FunnelService(cfg)
     scheduler = SchedulerService(cfg)
+    prefetch = PrefetchService(cfg)
     public_url = funnel.public_url() if funnel.status().running else None
-    console.print(_build_status_table(streamlit, caddy, funnel, scheduler, public_url))
+    console.print(_build_status_table(streamlit, caddy, funnel, scheduler, prefetch, public_url))
 
 
 def watch_status(cfg: Config) -> None:
@@ -90,12 +93,13 @@ def watch_status(cfg: Config) -> None:
     caddy = CaddyService(cfg)
     funnel = FunnelService(cfg)
     scheduler = SchedulerService(cfg)
+    prefetch = PrefetchService(cfg)
 
     try:
         with Live(console=console, refresh_per_second=1, screen=True) as live:
             while True:
                 public_url = funnel.public_url() if funnel.status().running else None
-                live.update(_build_status_table(streamlit, caddy, funnel, scheduler, public_url))
+                live.update(_build_status_table(streamlit, caddy, funnel, scheduler, prefetch, public_url))
                 time.sleep(3)
     except KeyboardInterrupt:
         pass

@@ -65,20 +65,6 @@ _render_backup_warning()
 init_db()
 
 
-# ── 啟動背景預抓取（每次 App 啟動只建立一次）────────────────────
-@st.cache_resource
-def _start_prefetch_worker():
-    """透過 cache_resource 確保整個 App 生命週期只啟動一個執行緒"""
-    try:
-        from modules.worker_runtime import get_prefetch_worker
-        return get_prefetch_worker(auto_start=True)
-    except Exception:
-        return None
-
-
-worker = _start_prefetch_worker()
-
-
 @st.cache_resource
 def _auto_login_shioaji():
     """App 啟動時嘗試自動登入 Shioaji（credentials 來自 .env）。"""

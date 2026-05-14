@@ -435,6 +435,89 @@ class SchedulerService:
         return "\n".join([msg_stop, msg_start])
 
 
+# ── Prefetch Worker (OHLCV / 法人 / 融資融券) ──────────────────
+
+class PrefetchService:
+    """
+    包住 ``python -m scheduler.prefetch``：OHLCV、法人、融資融券每日自動補抓。
+
+    獨立於 Streamlit 進程，srock up 時自動啟動，不再依賴有人訪問網頁。
+    """
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+
+    @property
+    def name(self) -> str:
+        return "Prefetch"
+
+    def _running_pid(self) -> int | None:
+        import psutil as _psutil
+        pid_file = self.cfg.prefetch_pid_file
+        if not pid_file.exists():
+            return None
+        try:
+            pid = int(pid_file.read_text().strip())
+            proc = _psutil.Process(pid)
+            if proc.is_running() and proc.status() != _psutil.STATUS_ZOMBIE:
+                return pid
+        except Exception:
+            pass
+        pid_file.unlink(missing_ok=True)
+        return None
+
+    def status(self) -> ServiceStatus:
+        pid = self._running_pid()
+        return ServiceStatus(
+            name=self.name,
+            running=pid is not None,
+            pid=pid,
+            port=None,
+            detail="OHLCV / 法人 / 融資融券" if pid else "",
+        )
+
+    def start(self) -> str:
+        if self._running_pid():
+            return "Prefetch already running"
+
+        prefetch_module = ROOT / "scheduler" / "prefetch.py"
+        if not prefetch_module.exists():
+            raise FileNotFoundError(f"scheduler/prefetch.py not found: {prefetch_module}")
+
+        self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+        pid = start_background(
+            args=[sys.executable, "-m", "scheduler.prefetch"],
+            cwd=ROOT,
+            stdout_log=self.cfg.prefetch_out_log,
+            stderr_log=self.cfg.prefetch_err_log,
+            pid_file=self.cfg.prefetch_pid_file,
+        )
+        time.sleep(1.5)
+        if not self._running_pid():
+            raise RuntimeError(
+                f"Prefetch 啟動後立即退出，請檢查 {self.cfg.prefetch_err_log}"
+            )
+        return f"Prefetch started — PID {pid}"
+
+    def stop(self) -> str:
+        pid = self._running_pid()
+        if pid is None:
+            return "Prefetch is not running"
+        try:
+            import psutil as _psutil
+            _psutil.Process(pid).terminate()
+        except Exception:
+            pass
+        self.cfg.prefetch_pid_file.unlink(missing_ok=True)
+        return f"Prefetch stopped (was PID {pid})"
+
+    def restart(self) -> str:
+        msg_stop = self.stop()
+        time.sleep(0.5)
+        msg_start = self.start()
+        return "\n".join([msg_stop, msg_start])
+
+
 # ── Telegram Bot ───────────────────────────────────────────────
 
 class TelegramBotService:

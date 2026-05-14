@@ -17,7 +17,7 @@ from srock import auth as auth_mod
 from srock.config import ROOT, load_config
 from srock.console import run_console
 from srock.display import console, print_status, tail_log, watch_status
-from srock.services import CaddyService, FunnelService, SchedulerService, StreamlitService, TelegramBotService
+from srock.services import CaddyService, FunnelService, PrefetchService, SchedulerService, StreamlitService, TelegramBotService
 
 app = typer.Typer(
     name="srock",
@@ -43,6 +43,7 @@ class LogTarget(str, Enum):
     streamlit = "streamlit"
     caddy = "caddy"
     scheduler = "scheduler"
+    prefetch = "prefetch"
     all = "all"
 
 
@@ -200,6 +201,7 @@ def up(
     caddy = CaddyService(cfg)
     funnel = FunnelService(cfg)
     scheduler = SchedulerService(cfg)
+    prefetch = PrefetchService(cfg)
 
     console.rule("[bold]srock up[/bold]")
 
@@ -216,6 +218,9 @@ def up(
 
     _step("Scheduler (cron jobs)")
     _run_step("啟動 Scheduler...", scheduler.start)
+
+    _step("Prefetch (OHLCV / 法人 / 融資融券)")
+    _run_step("啟動 Prefetch...", prefetch.start)
 
     console.rule()
     print_status(cfg)
@@ -239,8 +244,10 @@ def down():
     caddy = CaddyService(cfg)
     streamlit = StreamlitService(cfg)
     scheduler = SchedulerService(cfg)
+    prefetch = PrefetchService(cfg)
 
     console.rule("[bold]srock down[/bold]")
+    _run_step("停止 Prefetch...", prefetch.stop)
     _run_step("停止 Scheduler...", scheduler.stop)
     _run_step("停止 Funnel...", funnel.stop)
     _run_step("停止 Auth Proxy...", caddy.stop)
@@ -267,8 +274,10 @@ def restart(
     caddy = CaddyService(cfg)
     streamlit = StreamlitService(cfg)
     scheduler = SchedulerService(cfg)
+    prefetch = PrefetchService(cfg)
 
     console.rule("[bold]srock restart[/bold]")
+    _run_step("停止 Prefetch...", prefetch.stop)
     _run_step("停止 Scheduler...", scheduler.stop)
     _run_step("停止 Funnel...", funnel.stop)
     _run_step("停止 Auth Proxy...", caddy.stop)
@@ -280,6 +289,7 @@ def restart(
     if profile == Profile.full:
         _start_tunnel(funnel)
     _run_step("啟動 Scheduler...", scheduler.start)
+    _run_step("啟動 Prefetch...", prefetch.start)
 
     console.rule()
     print_status(cfg)
@@ -337,8 +347,10 @@ def logs(
         files = [cfg.caddy_err_log, cfg.caddy_out_log]
     elif target == LogTarget.scheduler:
         files = [cfg.scheduler_err_log, cfg.scheduler_out_log]
+    elif target == LogTarget.prefetch:
+        files = [cfg.prefetch_err_log, cfg.prefetch_out_log]
     else:
-        files = [cfg.streamlit_err_log, cfg.caddy_err_log, cfg.scheduler_err_log]
+        files = [cfg.streamlit_err_log, cfg.caddy_err_log, cfg.scheduler_err_log, cfg.prefetch_err_log]
 
     if follow and len(files) > 1:
         _warn("follow 模式下僅顯示 stderr。若要 follow 完整 log 請指定 streamlit 或 caddy。")
@@ -402,6 +414,13 @@ def start_scheduler():
     _run_step("啟動 Scheduler...", SchedulerService(cfg).start)
 
 
+@start_app.command("prefetch")
+def start_prefetch():
+    """啟動 Prefetch（OHLCV / 法人 / 融資融券自動補抓）。"""
+    cfg = load_config()
+    _run_step("啟動 Prefetch...", PrefetchService(cfg).start)
+
+
 @stop_app.command("streamlit")
 def stop_streamlit():
     """停止 Streamlit。"""
@@ -428,6 +447,13 @@ def stop_scheduler():
     """停止 Scheduler。"""
     cfg = load_config()
     _run_step("停止 Scheduler...", SchedulerService(cfg).stop)
+
+
+@stop_app.command("prefetch")
+def stop_prefetch():
+    """停止 Prefetch。"""
+    cfg = load_config()
+    _run_step("停止 Prefetch...", PrefetchService(cfg).stop)
 
 
 # ── auth subcommands ───────────────────────────────────────────
