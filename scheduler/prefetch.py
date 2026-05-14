@@ -240,6 +240,10 @@ class PrefetchWorker:
 
     def enable_premium_broker_backfill(self, days: int = 30):
         """Enable built-in date-first Sponsor broker backfill in the worker loop."""
+        ok, reason = self._premium_runtime_ok()
+        if not ok:
+            logger.warning("enable_premium_broker_backfill 被拒：%s", reason)
+            return
         self.premium_broker_backfill_mode = True
         self.premium_broker_backfill_days = max(1, int(days))
         self.premium_broker_backfill_completed_at = None

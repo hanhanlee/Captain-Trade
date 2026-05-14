@@ -1799,31 +1799,37 @@ with st.expander("🔧 手動補抓 & 基本面快取", expanded=False):
             st.rerun()
 
     st.markdown("**內建背景補完：Sponsor 主力券商**")
-    bg1, bg2, bg3 = st.columns([1, 1, 2])
-    with bg1:
-        bg_days = st.number_input(
-            "回補缺資料交易日數",
-            min_value=1,
-            max_value=90,
-            value=broker_days,
-            step=1,
-            key="premium_broker_backfill_days_input",
-        )
-    with bg2:
-        if not broker_mode:
-            if st.button("啟動內建背景補完", type="primary", use_container_width=True):
-                worker.enable_premium_broker_backfill(days=int(bg_days))
-                if not worker.running:
-                    worker.start()
-                st.rerun()
-        else:
-            if st.button("停止內建背景補完", type="secondary", use_container_width=True):
-                worker.disable_premium_broker_backfill()
-                st.rerun()
-    with bg3:
-        st.caption(
-            "這會交給 app 內建 PrefetchWorker 背景執行；可關閉頁面，狀態會由上方 Premium 指標更新。"
-        )
+    from data.finmind_client import get_premium_state as _get_prem_state
+    _prem = _get_prem_state()
+    _is_premium = _prem.user_enabled and str(_prem.tier).lower() in {"backer", "sponsor", "auto"}
+    if not _is_premium:
+        st.warning(f"⚠️ 主力券商背景補完需要 Premium 帳號（目前 tier={_prem.tier}），此功能已停用。")
+    else:
+        bg1, bg2, bg3 = st.columns([1, 1, 2])
+        with bg1:
+            bg_days = st.number_input(
+                "回補缺資料交易日數",
+                min_value=1,
+                max_value=90,
+                value=broker_days,
+                step=1,
+                key="premium_broker_backfill_days_input",
+            )
+        with bg2:
+            if not broker_mode:
+                if st.button("啟動內建背景補完", type="primary", use_container_width=True):
+                    worker.enable_premium_broker_backfill(days=int(bg_days))
+                    if not worker.running:
+                        worker.start()
+                    st.rerun()
+            else:
+                if st.button("停止內建背景補完", type="secondary", use_container_width=True):
+                    worker.disable_premium_broker_backfill()
+                    st.rerun()
+        with bg3:
+            st.caption(
+                "這會交給 app 內建 PrefetchWorker 背景執行；可關閉頁面，狀態會由上方 Premium 指標更新。"
+            )
 
 # ══ 區塊 5：維護操作 ══════════════════════════════════════════════
 with st.expander("🔨 維護操作（重建資料庫）", expanded=False):
