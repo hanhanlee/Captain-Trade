@@ -68,12 +68,15 @@ def start_background(
     cwd.mkdir(parents=True, exist_ok=True)
     stdout_log.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(stdout_log, "a") as out, open(stderr_log, "a") as err:
+    env = __import__("os").environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    with open(stdout_log, "a", encoding="utf-8") as out, open(stderr_log, "a", encoding="utf-8") as err:
         proc = subprocess.Popen(
             args,
             cwd=str(cwd),
             stdout=out,
             stderr=err,
+            env=env,
             creationflags=_CREATE_NO_WINDOW,
         )
     pid_file.write_text(str(proc.pid), encoding="ascii")
