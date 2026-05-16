@@ -134,7 +134,12 @@ def _render_strategy_condition_reference(
         if include_institutional and require_institutional and inst_selection
         else "加分"
     )
-    strategy_label = "v4 領先攻擊版" if strategy_version == "v4" else "v3 均線突破版"
+    if strategy_version == "v5":
+        strategy_label = "v5 狙擊手版"
+    elif strategy_version == "v4":
+        strategy_label = "v4 領先攻擊版"
+    else:
+        strategy_label = "v3 均線突破版"
 
     if main_force_min_days == 0:
         mf_label = "主力買超天數（停用）"
@@ -145,7 +150,38 @@ def _render_strategy_condition_reference(
         mf_type = "必要"
         mf_note = f"前15買超分點 − 前15賣超分點（主力買賣超）連續 {main_force_min_days} 個交易日為正"
 
-    if strategy_version == "v4":
+    if strategy_version == "v5":
+        st.markdown(f"""
+#### 篩選條件（{strategy_label}）
+
+雙軌進場（**型態 A 或 B 命中其一即可**） + 共同 gate 全部通過
+
+##### 共同 Gate（全部必要）
+| 條件 | 分數 | 說明 |
+|------|------|------|
+| MA5 > MA10 > MA20 > MA60 | +15 | 多頭排列、季線之上 |
+| 收紅 K 且實體 ≥ 60% | +10 | 實體紅柱佔全棒 60% 以上，避免長上影線倒貨 |
+| 收盤站上 MA5 | +5 | 短線支撐扎實 |
+| 今日最高 > 昨日最高 | +10 | 破昨高的點火訊號 |
+| 量增 ≥ 昨日 × 1.5 | +15 | 真突破必須有資金推進 |
+| 成交量 ≥ 1000 張 | +5 | 流動性門檻，過濾冷門股 |
+| KD：K > D | +5 | 多頭黃金交叉或強勢延伸（KD 未實作時自動 pass） |
+| MACD：DIF > DEA 且兩者皆 > 0 | +10 | 零軸上的多頭排列 |
+| MACD OSC > 0 且加長中 | +5 | 動能加溫 |
+| 今日漲幅 ≤ 上限（選用） | +5 | 防追高；停用時不擋人也不加分 |
+
+##### 型態 A：盤整突破（+20）
+- 均線糾結度 < 3%（昨日 MA5/10/20 緊貼）
+- 收盤 ≥ 近 10 日最高
+
+##### 型態 B：回檔再上（+15）
+- 底底高：近 5 日低 > 前 6~20 日低
+- 拉回確認：近 5 日高 < 近 20 日高
+- （若選用 N 字底偵測器，會改用 fractal pivot 嚴格判定 A/B/C）
+
+> ⚠️ **v5 條件極嚴，今日 0 檔是正常空倉**。可調整「v5 進階設定」的漲幅 gate / 型態 B 模式試試。
+""")
+    elif strategy_version == "v4":
         ma_desc = (
             "今日三線齊穿，昨日全在線下"
             if ma_breakout_mode == "strict"
@@ -672,14 +708,24 @@ with st.sidebar:
 
     strategy_version_label = st.radio(
         "🧠 選股策略版本",
-        options=["v4 領先攻擊版（精準）", "v3 均線突破版（寬鬆）"],
+        options=[
+            "v5 狙擊手版（最精準・空倉率高）",
+            "v4 領先攻擊版（精準）",
+            "v3 均線突破版（寬鬆）",
+        ],
         key="sb_strategy_version",
         help=(
+            "v5 狙擊手版：雙軌（糾結突破 / 回檔再上）+ 多重 K 線型態過濾，標的最少但訊號最精準。\n"
             "v4 領先攻擊版：捕捉「均線糾結後第一天突破」，訊號精準但標的較少。\n"
             "v3 均線突破版：站上MA20 + 量增 + MACD/RSI 確認，條件寬鬆標的較多。"
         ),
     )
-    strategy_version = "v3" if strategy_version_label.startswith("v3") else "v4"
+    if strategy_version_label.startswith("v5"):
+        strategy_version = "v5"
+    elif strategy_version_label.startswith("v3"):
+        strategy_version = "v3"
+    else:
+        strategy_version = "v4"
 
     if strategy_version == "v4":
         ma_breakout_mode_label = st.radio(
@@ -693,7 +739,60 @@ with st.sidebar:
         )
         ma_breakout_mode = "strict" if ma_breakout_mode_label.startswith("嚴謹") else "loose"
     else:
-        ma_breakout_mode = "strict"  # v3 不使用此參數，給預設值即可
+        ma_breakout_mode = "strict"  # v3/v5 不使用此參數，給預設值即可
+
+    # ── v5 進階設定（僅 v5 顯示） ─────────────────────────────
+    v5_params = None
+    if strategy_version == "v5":
+        from modules.v5_sniper import V5Params
+        with st.expander("🎯 v5 進階設定", expanded=False):
+            v5_apply_gain_cap = st.checkbox(
+                "啟用「今日漲幅上限」過濾（防追高）",
+                value=False,
+                key="sb_v5_apply_gain_cap",
+                help=(
+                    "勾選後，今日漲幅超過上限的標的會被剔除。\n"
+                    "未勾選 = 不限制，由其他 K 線/量能條件決定。"
+                ),
+            )
+            if v5_apply_gain_cap:
+                v5_max_gain_pct = st.slider(
+                    "漲幅上限 (%)",
+                    min_value=3.0, max_value=9.5, value=6.0, step=0.5,
+                    key="sb_v5_max_gain_pct",
+                    help="台股漲跌停 ±10%。6% 保守、8% 留下強勢突破、9.5% 約等於只擋漲停。",
+                )
+            else:
+                v5_max_gain_pct = None
+
+            v5_squeeze_pct = st.slider(
+                "型態 A 均線糾結度門檻 (%)",
+                min_value=2.0, max_value=5.0, value=3.0, step=0.5,
+                key="sb_v5_squeeze_pct",
+                help=(
+                    "MA5/10/20 三線最大價差 ÷ MA20 < 此值才視為糾結。\n"
+                    "全市場預設 3%（嚴）；盤中 v5 科技股 builder 已放寬到 4%，"
+                    "若要對齊可手動調到 4%。"
+                ),
+            )
+
+            v5_pattern_b_mode = st.radio(
+                "型態 B（回檔再上）偵測方式",
+                options=["N 字底偵測器（嚴謹）", "Rolling window（簡化）"],
+                index=0,
+                key="sb_v5_pattern_b_mode",
+                help=(
+                    "N 字底偵測器：重用 n_pattern_detector，用 fractal pivot 嚴格定義 A/B/C 點。\n"
+                    "Rolling window：直接照原文件用近 5 日低 vs 前 6~20 日低，較鬆但快。"
+                ),
+            )
+            v5_use_n_pattern = v5_pattern_b_mode.startswith("N")
+
+        v5_params = V5Params(
+            max_gain_pct=v5_max_gain_pct,
+            pattern_a_squeeze_pct=v5_squeeze_pct,
+            pattern_b_use_n_pattern=v5_use_n_pattern,
+        )
 
     main_force_min_days = st.slider(
         "🏦 主力連續買超天數門檻",
@@ -1355,6 +1454,7 @@ with tab_scan:
                 overheat_action=overheat_action,
                 ma_breakout_mode=ma_breakout_mode,
                 strategy_version=strategy_version,
+                v5_params=v5_params,
                 broker_data=_broker_data,
                 main_force_min_days=main_force_min_days,
                 debug=True,

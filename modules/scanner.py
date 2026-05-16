@@ -829,6 +829,14 @@ def _compute_inst_new_ranked(
     return today_foreign - past_foreign, today_trust - past_trust
 
 
+def _build_signals_text(sig, strategy_version: str) -> str:
+    """產出 result row 的 signals 文字欄；v5 走 v5_sniper 的 label 產生器。"""
+    if strategy_version == "v5":
+        from modules.v5_sniper import triggered_labels_v5
+        return "、".join(triggered_labels_v5(sig._v5_result))
+    return "、".join(sig.triggered_labels(strategy_version))
+
+
 def run_scan(
     price_data: dict,
     stock_info: pd.DataFrame,
@@ -850,7 +858,8 @@ def run_scan(
     overheat_atr_mult: float = 3.5,  # 收盤超過 MA20 + N×ATR14 視為過熱（0 = 停用 ATR 過熱防護）
     overheat_action: str = "drop",    # "drop" | "penalty"
     ma_breakout_mode: str = "strict", # "strict"：昨日三線全在線下；"loose"：昨日任一線在線下
-    strategy_version: str = "v4",    # "v4"：領先攻擊版；"v3"：均線突破版
+    strategy_version: str = "v4",    # "v4"：領先攻擊版；"v3"：均線突破版；"v5"：狙擊手版
+    v5_params=None,                  # modules.v5_sniper.V5Params；strategy_version="v5" 時生效
     fundamental_mode: str = "exclude", # "off" | "warn" | "penalty" | "exclude"
     broker_data: dict = None,         # {stock_id: DataFrame}，分點主力快取（None = 不用）
     main_force_min_days: int = 3,     # 主力買超最低連續天數，0 = 停用此條件
@@ -1024,15 +1033,29 @@ def run_scan(
                     }
                 continue
 
+        # v5 需要拿帶指標的 df 給 evaluate_v5；先算一次、再讓 analyze_stock 走 precomputed
+        if strategy_version == "v5":
+            df_for_analyze = compute_indicators(df)
+            precomputed = True
+        else:
+            df_for_analyze = df
+            precomputed = False
+
         sig = analyze_stock(
-            df,
+            df_for_analyze,
             inst_buying=inst_data.get(stock_id, False),
             margin_trend=margin_data.get(stock_id, "flat"),
             market_close=market_close,
             ma_breakout_mode=ma_breakout_mode,
             broker_df=broker_data.get(stock_id),
             main_force_min_days=main_force_min_days,
+            precomputed=precomputed,
         )
+
+        # v5 狙擊手版判定（直接消費剛剛算好的 df_for_analyze）
+        if sig is not None and strategy_version == "v5":
+            from modules.v5_sniper import evaluate_v5
+            sig._v5_result = evaluate_v5(df_for_analyze, params=v5_params)
 
         # 新上榜旗標（跨股票計算結果回寫）
         if sig is not None:
@@ -1056,7 +1079,14 @@ def run_scan(
                 "sig": sig,
             }
 
-        passes = sig.passes_basic_v3() if strategy_version == "v3" else sig.passes_basic()
+        if strategy_version == "v5":
+            from modules.v5_sniper import passes_basic_v5
+            v5_res = getattr(sig, "_v5_result", None) if sig is not None else None
+            passes = passes_basic_v5(v5_res) if v5_res is not None else False
+        elif strategy_version == "v3":
+            passes = sig.passes_basic_v3() if sig is not None else False
+        else:
+            passes = sig.passes_basic() if sig is not None else False
         if sig is None or not passes:
             continue
 
@@ -1087,7 +1117,13 @@ def run_scan(
         vol_ma5 = df[vol_col].rolling(5).mean().iloc[-1] if vol_col else 0
         volume_ratio = round(vol_now / vol_ma5, 2) if vol_ma5 and vol_ma5 > 0 else 0
 
-        base_score = sig.score_v3() if strategy_version == "v3" else sig.score()
+        if strategy_version == "v5":
+            from modules.v5_sniper import score_v5
+            base_score = score_v5(sig._v5_result)
+        elif strategy_version == "v3":
+            base_score = sig.score_v3()
+        else:
+            base_score = sig.score()
         if is_overheated and overheat_action == "penalty":
             base_score = max(base_score - 10, 0)
 
@@ -1138,7 +1174,7 @@ def run_scan(
             "inst_pass": bool(
                 sig.institutional_buy or sig.inst_total_buy or sig.foreign_trust_buy
             ),
-            "signals": "、".join(sig.triggered_labels(strategy_version)),
+            "signals": _build_signals_text(sig, strategy_version),
         })
 
     result_df = (

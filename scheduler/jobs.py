@@ -182,6 +182,14 @@ def job_intraday_monitor():
     except Exception as e:
         logger.error(f"盤中 V3 三線齊穿檢查失敗：{e}")
 
+    try:
+        from modules.intraday_v5_breakout import run_v5_breakout_check
+        v5_sent = run_v5_breakout_check()
+        if v5_sent:
+            logger.info(f"盤中 v5 狙擊手版突破：推播 {v5_sent} 則")
+    except Exception as e:
+        logger.error(f"盤中 v5 狙擊手版突破檢查失敗：{e}")
+
 
 def job_weekly_holding_shares():
     """
@@ -437,6 +445,49 @@ def job_n_pattern_watchlist_build():
         )
 
 
+@skip_if_not_trading_day
+def job_v5_sniper_watchlist_build():
+    """
+    每日開盤前 08:55 重建 v5 狙擊手版候選清單（科技股範圍）。
+    雙軌型態：
+      A 糾結突破：MA5/10/20 糾結 < 4%（科技股放寬）+ 昨收尚未破 10 日新高
+      B 回檔再上：N 字底 A→B→C 已成形
+    靜態 gate：MA5>10>20>60 + MACD 零軸上多頭 + OSC 加長
+    動態 gate（破目標 / 量增 1.5× 昨量 / 漲幅 cap）留給盤中 checker。
+    結果寫入 db.v5_sniper_watchlist。
+    """
+    logger.info("開始建構 v5 狙擊手版 watchlist...")
+    try:
+        from modules.v5_sniper_watchlist_builder import build_watchlist
+        stats = build_watchlist()
+        msg = (
+            f"📋 v5 狙擊手版候選清單建構完成\n"
+            f"  掃描 {stats['scanned']} 檔｜命中 {stats['written']} 檔"
+            f"（A={stats['pattern_a']}, B={stats['pattern_b']}）\n"
+            f"  剔除：靜態 gate 不過 {stats['skipped_gates_failed']}、"
+            f"無資料 {stats['skipped_no_data']}、錯誤 {stats['errors']}"
+        )
+        tg_alert(msg)
+        log_event(
+            "v5_sniper_watchlist_built",
+            module="scheduler",
+            severity="info",
+            summary=msg,
+            payload=stats,
+        )
+        logger.info("v5 狙擊手版 watchlist 完成：%s", stats)
+    except Exception as e:
+        err = f"⚠️ v5 狙擊手版 watchlist 建構失敗：{e}"
+        tg_alert(err)
+        logger.exception("v5 狙擊手版 watchlist 建構失敗")
+        log_event(
+            "v5_sniper_watchlist_failed",
+            module="scheduler",
+            severity="error",
+            summary=err,
+        )
+
+
 def run_scheduler():
     """啟動排程器（blocking，適合獨立程序常駐）"""
     global _scheduler
@@ -535,6 +586,16 @@ def run_scheduler():
         name="盤中 V3 三線齊穿候選清單建構",
     )
 
+    # v5 狙擊手版候選清單建構：週一到週五 08:55
+    # 排 v3 之後 5 分鐘：v5 載入 120 天日 K（比 v3 重）+ 跑 n_pattern_detector，
+    # 錯開可避免兩者同時打 SQLite price_cache 與 compute_indicators CPU peak。
+    scheduler.add_job(
+        job_v5_sniper_watchlist_build,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=55, timezone="Asia/Taipei"),
+        id="v5_sniper_watchlist",
+        name="盤中 v5 狙擊手版候選清單建構",
+    )
+
     # DB 備份至 Google Drive：週一到週五 06:50
     # 機器約 06:30 開機，6:50 開始備份 → 約 06:54 結束 → 09:00 開盤前完成。
     # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響），
@@ -556,6 +617,7 @@ def run_scheduler():
     logger.info("  持股分佈更新：週五 22:00")
     logger.info("  DB 備份 Google Drive：週一至週五 06:50")
     logger.info("  V3 三線齊穿 watchlist：週一至週五 08:50")
+    logger.info("  v5 狙擊手版 watchlist：週一至週五 08:55")
 
     try:
         scheduler.start()

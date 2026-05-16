@@ -1,0 +1,157 @@
+"""
+盤中 v5 狙擊手版候選清單 CRUD
+"""
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import Iterable
+
+from .database import get_session, init_db
+from .models import V5SniperWatchlist
+
+
+def _today() -> date:
+    return date.today()
+
+
+_UPSERT_FIELDS = (
+    "stock_name", "industry", "pattern_type",
+    "breakout_target", "prev_high", "prev_close", "prev_volume",
+    "vol_ma5", "ma5", "ma10", "ma20", "ma60",
+    "ma_spread_pct", "max_gain_pct",
+)
+
+
+def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> int:
+    init_db()
+    sd = scan_date or _today()
+    n = 0
+    with get_session() as sess:
+        for it in items:
+            sid = str(it["stock_id"])
+            existing = (
+                sess.query(V5SniperWatchlist)
+                .filter_by(stock_id=sid, scan_date=sd)
+                .first()
+            )
+            if existing is None:
+                sess.add(V5SniperWatchlist(
+                    scan_date=sd,
+                    stock_id=sid,
+                    stock_name=it.get("stock_name"),
+                    industry=it.get("industry"),
+                    pattern_type=it["pattern_type"],
+                    breakout_target=it["breakout_target"],
+                    prev_high=it["prev_high"],
+                    prev_close=it.get("prev_close"),
+                    prev_volume=it["prev_volume"],
+                    vol_ma5=it.get("vol_ma5"),
+                    ma5=it.get("ma5"),
+                    ma10=it.get("ma10"),
+                    ma20=it.get("ma20"),
+                    ma60=it.get("ma60"),
+                    ma_spread_pct=it.get("ma_spread_pct"),
+                    max_gain_pct=it.get("max_gain_pct"),
+                    alerted_today=False,
+                ))
+            else:
+                for field in _UPSERT_FIELDS:
+                    if field in it:
+                        setattr(existing, field, it[field])
+                existing.alerted_today = False
+            n += 1
+        sess.commit()
+    return n
+
+
+def clear_today(scan_date: date | None = None) -> int:
+    init_db()
+    sd = scan_date or _today()
+    with get_session() as sess:
+        deleted = (
+            sess.query(V5SniperWatchlist)
+            .filter(V5SniperWatchlist.scan_date == sd)
+            .delete(synchronize_session=False)
+        )
+        sess.commit()
+    return int(deleted or 0)
+
+
+def purge_old(older_than_days: int = 7) -> int:
+    init_db()
+    cutoff = _today() - timedelta(days=older_than_days)
+    with get_session() as sess:
+        deleted = (
+            sess.query(V5SniperWatchlist)
+            .filter(V5SniperWatchlist.scan_date < cutoff)
+            .delete(synchronize_session=False)
+        )
+        sess.commit()
+    return int(deleted or 0)
+
+
+def today_active() -> list[dict]:
+    """今日尚未推播的候選（盤中用）。"""
+    init_db()
+    sd = _today()
+    with get_session() as sess:
+        rows = (
+            sess.query(V5SniperWatchlist)
+            .filter(
+                V5SniperWatchlist.scan_date == sd,
+                V5SniperWatchlist.alerted_today == False,  # noqa: E712
+            )
+            .all()
+        )
+        return [_row_to_dict(r) for r in rows]
+
+
+def today_all() -> list[dict]:
+    """今日全部候選（含已推播），UI 顯示用。"""
+    init_db()
+    sd = _today()
+    with get_session() as sess:
+        rows = (
+            sess.query(V5SniperWatchlist)
+            .filter(V5SniperWatchlist.scan_date == sd)
+            .all()
+        )
+        return [_row_to_dict(r) for r in rows]
+
+
+def mark_alerted(stock_id: str, scan_date: date | None = None) -> bool:
+    init_db()
+    sd = scan_date or _today()
+    with get_session() as sess:
+        row = (
+            sess.query(V5SniperWatchlist)
+            .filter_by(stock_id=str(stock_id), scan_date=sd)
+            .first()
+        )
+        if row is None:
+            return False
+        row.alerted_today = True
+        sess.commit()
+        return True
+
+
+def _row_to_dict(r: V5SniperWatchlist) -> dict:
+    return {
+        "stock_id": r.stock_id,
+        "stock_name": r.stock_name,
+        "industry": r.industry,
+        "pattern_type": r.pattern_type,
+        "breakout_target": r.breakout_target,
+        "prev_high": r.prev_high,
+        "prev_close": r.prev_close,
+        "prev_volume": r.prev_volume,
+        "vol_ma5": r.vol_ma5,
+        "ma5": r.ma5,
+        "ma10": r.ma10,
+        "ma20": r.ma20,
+        "ma60": r.ma60,
+        "ma_spread_pct": r.ma_spread_pct,
+        "max_gain_pct": r.max_gain_pct,
+        "alerted_today": bool(r.alerted_today),
+        "scan_date": r.scan_date,
+    }

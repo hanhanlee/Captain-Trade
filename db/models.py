@@ -454,3 +454,43 @@ class V3BreakoutWatchlist(Base):
     ma_spread_pct = Column(Float)                   # 昨日三線糾結度 %（參考）
     alerted_today = Column(Boolean, default=False)
     created_at    = Column(DateTime, default=datetime.now)
+
+
+class V5SniperWatchlist(Base):
+    """
+    盤中 v5 狙擊手版候選清單（每日 08:50 重建）
+
+    builder 在盤後跑 v5 共同 gate 的「靜態部分」+ 型態 A/B 任一命中，把候選寫入。
+    盤中 intraday_v5_breakout 比對即時報價：
+      - last_price ≥ breakout_target （型態 A=近10日high；型態 B=昨日high）
+      - last_price > open（紅K）
+      - 推估全日量 ≥ prev_volume × 1.5
+      - （選用）漲幅 ≤ max_gain_pct
+    四項全過 → 推 Telegram + mark_alerted 防重複。
+    實體紅K 60% 不放盤中（會抖），由收盤後驗證。
+    """
+    __tablename__ = "v5_sniper_watchlist"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "scan_date", name="uq_v5_sniper_stock_date"),
+        Index("idx_v5_sniper_scan_date", "scan_date"),
+    )
+
+    id              = Column(Integer, primary_key=True)
+    scan_date       = Column(Date, nullable=False)
+    stock_id        = Column(String(10), nullable=False)
+    stock_name      = Column(String(50))
+    industry        = Column(String(50))
+    pattern_type    = Column(String(1), nullable=False)  # 'A'=糾結突破 / 'B'=回檔再上
+    breakout_target = Column(Float, nullable=False)      # 盤中觸發價（A=近10日high；B=昨日high）
+    prev_high       = Column(Float, nullable=False)      # 昨日 high（破昨高的基準）
+    prev_close      = Column(Float)                      # 昨日收盤（參考、算漲幅用）
+    prev_volume     = Column(Float, nullable=False)      # 昨日成交量（張）；盤中 ×1.5 為量能閾值
+    vol_ma5         = Column(Float)                      # 五日均量（參考）
+    ma5             = Column(Float)
+    ma10            = Column(Float)
+    ma20            = Column(Float)
+    ma60            = Column(Float)
+    ma_spread_pct   = Column(Float)                      # 糾結度 %（型態 A 用；型態 B 可 NULL）
+    max_gain_pct    = Column(Float)                      # 漲幅上限 %；NULL = 停用 gate
+    alerted_today   = Column(Boolean, default=False)
+    created_at      = Column(DateTime, default=datetime.now)
