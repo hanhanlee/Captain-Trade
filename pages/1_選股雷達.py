@@ -782,8 +782,10 @@ with st.sidebar:
                 index=0,
                 key="sb_v5_pattern_b_mode",
                 help=(
-                    "簡化回檔（守月線）：近 5 日 Low > 前 6~20 日 Low（底底高）"
-                    "+ 過去 5 日 Close 都 > MA20（回檔在月線之上）。\n"
+                    "簡化回檔（守月線）：\n"
+                    "  ① 近 5 日 Low > 前 6~20 日 Low（底底高）\n"
+                    "  ② 過去 5 日 Close 都 > MA20（守月線）\n"
+                    "  ③ 近 5 日 High < 近 20 日 High（確認有回檔，非一路向上）\n"
                     "N 字底偵測器：重用 n_pattern_detector，用 fractal pivot 嚴格定義 A/B/C 點，較嚴。\n"
                     "註：紅K / 站上 MA5 / 突破前日高已在共同 gate，兩模式都會檢查；"
                     "盤中重跑時，最後一日 Close 由現價替代。"

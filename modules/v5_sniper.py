@@ -5,8 +5,11 @@ v5 狙擊手版 — 精準型突破與回檔選股雷達
 
 雙軌進場（OR 關係）：
   型態 A：均線糾結 + 突破近 10 日新高（盤整突破）
-  型態 B：回檔再上（底底高 + 守月線）+ 破昨高（點火）
-         pullback（預設）：近 5 日 Low > 前 6~20 日 Low；過去 5 日 Close 都 > MA20
+  型態 B：回檔再上（底底高 + 守月線 + 真有回檔）+ 破昨高（點火）
+         pullback（預設）：
+           - 近 5 日 Low > 前 6~20 日 Low（底底高）
+           - 過去 5 日 Close 都 > MA20（守月線）
+           - 近 5 日 High < 近 20 日 High（確認近期有回檔過）
          n_pattern（嚴謹）：呼叫 n_pattern_detector，A/B/C 點明確
 
 共同 gate（不分型態都要過）：
@@ -68,11 +71,15 @@ class V5Params:
     # pullback 規格：
     #   條件 1（底底高）：Lowest(Low, 5) > Lowest(Low[5], 15) — 拉回不破前低
     #   條件 2（守月線）：過去 N 日 Close 每天都 > MA20 — 回檔在月線之上
-    #   條件 3、4（紅K突破MA5 / 突破前日高）已在共同 gate，不重複實作
+    #   條件 3（真有回檔）：Highest(High, 5) < Highest(High, 20) — 最近 5 日未創 20 日新高
+    #     避免「連續向上沒回檔」的股票被歸到型態 B（那種應交給型態 A）
+    #   條件 4、5（紅K突破MA5 / 突破前日高）已在共同 gate，不重複實作
     pattern_b_use_n_pattern: bool = False # True = 呼叫 n_pattern_detector（嚴謹）；False = pullback（守月線）
     pattern_b_recent_low_window: int = 5
     pattern_b_prior_low_window: int = 15  # 前 6~20 日 → 跳過近 5 後再取 15 根
     pattern_b_above_ma20_window: int = 5  # 過去 N 日 Close 都 > MA20
+    pattern_b_recent_high_window: int = 5  # 近 N 日最高
+    pattern_b_compare_high_window: int = 20  # 比對的長視窗（含近 N 日）
 
     # n_pattern_detector 透傳參數（pattern_b_use_n_pattern=True 時生效）
     n_pattern_lookback: int = 80
@@ -112,6 +119,7 @@ class V5Result:
     # 型態 B
     pattern_b_higher_low: bool = False
     pattern_b_above_ma20: bool = False     # pullback 模式：過去 N 日 Close 都 > MA20
+    pattern_b_consolidating: bool = False  # pullback 模式：近 5 日高 < 近 20 日高（確認有回檔）
     pattern_b_n_pattern_hit: bool = False  # 若改採 n_pattern_detector
 
 
@@ -301,9 +309,11 @@ def _pattern_b_via_pullback(
     型態 B 簡化版（pullback / 守月線）：
       條件 1（底底高）：近 5 日 Low 最小 > 前 6~20 日 Low 最小
       條件 2（守月線）：過去 N 日 Close 每天都 > MA20
+      條件 3（真有回檔）：近 5 日 High 最大 < 近 20 日 High 最大
+                       避免「一路向上沒回檔」的股票被歸到型態 B
 
-    註：條件 3「紅K + 站上 MA5」、條件 4「突破前日高」已在 evaluate_v5 共同
-        gate 涵蓋（red_candle / close_gt_ma5 / high_gt_prev），此函式不重複實作。
+    註：「紅K + 站上 MA5」、「突破前日高」已在 evaluate_v5 共同 gate 涵蓋
+        （red_candle / close_gt_ma5 / high_gt_prev），此函式不重複實作。
 
     盤中重跑約定：
         df 最後一筆 close 由呼叫端負責填值。EOD 為當日收盤；盤中若要即時重判，
@@ -312,8 +322,10 @@ def _pattern_b_via_pullback(
     n_recent = p.pattern_b_recent_low_window           # 5
     n_prior = p.pattern_b_prior_low_window             # 15
     n_above = p.pattern_b_above_ma20_window            # 5
+    n_recent_h = p.pattern_b_recent_high_window        # 5
+    n_compare_h = p.pattern_b_compare_high_window      # 20
 
-    if len(df) < n_recent + n_prior + 1:
+    if len(df) < max(n_recent + n_prior + 1, n_compare_h):
         return False
 
     recent_low = float(df["low"].iloc[-n_recent:].min())
@@ -327,7 +339,15 @@ def _pattern_b_via_pullback(
     else:
         result.pattern_b_above_ma20 = bool((closes.values > ma20s.values).all())
 
-    return result.pattern_b_higher_low and result.pattern_b_above_ma20
+    recent_high = float(df["high"].iloc[-n_recent_h:].max())
+    compare_high = float(df["high"].iloc[-n_compare_h:].max())
+    result.pattern_b_consolidating = recent_high < compare_high
+
+    return (
+        result.pattern_b_higher_low
+        and result.pattern_b_above_ma20
+        and result.pattern_b_consolidating
+    )
 
 
 # ── 計分 / 判定 ────────────────────────────────────────────────────────
@@ -398,6 +418,7 @@ def triggered_labels_v5(result: V5Result) -> list[str]:
         "pattern_a_break_10d": "破10日新高",
         "pattern_b_higher_low": "底底高",
         "pattern_b_above_ma20": "回檔守月線",
+        "pattern_b_consolidating": "近期有回檔",
         "pattern_b_n_pattern_hit": "N字底成形",
     }
     labels = [v for k, v in label_map.items() if getattr(result, k, False)]
@@ -579,8 +600,9 @@ def evaluate_v5_for_builder(
 @dataclass
 class PatternBIntradayCheck:
     hit: bool = False
-    higher_low: bool = False        # 條件 1（用 EOD 結果）
+    higher_low: bool = False        # 條件 1（沿用 EOD）
     above_ma20: bool = False        # 條件 2（用現價重算）
+    consolidating: bool = False     # 條件 3（沿用 EOD）
     today_ma20: float = 0.0
     reason: str = ""                # 失效原因（debug / 推播略過時記錄用）
 
@@ -601,8 +623,11 @@ def verify_pattern_b_intraday(
       條件 2（守月線）：把今日 close 換成現價，並重算今日 MA20
         （= 最近 19 日 EOD close + 現價 之平均），重新檢查過去 N 日
         每天的 close > 對應 MA20。
+      條件 3（真有回檔）：沿用 EOD。
+        理由同條件 1，盤中 high 雜訊大；且這條件本意是「最近 5 天沒創新高」，
+        屬歷史型態，盤中今日 high 還在跳動，不適合即時判定。
 
-    為什麼不重驗條件 3、4（紅K + 站上MA5 / 破前日高）：
+    為什麼不重驗「紅K + 站上MA5 / 破前日高」：
       - 破前日高已由 intraday checker 的 breakout_target 把關
       - 紅K / 站上MA5 在 v5 規格刻意盤中不檢查（雜訊大）
 
@@ -621,15 +646,17 @@ def verify_pattern_b_intraday(
     n_recent = p.pattern_b_recent_low_window
     n_prior = p.pattern_b_prior_low_window
     n_above = p.pattern_b_above_ma20_window
+    n_recent_h = p.pattern_b_recent_high_window
+    n_compare_h = p.pattern_b_compare_high_window
 
     if df_eod is None or df_eod.empty:
         chk.reason = "df_eod 為空"
         return chk
-    needed = max(n_recent + n_prior + 1, 20)
+    needed = max(n_recent + n_prior + 1, 20, n_compare_h)
     if len(df_eod) < needed:
         chk.reason = f"資料不足（需 {needed} 根，現有 {len(df_eod)} 根）"
         return chk
-    for col in ("close", "low", "ma20"):
+    for col in ("close", "low", "high", "ma20"):
         if col not in df_eod.columns:
             chk.reason = f"缺欄位 {col}"
             return chk
@@ -642,6 +669,11 @@ def verify_pattern_b_intraday(
     recent_low = float(df_eod["low"].iloc[-n_recent:].min())
     prior_low = float(df_eod["low"].iloc[-(n_recent + n_prior):-n_recent].min())
     chk.higher_low = recent_low > prior_low
+
+    # 條件 3：真有回檔（沿用 EOD，盤中 high 雜訊大不重判）
+    recent_high = float(df_eod["high"].iloc[-n_recent_h:].max())
+    compare_high = float(df_eod["high"].iloc[-n_compare_h:].max())
+    chk.consolidating = recent_high < compare_high
 
     # 條件 2：守月線（今日 close = 現價，今日 MA20 重算）
     today_ma20 = (float(df_eod["close"].iloc[-19:].sum()) + float(current_price)) / 20.0
@@ -659,10 +691,12 @@ def verify_pattern_b_intraday(
     ma20_all = ma20_eod + [today_ma20]
     chk.above_ma20 = all(c > m for c, m in zip(closes_all, ma20_all))
 
-    chk.hit = chk.higher_low and chk.above_ma20
+    chk.hit = chk.higher_low and chk.above_ma20 and chk.consolidating
     if not chk.hit and not chk.reason:
         if not chk.higher_low:
             chk.reason = "底底高失效（EOD 已破前低）"
         elif not chk.above_ma20:
             chk.reason = f"守月線失效（今日 MA20={today_ma20:.2f}，現價={current_price:.2f}）"
+        elif not chk.consolidating:
+            chk.reason = "近期無回檔（EOD 近 5 日高 = 近 20 日高）"
     return chk
