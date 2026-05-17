@@ -5,7 +5,9 @@ v5 狙擊手版 — 精準型突破與回檔選股雷達
 
 雙軌進場（OR 關係）：
   型態 A：均線糾結 + 突破近 10 日新高（盤整突破）
-  型態 B：底底高（回檔再上）+ 破昨高（點火）
+  型態 B：回檔再上（底底高 + 守月線）+ 破昨高（點火）
+         pullback（預設）：近 5 日 Low > 前 6~20 日 Low；過去 5 日 Close 都 > MA20
+         n_pattern（嚴謹）：呼叫 n_pattern_detector，A/B/C 點明確
 
 共同 gate（不分型態都要過）：
   - MA5 > MA10 > MA20 > MA60（多頭排列、季線之上）
@@ -22,8 +24,9 @@ v5 狙擊手版 — 精準型突破與回檔選股雷達
 設計原則：
   - 直接消費 modules.scanner.compute_indicators() 已產出的欄位
     （ma5/ma10/ma20/ma60/macd_hist 等），不重算
-  - 型態 B 重用 modules.n_pattern_detector.find_abc_points()
+  - 型態 B 預設用 pullback 簡化規格；可切到 n_pattern_detector 嚴格模式
   - 條件極嚴，「今日 0 檔」屬正常空倉；UI 端要明示這是 feature 不是 bug
+  - 盤中重跑：呼叫端負責把現價 patch 到 df 最後一筆 close（本層只認 df 內容）
 
 對外 API：
   evaluate_v5(df, *, today=None, params=None) -> V5Result
@@ -61,12 +64,15 @@ class V5Params:
     pattern_a_squeeze_pct: float = 3.0   # 均線糾結度門檻（昨日）
     pattern_a_breakout_window: int = 10  # 收盤 ≥ 近 N 日最高（含今日）
 
-    # 型態 B：回檔再上（簡化版 rolling-window，與 n_pattern_detector 二擇一）
-    pattern_b_use_n_pattern: bool = True # True = 呼叫 n_pattern_detector；False = 用 rolling window
+    # 型態 B：回檔再上（簡化版 pullback，與 n_pattern_detector 二擇一）
+    # pullback 規格：
+    #   條件 1（底底高）：Lowest(Low, 5) > Lowest(Low[5], 15) — 拉回不破前低
+    #   條件 2（守月線）：過去 N 日 Close 每天都 > MA20 — 回檔在月線之上
+    #   條件 3、4（紅K突破MA5 / 突破前日高）已在共同 gate，不重複實作
+    pattern_b_use_n_pattern: bool = False # True = 呼叫 n_pattern_detector（嚴謹）；False = pullback（守月線）
     pattern_b_recent_low_window: int = 5
     pattern_b_prior_low_window: int = 15  # 前 6~20 日 → 跳過近 5 後再取 15 根
-    pattern_b_recent_high_window: int = 5
-    pattern_b_compare_high_window: int = 20
+    pattern_b_above_ma20_window: int = 5  # 過去 N 日 Close 都 > MA20
 
     # n_pattern_detector 透傳參數（pattern_b_use_n_pattern=True 時生效）
     n_pattern_lookback: int = 80
@@ -105,7 +111,7 @@ class V5Result:
 
     # 型態 B
     pattern_b_higher_low: bool = False
-    pattern_b_consolidating: bool = False
+    pattern_b_above_ma20: bool = False     # pullback 模式：過去 N 日 Close 都 > MA20
     pattern_b_n_pattern_hit: bool = False  # 若改採 n_pattern_detector
 
 
@@ -228,12 +234,12 @@ def evaluate_v5(
 
     pattern_a_hit = result.pattern_a_squeeze_ok and result.pattern_a_break_10d
 
-    # ── 型態 B：底底高（回檔再上） ────────────────────────────────────
+    # ── 型態 B：回檔再上（底底高 + 守月線） ───────────────────────────
     pattern_b_hit = False
     if p.pattern_b_use_n_pattern:
         pattern_b_hit = _pattern_b_via_n_pattern(df, today, p, result)
     else:
-        pattern_b_hit = _pattern_b_via_rolling(df, p, result)
+        pattern_b_hit = _pattern_b_via_pullback(df, p, result)
 
     # ── 決定 pattern_type（A 優先；同時命中也視為命中） ──────────────
     if pattern_a_hit:
@@ -286,20 +292,26 @@ def _pattern_b_via_n_pattern(
     return True
 
 
-def _pattern_b_via_rolling(
+def _pattern_b_via_pullback(
     df: pd.DataFrame,
     p: V5Params,
     result: V5Result,
 ) -> bool:
     """
-    簡化版：直接照 stock_selection_radar.md 的 rolling window 寫法。
-      - 近 5 日低 > 前 6~20 日低  → 底底高
-      - 近 5 日高 < 近 20 日高    → 確認近期是拉回/橫盤
+    型態 B 簡化版（pullback / 守月線）：
+      條件 1（底底高）：近 5 日 Low 最小 > 前 6~20 日 Low 最小
+      條件 2（守月線）：過去 N 日 Close 每天都 > MA20
+
+    註：條件 3「紅K + 站上 MA5」、條件 4「突破前日高」已在 evaluate_v5 共同
+        gate 涵蓋（red_candle / close_gt_ma5 / high_gt_prev），此函式不重複實作。
+
+    盤中重跑約定：
+        df 最後一筆 close 由呼叫端負責填值。EOD 為當日收盤；盤中若要即時重判，
+        呼叫端應先把現價 patch 到 df.iloc[-1]["close"]，本函式不另做時間判斷。
     """
     n_recent = p.pattern_b_recent_low_window           # 5
     n_prior = p.pattern_b_prior_low_window             # 15
-    n_recent_h = p.pattern_b_recent_high_window        # 5
-    n_compare_h = p.pattern_b_compare_high_window      # 20
+    n_above = p.pattern_b_above_ma20_window            # 5
 
     if len(df) < n_recent + n_prior + 1:
         return False
@@ -308,11 +320,14 @@ def _pattern_b_via_rolling(
     prior_low = float(df["low"].iloc[-(n_recent + n_prior):-n_recent].min())
     result.pattern_b_higher_low = recent_low > prior_low
 
-    recent_high = float(df["high"].iloc[-n_recent_h:].max())
-    compare_high = float(df["high"].iloc[-n_compare_h:].max())
-    result.pattern_b_consolidating = recent_high < compare_high
+    closes = df["close"].iloc[-n_above:]
+    ma20s = df["ma20"].iloc[-n_above:]
+    if closes.isna().any() or ma20s.isna().any():
+        result.pattern_b_above_ma20 = False
+    else:
+        result.pattern_b_above_ma20 = bool((closes.values > ma20s.values).all())
 
-    return result.pattern_b_higher_low and result.pattern_b_consolidating
+    return result.pattern_b_higher_low and result.pattern_b_above_ma20
 
 
 # ── 計分 / 判定 ────────────────────────────────────────────────────────
@@ -382,7 +397,7 @@ def triggered_labels_v5(result: V5Result) -> list[str]:
         "pattern_a_squeeze_ok": "均線糾結<3%",
         "pattern_a_break_10d": "破10日新高",
         "pattern_b_higher_low": "底底高",
-        "pattern_b_consolidating": "近期拉回",
+        "pattern_b_above_ma20": "回檔守月線",
         "pattern_b_n_pattern_hit": "N字底成形",
     }
     labels = [v for k, v in label_map.items() if getattr(result, k, False)]
@@ -534,13 +549,13 @@ def evaluate_v5_for_builder(
 
     pattern_a_hit = res.pattern_a_squeeze_ok and res.pattern_a_room_to_break
 
-    # ── 型態 B：底底高 + 近期拉回（同 evaluate_v5，靜態） ────────────
+    # ── 型態 B：底底高 + 守月線（同 evaluate_v5，靜態） ──────────────
     # 借 V5Result 容器跑既有邏輯，避免重複實作
     proxy = V5Result()
     if p.pattern_b_use_n_pattern:
         pattern_b_hit = _pattern_b_via_n_pattern(df, today, p, proxy)
     else:
-        pattern_b_hit = _pattern_b_via_rolling(df, p, proxy)
+        pattern_b_hit = _pattern_b_via_pullback(df, p, proxy)
     res.pattern_b_hit = pattern_b_hit
 
     # ── 決定型態與 breakout_target ──────────────────────────────────

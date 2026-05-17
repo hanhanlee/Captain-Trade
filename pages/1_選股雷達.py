@@ -778,12 +778,15 @@ with st.sidebar:
 
             v5_pattern_b_mode = st.radio(
                 "型態 B（回檔再上）偵測方式",
-                options=["N 字底偵測器（嚴謹）", "Rolling window（簡化）"],
+                options=["簡化回檔（守月線）", "N 字底偵測器（嚴謹）"],
                 index=0,
                 key="sb_v5_pattern_b_mode",
                 help=(
-                    "N 字底偵測器：重用 n_pattern_detector，用 fractal pivot 嚴格定義 A/B/C 點。\n"
-                    "Rolling window：直接照原文件用近 5 日低 vs 前 6~20 日低，較鬆但快。"
+                    "簡化回檔（守月線）：近 5 日 Low > 前 6~20 日 Low（底底高）"
+                    "+ 過去 5 日 Close 都 > MA20（回檔在月線之上）。\n"
+                    "N 字底偵測器：重用 n_pattern_detector，用 fractal pivot 嚴格定義 A/B/C 點，較嚴。\n"
+                    "註：紅K / 站上 MA5 / 突破前日高已在共同 gate，兩模式都會檢查；"
+                    "盤中重跑時，最後一日 Close 由現價替代。"
                 ),
             )
             v5_use_n_pattern = v5_pattern_b_mode.startswith("N")
