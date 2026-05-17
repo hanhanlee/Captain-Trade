@@ -571,3 +571,98 @@ def evaluate_v5_for_builder(
         return None
 
     return res
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 盤中重驗：用現價當「今日 close」，檢查型態 B 守月線條件是否仍成立
+# ════════════════════════════════════════════════════════════════════════
+@dataclass
+class PatternBIntradayCheck:
+    hit: bool = False
+    higher_low: bool = False        # 條件 1（用 EOD 結果）
+    above_ma20: bool = False        # 條件 2（用現價重算）
+    today_ma20: float = 0.0
+    reason: str = ""                # 失效原因（debug / 推播略過時記錄用）
+
+
+def verify_pattern_b_intraday(
+    df_eod: pd.DataFrame,
+    *,
+    current_price: float,
+    params: Optional[V5Params] = None,
+) -> PatternBIntradayCheck:
+    """
+    盤中重驗型態 B：用即時現價當「今日 close」，檢查回檔型態是否仍成立。
+
+    重驗範圍（與 _pattern_b_via_pullback 對應）：
+      條件 1（底底高）：沿用 EOD 資料判定。
+        盤中 low 受早盤殺低影響大，重驗反而誤殺；型態學上「底底高」是
+        EOD 才能蓋棺的事，盤中不重判。
+      條件 2（守月線）：把今日 close 換成現價，並重算今日 MA20
+        （= 最近 19 日 EOD close + 現價 之平均），重新檢查過去 N 日
+        每天的 close > 對應 MA20。
+
+    為什麼不重驗條件 3、4（紅K + 站上MA5 / 破前日高）：
+      - 破前日高已由 intraday checker 的 breakout_target 把關
+      - 紅K / 站上MA5 在 v5 規格刻意盤中不檢查（雜訊大）
+
+    Args:
+        df_eod: 昨日為止的日 K（需含 close, low, ma20），最後一筆 = 昨日 EOD。
+                來源建議：db.price_cache.load_prices(...) + scanner.compute_indicators(...)
+        current_price: 今日即時現價
+        params: 同 evaluate_v5；預設取 V5Params 預設值
+
+    Returns:
+        PatternBIntradayCheck — hit=False 時可從 reason 看失效原因
+    """
+    p = params or V5Params()
+    chk = PatternBIntradayCheck()
+
+    n_recent = p.pattern_b_recent_low_window
+    n_prior = p.pattern_b_prior_low_window
+    n_above = p.pattern_b_above_ma20_window
+
+    if df_eod is None or df_eod.empty:
+        chk.reason = "df_eod 為空"
+        return chk
+    needed = max(n_recent + n_prior + 1, 20)
+    if len(df_eod) < needed:
+        chk.reason = f"資料不足（需 {needed} 根，現有 {len(df_eod)} 根）"
+        return chk
+    for col in ("close", "low", "ma20"):
+        if col not in df_eod.columns:
+            chk.reason = f"缺欄位 {col}"
+            return chk
+
+    if current_price is None or pd.isna(current_price) or current_price <= 0:
+        chk.reason = "current_price 無效"
+        return chk
+
+    # 條件 1：底底高（沿用 EOD）
+    recent_low = float(df_eod["low"].iloc[-n_recent:].min())
+    prior_low = float(df_eod["low"].iloc[-(n_recent + n_prior):-n_recent].min())
+    chk.higher_low = recent_low > prior_low
+
+    # 條件 2：守月線（今日 close = 現價，今日 MA20 重算）
+    today_ma20 = (float(df_eod["close"].iloc[-19:].sum()) + float(current_price)) / 20.0
+    chk.today_ma20 = round(today_ma20, 4)
+
+    # 過去 N 日 = 「最近 (n_above - 1) 日 EOD」 + 「今日（現價）」
+    eod_take = n_above - 1
+    closes_eod = df_eod["close"].iloc[-eod_take:].astype(float).tolist() if eod_take > 0 else []
+    ma20_eod = df_eod["ma20"].iloc[-eod_take:].astype(float).tolist() if eod_take > 0 else []
+    if any(pd.isna(v) for v in ma20_eod):
+        chk.reason = "EOD ma20 含 NaN"
+        return chk
+
+    closes_all = closes_eod + [float(current_price)]
+    ma20_all = ma20_eod + [today_ma20]
+    chk.above_ma20 = all(c > m for c, m in zip(closes_all, ma20_all))
+
+    chk.hit = chk.higher_low and chk.above_ma20
+    if not chk.hit and not chk.reason:
+        if not chk.higher_low:
+            chk.reason = "底底高失效（EOD 已破前低）"
+        elif not chk.above_ma20:
+            chk.reason = f"守月線失效（今日 MA20={today_ma20:.2f}，現價={current_price:.2f}）"
+    return chk

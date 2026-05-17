@@ -9,17 +9,22 @@
   3. 量增：預估全日量 >= 昨量 × 1.5（v5 規格用「對昨量」而非對五日均量）
   4. 量底：預估全日量 >= 1000 張
   5. （選用）漲幅 cap：若 row 上有 max_gain_pct，當日漲幅須 ≤ 該值
-  6. 全部通過 → 推 Telegram，標記 alerted_today 防重複
+  6. 型態 B 候選：盤中重驗守月線（用現價當今日 close、重算今日 MA20）
+       若型態失效（例：今日跌破月線）則跳過推播
+       底底高沿用 EOD 結果（盤中 low 雜訊大）
+  7. 全部通過 → 推 Telegram，標記 alerted_today 防重複
 
 設計選擇：
   - 不檢查「實體紅K 60%」與「站上 MA5」：盤中跳動雜訊大，留到收盤再說
   - 量倍對昨量（v5 規格），與 v3 對五日均量不同
+  - 型態 B 守月線重驗：對「08:50 入名單，但今日早盤跌破月線」的候選做安全網
+  - EOD df + 指標當日只算一次，模組級快取在 _EOD_DF_CACHE
   - 若 Shioaji 未登入，本輪安靜跳過
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,43 @@ VOLUME_MULT = 1.5            # 預估全日量 ÷ 昨量 倍數門檻（v5 規�
 MIN_LOTS = 1000              # 預估全日量最低張數
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
+
+# 模組級 EOD df 快取：key = (stock_id, today)，避免每分鐘對每檔重拉 + 重算指標
+_EOD_DF_CACHE: dict[tuple[str, date], object] = {}
+
+
+def _get_eod_df_with_indicators(stock_id: str, today: date):
+    """取單檔截至昨日 EOD 的日 K（含指標），當日重用一次計算結果。"""
+    key = (stock_id, today)
+    cached = _EOD_DF_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from db.price_cache import load_prices
+        from modules.scanner import compute_indicators
+        # 50 天足夠（MA20 + 守月線 5 日 + 底底高 20 日 + 緩衝）
+        df = load_prices(stock_id, lookback_days=50)
+        if df is None or df.empty:
+            _EOD_DF_CACHE[key] = None
+            return None
+        df_ind = compute_indicators(df)
+        _EOD_DF_CACHE[key] = df_ind
+        return df_ind
+    except Exception as exc:
+        logger.warning("載入/算指標失敗 %s: %s", stock_id, exc)
+        _EOD_DF_CACHE[key] = None
+        return None
+
+
+def _verify_pattern_b_still_valid(stock_id: str, current_price: float, today: date):
+    """盤中重驗型態 B 是否仍成立。回傳 (hit, reason)。"""
+    from modules.v5_sniper import verify_pattern_b_intraday
+
+    df = _get_eod_df_with_indicators(stock_id, today)
+    if df is None:
+        return False, "無 EOD 資料"
+    chk = verify_pattern_b_intraday(df, current_price=current_price)
+    return chk.hit, chk.reason
 
 
 def _to_float(value) -> float | None:
@@ -162,6 +204,7 @@ def run_v5_breakout_check() -> int:
     sent = 0
     now = datetime.now()
     now_str = now.strftime("%H:%M")
+    today = now.date()
 
     for it in items:
         sid = str(it["stock_id"])
@@ -202,6 +245,28 @@ def run_v5_breakout_check() -> int:
         if prev_close and prev_close > 0:
             gain_pct = (price - prev_close) / prev_close * 100
             if max_gain is not None and gain_pct > max_gain:
+                continue
+
+        # 5) 型態 B 盤中重驗：守月線是否仍成立（底底高沿用 EOD）
+        if it.get("pattern_type") == "B":
+            hit, reason = _verify_pattern_b_still_valid(sid, price, today)
+            if not hit:
+                logger.info(
+                    "v5 B 型 %s 盤中型態失效，跳過推播：%s（現價 %.2f）",
+                    sid, reason, price,
+                )
+                log_event(
+                    "v5_sniper_pattern_b_invalidated",
+                    module="intraday_v5_breakout",
+                    stock_id=sid,
+                    stock_name=it.get("stock_name"),
+                    severity="info",
+                    summary=(
+                        f"{sid} {it.get('stock_name', '')} 型態 B 盤中失效"
+                        f"（{reason}，現價 {price:.2f}）"
+                    ),
+                    payload={"price": price, "reason": reason},
+                )
                 continue
 
         msg = format_v5_alert(
