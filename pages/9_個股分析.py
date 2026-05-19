@@ -921,6 +921,272 @@ def render_scorecard_v3(
     )
 
 
+def render_scorecard_v5(
+    sig,
+    df: pd.DataFrame,
+    v5_params=None,
+):
+    """v5 狙擊手版條件評分卡（10 共同 gate + 型態 A/B 擇一命中）"""
+    from modules.v5_sniper import evaluate_v5, V5Params, score_v5
+
+    p = v5_params or V5Params()
+    # 沒帶 _v5_result 時即時算（個股分析頁直接呼叫，不走 run_scan）
+    r = getattr(sig, "_v5_result", None) if sig is not None else None
+    if r is None:
+        r = evaluate_v5(df, params=p)
+
+    latest = df.iloc[-1]
+    prev   = df.iloc[-2] if len(df) >= 2 else latest
+
+    ma5  = latest.get("ma5",  float("nan"))
+    ma10 = latest.get("ma10", float("nan"))
+    ma20 = latest.get("ma20", float("nan"))
+    ma60 = latest.get("ma60", float("nan"))
+    close = latest["close"]
+    open_ = latest.get("open", float("nan"))
+
+    high_col = "high" if "high" in df.columns else ("max" if "max" in df.columns else None)
+    low_col  = "low"  if "low"  in df.columns else ("min" if "min" in df.columns else None)
+    high_today = float(latest[high_col]) if high_col else float("nan")
+    low_today  = float(latest[low_col])  if low_col  else float("nan")
+    high_prev  = float(prev[high_col])   if high_col else float("nan")
+
+    # 實體比
+    body_pct = float("nan")
+    total_range = high_today - low_today
+    if total_range > 0:
+        body_pct = (close - open_) / total_range * 100
+
+    # 量（張）
+    vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else None
+    vol_today_lots = float(latest[vol_col]) / 1000.0 if vol_col else float("nan")
+    vol_prev_lots  = float(prev[vol_col])  / 1000.0 if vol_col else float("nan")
+    vol_ratio = vol_today_lots / vol_prev_lots if vol_prev_lots and vol_prev_lots > 0 else float("nan")
+
+    # KD / MACD
+    k_val = latest.get("k_value", float("nan"))
+    d_val = latest.get("d_value", float("nan"))
+    macd_val   = latest.get("macd", float("nan"))
+    signal_val = latest.get("macd_signal", float("nan"))
+    hist_val   = latest.get("macd_hist", float("nan"))
+    hist_prev  = prev.get("macd_hist", float("nan"))
+
+    # 糾結度（昨日三線）
+    prev_ma5  = prev.get("ma5",  float("nan"))
+    prev_ma10 = prev.get("ma10", float("nan"))
+    prev_ma20 = prev.get("ma20", float("nan"))
+    squeeze_pct = (
+        (max(prev_ma5, prev_ma10, prev_ma20) - min(prev_ma5, prev_ma10, prev_ma20)) / prev_ma20 * 100
+        if prev_ma20 and prev_ma20 > 0 else float("nan")
+    )
+
+    # 近 10 日 high（型態 A）
+    win_a = p.pattern_a_breakout_window
+    high_10d = float(df[high_col].iloc[-win_a:].max()) if high_col and len(df) >= win_a else float("nan")
+
+    # ── 共同 gate（必要） ───────────────────────────────────────
+    st.markdown("##### 共同 gate（10 條全部達到才入選）")
+
+    conditions_req = [
+        {
+            "name": "MA5 > MA10 > MA20 > MA60（多頭排列、季線之上）",
+            "pass": r.ma_full_bull,
+            "detail": (
+                f"MA5 **{ma5:.2f}** / MA10 **{ma10:.2f}** / MA20 **{ma20:.2f}** / MA60 **{ma60:.2f}**"
+                if not any(pd.isna(v) for v in (ma5, ma10, ma20, ma60)) else "均線資料不足"
+            ),
+            "rule": "四均線由短到長依序遞減，趨勢明確向上",
+        },
+        {
+            "name": "收紅 K",
+            "pass": r.red_candle,
+            "detail": f"今開 **{open_:.2f}** → 今收 **{close:.2f}**",
+            "rule": "Close > Open",
+        },
+        {
+            "name": f"實體 K ≥ 全棒 {p.body_ratio_min*100:.0f}%",
+            "pass": r.body_strong,
+            "detail": (
+                f"(收−開) ÷ (高−低) = **{body_pct:.1f}%**（需 ≥ {p.body_ratio_min*100:.0f}%）"
+                if not pd.isna(body_pct) else "資料不足（高低價缺失）"
+            ),
+            "rule": "排除上下影線過長的弱勢 K 棒",
+        },
+        {
+            "name": "站上 MA5",
+            "pass": r.close_gt_ma5,
+            "detail": (
+                f"今收 **{close:.2f}** vs MA5 **{ma5:.2f}**"
+                if not pd.isna(ma5) else "MA5 資料不足"
+            ),
+            "rule": "Close > MA5",
+        },
+        {
+            "name": "破昨高",
+            "pass": r.high_gt_prev,
+            "detail": (
+                f"今高 **{high_today:.2f}** vs 昨高 **{high_prev:.2f}**"
+                if not pd.isna(high_today) and not pd.isna(high_prev) else "高價資料不足"
+            ),
+            "rule": "High > High[1]，確認盤中有突破動能",
+        },
+        {
+            "name": f"量增 ≥ 昨量 × {p.vol_mult:.1f}",
+            "pass": r.vol_breakout,
+            "detail": (
+                f"今量 **{vol_today_lots:,.0f}** 張 / 昨量 **{vol_prev_lots:,.0f}** 張 = **{vol_ratio:.2f}x**"
+                if not pd.isna(vol_ratio) else "成交量資料不足"
+            ),
+            "rule": f"Volume ≥ Volume[1] × {p.vol_mult:.1f}",
+        },
+        {
+            "name": f"今量 ≥ {p.min_lots:,} 張（量地板）",
+            "pass": r.vol_floor_ok,
+            "detail": (
+                f"今量 **{vol_today_lots:,.0f}** 張（需 ≥ {p.min_lots:,}）"
+                if not pd.isna(vol_today_lots) else "成交量資料不足"
+            ),
+            "rule": "避免冷門股訊號雜訊",
+        },
+        {
+            "name": "KD：K > D",
+            "pass": r.kd_bull,
+            "detail": (
+                f"K **{k_val:.1f}** vs D **{d_val:.1f}**"
+                if not pd.isna(k_val) and not pd.isna(d_val)
+                else "KD 欄位缺失，預設通過（不誤殺）"
+            ),
+            "rule": "短期動能多方",
+        },
+        {
+            "name": "MACD：DIF > DEA 且兩者 > 0",
+            "pass": r.macd_bull_zero_above,
+            "detail": (
+                f"DIF=**{macd_val:.4f}** / DEA=**{signal_val:.4f}**"
+                if not pd.isna(macd_val) and not pd.isna(signal_val) else "MACD 資料不足"
+            ),
+            "rule": "MACD 零軸上多頭排列",
+        },
+        {
+            "name": "MACD OSC > 0 且加長",
+            "pass": r.macd_osc_growing,
+            "detail": (
+                f"今 OSC **{hist_val:.4f}** vs 昨 OSC **{hist_prev:.4f}**"
+                if not pd.isna(hist_val) and not pd.isna(hist_prev) else "OSC 資料不足"
+            ),
+            "rule": "OSC > 0 且 OSC > OSC[1]，動能持續放大",
+        },
+    ]
+
+    if r.gain_cap_applied:
+        conditions_req.append({
+            "name": f"今日漲幅 ≤ {p.max_gain_pct:.1f}%（防追高）",
+            "pass": r.gain_within_cap,
+            "detail": f"今日漲幅 = **{r.gain_pct:+.2f}%**",
+            "rule": f"避免在已大漲日追進（門檻 {p.max_gain_pct:.1f}%）",
+        })
+
+    for c in conditions_req:
+        with st.container(border=True):
+            col_ic, col_info = st.columns([0.08, 0.92])
+            col_ic.markdown(
+                f"<div style='font-size:1.6rem;text-align:center'>{_badge(c['pass'])}</div>",
+                unsafe_allow_html=True,
+            )
+            col_info.markdown(
+                f"**{c['name']}**  \n"
+                f"<span style='font-size:0.82rem;color:#aaa'>{c['rule']}</span>",
+                unsafe_allow_html=True,
+            )
+            col_info.caption(c["detail"])
+
+    # ── 型態（A / B 擇一命中即可） ──────────────────────────────
+    st.markdown("##### 型態 A 或 B（擇一命中即入選）")
+
+    pattern_a_hit = r.pattern_a_squeeze_ok and r.pattern_a_break_10d
+    with st.container(border=True):
+        st.markdown(
+            f"<div style='font-size:1.05rem'>{_badge(pattern_a_hit)} "
+            f"<b>型態 A：均線糾結 + 突破近 {p.pattern_a_breakout_window} 日新高</b>"
+            f" <span style='color:#aaa;font-size:0.85rem'>（盤整突破）</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"　{_badge(r.pattern_a_squeeze_ok)} 昨日三線糾結度 "
+            f"**{squeeze_pct:.2f}%** "
+            f"（需 < {p.pattern_a_squeeze_pct:.1f}%）"
+            if not pd.isna(squeeze_pct) else "　糾結度資料不足"
+        )
+        st.caption(
+            f"　{_badge(r.pattern_a_break_10d)} 今收 **{close:.2f}** vs 近 "
+            f"{p.pattern_a_breakout_window} 日最高 **{high_10d:.2f}**"
+            if not pd.isna(high_10d) else "　近期最高資料不足"
+        )
+
+    pattern_b_hit = r.pattern_type == "B" or (
+        r.pattern_b_higher_low and r.pattern_b_above_ma20 and r.pattern_b_consolidating
+    ) or r.pattern_b_n_pattern_hit
+    with st.container(border=True):
+        st.markdown(
+            f"<div style='font-size:1.05rem'>{_badge(pattern_b_hit)} "
+            f"<b>型態 B：回檔再上</b>"
+            f" <span style='color:#aaa;font-size:0.85rem'>"
+            f"（{'N 字底嚴謹版' if p.pattern_b_use_n_pattern else '回檔守月線'}）</span></div>",
+            unsafe_allow_html=True,
+        )
+        if p.pattern_b_use_n_pattern:
+            st.caption(
+                f"　{_badge(r.pattern_b_n_pattern_hit)} N 字底 A→B→C 點成形"
+                f"（C 點回檔 {p.n_pattern_min_c_retrace_pct:.0f}–{p.n_pattern_max_c_retrace_pct:.0f}%、"
+                f"≤ {p.n_pattern_max_c_age_days} 日內）"
+            )
+        else:
+            n_recent = p.pattern_b_recent_low_window
+            n_prior  = p.pattern_b_prior_low_window
+            n_above  = p.pattern_b_above_ma20_window
+            n_rh     = p.pattern_b_recent_high_window
+            n_ch     = p.pattern_b_compare_high_window
+            recent_low = float(df[low_col].iloc[-n_recent:].min()) if low_col else float("nan")
+            prior_low  = float(df[low_col].iloc[-(n_recent + n_prior):-n_recent].min()) if low_col else float("nan")
+            recent_high = float(df[high_col].iloc[-n_rh:].max()) if high_col else float("nan")
+            compare_high = float(df[high_col].iloc[-n_ch:].max()) if high_col else float("nan")
+            st.caption(
+                f"　{_badge(r.pattern_b_higher_low)} 底底高："
+                f"近 {n_recent} 日 Low **{recent_low:.2f}** > 前 {n_prior} 日 Low **{prior_low:.2f}**"
+                if not pd.isna(recent_low) and not pd.isna(prior_low) else "　底底高資料不足"
+            )
+            st.caption(
+                f"　{_badge(r.pattern_b_above_ma20)} 守月線：過去 {n_above} 日 Close 每天都 > MA20"
+            )
+            st.caption(
+                f"　{_badge(r.pattern_b_consolidating)} 真有回檔："
+                f"近 {n_rh} 日 High **{recent_high:.2f}** < 近 {n_ch} 日 High **{compare_high:.2f}**"
+                if not pd.isna(recent_high) and not pd.isna(compare_high) else "　回檔資料不足"
+            )
+
+    # ── 總判定 ──────────────────────────────────────────────────
+    passes = r.gate_passed and r.pattern_type in ("A", "B")
+    total = score_v5(r)
+    score_color = "#27ae60" if passes else ("#f39c12" if r.gate_passed else "#e74c3c")
+    if passes:
+        verdict = f"✅ 符合入選條件（型態 {r.pattern_type}）"
+    elif r.gate_passed:
+        verdict = "⚠️ 共同 gate 通過，但無型態命中"
+    else:
+        verdict = "❌ 共同 gate 未通過"
+    max_gate = 85 if r.gain_cap_applied else 80
+    max_total = max_gate + 20  # 型態 A 滿分
+    st.markdown(
+        f"<div style='text-align:center;padding:12px;border-radius:8px;"
+        f"background:{score_color}22;border:1px solid {score_color}'>"
+        f"<span style='font-size:1.1rem'>{verdict}</span>&nbsp;&nbsp;"
+        f"<span style='font-size:1.6rem;font-weight:bold;color:{score_color}'>{total} 分</span>"
+        f"<span style='color:#aaa;font-size:0.85rem'> / {max_total} 滿分（gate {max_gate} + 型態 A 20 / B 15）</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_daily_chart(stock_id: str, df: pd.DataFrame, *, intraday_last: bool = False):
     """日K線圖 + 均線 + 布林 + 成交量"""
     fig = make_subplots(
@@ -1655,13 +1921,22 @@ with st.sidebar:
     if _custom_preset:
         st.caption("已套用目前儲存的自訂模式條件檢查")
 
+    _preset_sv = str(_custom_preset.get("sb_strategy_version", ""))
+    _sv_options = ["v4 領先攻擊版", "v3 均線突破版", "v5 狙擊手版"]
+    if _preset_sv.startswith("v5"):
+        _sv_index = 2
+    elif _preset_sv.startswith("v3"):
+        _sv_index = 1
+    else:
+        _sv_index = 0
     strategy_version = st.radio(
         "策略版本",
-        options=["v4 領先攻擊版", "v3 均線突破版"],
-        index=1 if str(_custom_preset.get("sb_strategy_version", "")).startswith("v3") else 0,
+        options=_sv_options,
+        index=_sv_index,
         help=(
             "**v4 領先攻擊版**：7項嚴格必要條件（三線齊穿首日 + 均線糾結 + 量爆發 + ATR過熱保護 + RS>80 + 60日新高 + 主力連3日買超）  \n"
-            "**v3 均線突破版**：站上MA20 + MA20向上 + 量增 + 不低於布林下軌 + MACD/RSI + 主力連3日買超"
+            "**v3 均線突破版**：站上MA20 + MA20向上 + 量增 + 不低於布林下軌 + MACD/RSI + 主力連3日買超  \n"
+            "**v5 狙擊手版**：10 條共同 gate（多頭排列、紅K、量增、KD、MACD…）+ 型態 A（糾結突破）/ B（回檔再上）擇一命中"
         ),
     )
 
@@ -1670,9 +1945,42 @@ with st.sidebar:
         options=["嚴謹型（昨日三線全在線下）", "寬鬆型（昨日任一線在線下）"],
         index=1 if str(_custom_preset.get("sb_ma_mode", "")).startswith("寬鬆") else 0,
         help="嚴謹型：昨收 < min(MA5,MA10,MA20)；寬鬆型：昨收 < max(MA5,MA10,MA20)",
-        disabled=(strategy_version == "v3 均線突破版"),
+        disabled=(strategy_version != "v4 領先攻擊版"),
     )
     ma_breakout_mode = "strict" if _ma_mode_label.startswith("嚴謹") else "loose"
+
+    # v5 進階設定（僅 v5 顯示）
+    v5_params = None
+    if strategy_version == "v5 狙擊手版":
+        from modules.v5_sniper import V5Params
+        with st.expander("🎯 v5 進階設定", expanded=False):
+            v5_apply_gain_cap = st.checkbox(
+                "啟用『今日漲幅 ≤ 上限』gate",
+                value=False,
+                help="未啟用時 gate 視為通過、不計分、不顯示標籤",
+            )
+            if v5_apply_gain_cap:
+                v5_max_gain_pct = st.slider(
+                    "今日漲幅上限（%）", 1.0, 10.0, 7.0, 0.5,
+                )
+            else:
+                v5_max_gain_pct = None
+            v5_squeeze_pct = st.slider(
+                "型態 A 均線糾結度上限（%）", 1.0, 8.0, 3.0, 0.5,
+                help="昨日 (max(MA5,10,20) − min) / MA20 < 此值。盤中 v5 builder 預設放寬到 4%。",
+            )
+            v5_pattern_b_mode = st.radio(
+                "型態 B 模式",
+                options=["回檔守月線（pullback，預設）", "N 字底嚴謹版（n_pattern_detector）"],
+                index=0,
+                help="pullback：底底高 + 守月線 + 真有回檔；n_pattern：A/B/C 點明確",
+            )
+            v5_use_n_pattern = v5_pattern_b_mode.startswith("N")
+        v5_params = V5Params(
+            max_gain_pct=v5_max_gain_pct,
+            pattern_a_squeeze_pct=v5_squeeze_pct,
+            pattern_b_use_n_pattern=v5_use_n_pattern,
+        )
 
     analyze_btn = st.button("🔎 開始分析", type="primary", use_container_width=True)
 
@@ -1701,6 +2009,7 @@ if analyze_btn:
     st.session_state["analysis_date"] = analysis_date
     st.session_state["analysis_ma_mode"] = ma_breakout_mode
     st.session_state["analysis_strategy"] = strategy_version
+    st.session_state["analysis_v5_params"] = v5_params
     st.session_state.pop("analysis_df", None)
 
 target_id         = st.session_state.get("analysis_stock", stock_input)
@@ -1708,6 +2017,7 @@ _active_date      = st.session_state.get("analysis_date", _date_cls.today())
 _is_hist          = _active_date < _date_cls.today()
 _ma_breakout_mode = st.session_state.get("analysis_ma_mode", ma_breakout_mode)
 _strategy         = st.session_state.get("analysis_strategy", strategy_version)
+_v5_params        = st.session_state.get("analysis_v5_params", v5_params)
 
 # ── 載入資料 ─────────────────────────────────────────────────────
 with st.spinner(f"載入 {target_id} 資料中..."):
@@ -1870,7 +2180,10 @@ col_score, col_chart = st.columns([0.4, 0.6])
 
 with col_score:
     _has_inst = bool(inst_buying)
-    if _strategy == "v3 均線突破版":
+    if _strategy == "v5 狙擊手版":
+        st.subheader("📋 v5 條件評分卡")
+        render_scorecard_v5(sig, df, v5_params=_v5_params)
+    elif _strategy == "v3 均線突破版":
         st.subheader("📋 v3 條件評分卡")
         render_scorecard_v3(
             sig,
