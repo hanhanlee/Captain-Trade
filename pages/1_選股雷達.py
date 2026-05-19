@@ -1860,6 +1860,57 @@ with tab_funnel:
                 ("MACD 或 RSI",          lambda s: s.above_ma20 and s.ma20_rising and s.volume_surge and s.above_bb_lower and (s.macd_cross or s.rsi_healthy)),
                 ("主力連 3 日買超",       lambda s: s.passes_basic_v3()),
             ]
+        elif _scan_sv == "v5":
+            # v5：共同 gate（10 條，含漲幅 cap 視啟用）+ 型態 A 或 B 命中
+            # 漲幅 cap 是否啟用由本次掃描的第一個有效 _v5_result 決定（同一掃描中一致）
+            _v5_cap_applied = False
+            for _v in cond_stocks:
+                _r = getattr(_v["sig"], "_v5_result", None)
+                if _r is not None:
+                    _v5_cap_applied = bool(_r.gain_cap_applied)
+                    break
+
+            def _v5_gate(field):
+                def fn(s):
+                    r = getattr(s, "_v5_result", None)
+                    return bool(r and getattr(r, field, False))
+                return fn
+
+            def _v5_pattern_hit(s):
+                r = getattr(s, "_v5_result", None)
+                return bool(r and r.pattern_type in ("A", "B"))
+
+            _v5_gate_specs = [
+                ("MA5>MA10>MA20>MA60",  "ma_full_bull"),
+                ("收紅 K",              "red_candle"),
+                ("實體 ≥ 60%",          "body_strong"),
+                ("站上 MA5",            "close_gt_ma5"),
+                ("破昨高",              "high_gt_prev"),
+                ("量增 ≥ 1.5×",         "vol_breakout"),
+                ("量 ≥ 1000 張",        "vol_floor_ok"),
+                ("KD：K > D",           "kd_bull"),
+                ("MACD 零軸上多頭",     "macd_bull_zero_above"),
+                ("MACD OSC 加長",       "macd_osc_growing"),
+            ]
+            if _v5_cap_applied:
+                _v5_gate_specs.append(("今日漲幅 ≤ 上限", "gain_within_cap"))
+
+            MANDATORY = []
+            _v5_accum = []
+            for _lbl, _fld in _v5_gate_specs:
+                _v5_accum.append(_fld)
+                _snap = tuple(_v5_accum)
+                MANDATORY.append((
+                    _lbl,
+                    lambda s, fs=_snap: all(_v5_gate(f)(s) for f in fs),
+                ))
+            _v5_final_snap = tuple(_v5_accum)
+            MANDATORY.append((
+                "型態 A 或 B 命中",
+                lambda s, fs=_v5_final_snap: (
+                    all(_v5_gate(f)(s) for f in fs) and _v5_pattern_hit(s)
+                ),
+            ))
         else:
             MANDATORY = [
                 ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
@@ -1936,40 +1987,68 @@ with tab_funnel:
             prev_count = cnt
 
         # ── 加分條件命中率（在最終入選股中）────────────────────
+        if _scan_sv == "v5":
+            from modules.v5_sniper import passes_basic_v5 as _v5_pass
         if _scan_sv == "v3":
             final_sigs = [v["sig"] for v in cond_stocks if v["sig"] and v["sig"].passes_basic_v3()]
+        elif _scan_sv == "v5":
+            final_sigs = [
+                v["sig"] for v in cond_stocks
+                if v["sig"] and _v5_pass(getattr(v["sig"], "_v5_result", None))
+            ]
         else:
             final_sigs = [v["sig"] for v in cond_stocks if v["sig"] and v["sig"].passes_basic()]
         if final_sigs:
-            st.markdown("#### 加分條件命中率（最終入選股）")
-            if _scan_sv == "v3":
-                ADDITIVE = [
-                    ("法人買超",            lambda s: s.institutional_buy),
-                    ("週線多頭",            lambda s: s.weekly_trend_up),
-                    ("相對強勢 RS > 70",    lambda s: s.rs_positive),
-                    ("多頭排列",            lambda s: s.ma_aligned),
-                    ("量能優質",            lambda s: s.vol_quality),
-                    ("突破 60 日新高",      lambda s: s.breakout),
-                    ("籌碼乾淨",            lambda s: s.margin_clean),
+            if _scan_sv == "v5":
+                # v5 沒有獨立加分條件（共同 gate 已是強制 + 型態 A/B 為加分）
+                # 改顯示「型態組成」與「漲幅 cap 是否啟用」幫助判讀
+                st.markdown("#### 型態組成（最終入選股）")
+                n_final = len(final_sigs)
+                pat_a = sum(
+                    1 for s in final_sigs
+                    if getattr(getattr(s, "_v5_result", None), "pattern_type", None) == "A"
+                )
+                pat_b = sum(
+                    1 for s in final_sigs
+                    if getattr(getattr(s, "_v5_result", None), "pattern_type", None) == "B"
+                )
+                pat_rows = [
+                    {"型態": "A：盤整突破", "命中": pat_a,
+                     "佔比": f"{pat_a/n_final*100:.1f}%" if n_final else "—"},
+                    {"型態": "B：回檔再上", "命中": pat_b,
+                     "佔比": f"{pat_b/n_final*100:.1f}%" if n_final else "—"},
                 ]
+                st.dataframe(pd.DataFrame(pat_rows), use_container_width=True, hide_index=True)
             else:
-                ADDITIVE = [
-                    ("布林頻寬縮減",        lambda s: s.bb_bandwidth_shrink),
-                    ("投信首日買超",        lambda s: s.trust_first_buy),
-                    ("週線扣抵低位",        lambda s: s.weekly_deduction_low),
-                    ("相對強勢 RS > 70",    lambda s: s.rs_positive),
-                    ("籌碼乾淨",            lambda s: s.margin_clean),
-                ]
-            add_rows = []
-            n_final = len(final_sigs)
-            for label, fn in ADDITIVE:
-                cnt = sum(1 for s in final_sigs if fn(s))
-                add_rows.append({
-                    "條件": label,
-                    "命中": cnt,
-                    "命中率": f"{cnt/n_final*100:.1f}%",
-                })
-            st.dataframe(pd.DataFrame(add_rows), use_container_width=True, hide_index=True)
+                st.markdown("#### 加分條件命中率（最終入選股）")
+                if _scan_sv == "v3":
+                    ADDITIVE = [
+                        ("法人買超",            lambda s: s.institutional_buy),
+                        ("週線多頭",            lambda s: s.weekly_trend_up),
+                        ("相對強勢 RS > 70",    lambda s: s.rs_positive),
+                        ("多頭排列",            lambda s: s.ma_aligned),
+                        ("量能優質",            lambda s: s.vol_quality),
+                        ("突破 60 日新高",      lambda s: s.breakout),
+                        ("籌碼乾淨",            lambda s: s.margin_clean),
+                    ]
+                else:
+                    ADDITIVE = [
+                        ("布林頻寬縮減",        lambda s: s.bb_bandwidth_shrink),
+                        ("投信首日買超",        lambda s: s.trust_first_buy),
+                        ("週線扣抵低位",        lambda s: s.weekly_deduction_low),
+                        ("相對強勢 RS > 70",    lambda s: s.rs_positive),
+                        ("籌碼乾淨",            lambda s: s.margin_clean),
+                    ]
+                add_rows = []
+                n_final = len(final_sigs)
+                for label, fn in ADDITIVE:
+                    cnt = sum(1 for s in final_sigs if fn(s))
+                    add_rows.append({
+                        "條件": label,
+                        "命中": cnt,
+                        "命中率": f"{cnt/n_final*100:.1f}%",
+                    })
+                st.dataframe(pd.DataFrame(add_rows), use_container_width=True, hide_index=True)
 
         # ── 差一條件入選（Near-miss）────────────────────────────
         st.markdown("#### 差一條件入選的股票")
@@ -1984,6 +2063,10 @@ with tab_funnel:
                 ("MACD 或 RSI",        lambda s: s.macd_cross or s.rsi_healthy),
                 ("主力連 3 日買超",     lambda s: s.main_force_buy_3d),
             ]
+        elif _scan_sv == "v5":
+            # 沿用上面 v5 漏斗的 gate fn / pattern 判定
+            MANDATORY_CHECKS = [(lbl, _v5_gate(fld)) for lbl, fld in _v5_gate_specs]
+            MANDATORY_CHECKS.append(("型態 A 或 B 命中", _v5_pattern_hit))
         else:
             MANDATORY_CHECKS = [
                 ("三線齊穿（首日）",   lambda s: s.ma_triple_breakout),
@@ -1999,7 +2082,13 @@ with tab_funnel:
             if v["exclude_pre"] is not None or v["sig"] is None:
                 continue
             sig = v["sig"]
-            if (sig.passes_basic_v3() if _scan_sv == "v3" else sig.passes_basic()):
+            if _scan_sv == "v3":
+                _already_in = sig.passes_basic_v3()
+            elif _scan_sv == "v5":
+                _already_in = _v5_pass(getattr(sig, "_v5_result", None))
+            else:
+                _already_in = sig.passes_basic()
+            if _already_in:
                 continue  # 已入選
             failed = [lbl for lbl, fn in MANDATORY_CHECKS if not fn(sig)]
             if len(failed) == 1:
