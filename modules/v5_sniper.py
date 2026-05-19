@@ -123,6 +123,19 @@ class V5Result:
     pattern_b_n_pattern_hit: bool = False  # 若改採 n_pattern_detector
 
 
+# ── 欄位正規化 ─────────────────────────────────────────────────────────
+def _normalize_hl(df: pd.DataFrame) -> pd.DataFrame:
+    """FinMind 原始欄位用 max/min，本模組以 high/low 為準；缺則補映射。"""
+    if df is None or df.empty:
+        return df
+    rename = {}
+    if "high" not in df.columns and "max" in df.columns:
+        rename["max"] = "high"
+    if "low" not in df.columns and "min" in df.columns:
+        rename["min"] = "low"
+    return df.rename(columns=rename) if rename else df
+
+
 # ── 主要入口 ────────────────────────────────────────────────────────────
 def evaluate_v5(
     df: pd.DataFrame,
@@ -141,6 +154,8 @@ def evaluate_v5(
 
     if df is None or df.empty or len(df) < 60:
         return result
+
+    df = _normalize_hl(df)
 
     # ── 取最後兩根做比較 ──
     last = df.iloc[-1]
@@ -499,6 +514,7 @@ def evaluate_v5_for_builder(
     if df is None or df.empty or len(df) < 60:
         return None
 
+    df = _normalize_hl(df)
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -652,6 +668,7 @@ def verify_pattern_b_intraday(
     if df_eod is None or df_eod.empty:
         chk.reason = "df_eod 為空"
         return chk
+    df_eod = _normalize_hl(df_eod)
     needed = max(n_recent + n_prior + 1, 20, n_compare_h)
     if len(df_eod) < needed:
         chk.reason = f"資料不足（需 {needed} 根，現有 {len(df_eod)} 根）"
