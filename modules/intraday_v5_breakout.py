@@ -6,7 +6,7 @@
   2. 突破：price >= breakout_target
        - 型態 A：breakout_target = 近 10 日最高
        - 型態 B：breakout_target = 昨日最高（破昨高即點火）
-  3. 量增：預估全日量 >= 昨量 × 1.5（v5 規格用「對昨量」而非對五日均量）
+  3. 量增：預估全日量 >= 前 5 日均量 × 1.3
   4. 量底：預估全日量 >= 1000 張
   5. （選用）漲幅 cap：若 row 上有 max_gain_pct，當日漲幅須 ≤ 該值
   6. 型態 B 候選：盤中重驗守月線（用現價當今日 close、重算今日 MA20）
@@ -16,7 +16,7 @@
 
 設計選擇：
   - 不檢查「實體紅K 60%」與「站上 MA5」：盤中跳動雜訊大，留到收盤再說
-  - 量倍對昨量（v5 規格），與 v3 對五日均量不同
+  - 量倍對前 5 日均量（與 v3 一致）
   - 型態 B 守月線重驗：對「08:50 入名單，但今日早盤跌破月線」的候選做安全網
   - EOD df + 指標當日只算一次，模組級快取在 _EOD_DF_CACHE
   - 若 Shioaji 未登入，本輪安靜跳過
@@ -28,7 +28,7 @@ from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
 
-VOLUME_MULT = 1.5            # 預估全日量 ÷ 昨量 倍數門檻（v5 規格）
+VOLUME_MULT = 1.3            # 預估全日量 ÷ 前 5 日均量 倍數門檻
 MIN_LOTS = 1000              # 預估全日量最低張數
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
@@ -114,7 +114,7 @@ def format_v5_alert(
     target = float(item.get("breakout_target") or 0)
     prev_high = float(item.get("prev_high") or 0)
     prev_close = float(item.get("prev_close") or 0)
-    prev_vol = float(item.get("prev_volume") or 0)
+    avg5_vol = float(item.get("vol_ma5") or 0)
     ma5 = float(item.get("ma5") or 0)
     ma10 = float(item.get("ma10") or 0)
     ma20 = float(item.get("ma20") or 0)
@@ -129,12 +129,12 @@ def format_v5_alert(
         "B": "型態 B：N 字底回檔再上（破昨高）",
     }.get(pat, f"型態 {pat}")
 
-    if estimated_volume is not None and prev_vol > 0:
-        vol_ratio = estimated_volume / prev_vol
+    if estimated_volume is not None and avg5_vol > 0:
+        vol_ratio = estimated_volume / avg5_vol
         vol_line = (
             f"  累積 {total_volume:.0f} 張"
             f"（×{scale_factor} 推估全日 {estimated_volume:.0f} 張"
-            f" = {vol_ratio:.2f}× 昨量 {prev_vol:.0f} 張）"
+            f" = {vol_ratio:.2f}× 5日均量 {avg5_vol:.0f} 張）"
         )
     else:
         vol_line = "  量能未知"
@@ -149,7 +149,7 @@ def format_v5_alert(
         f"  昨收 {prev_close:.2f} / 昨高 {prev_high:.2f}",
         f"  MA5={ma5:.2f} / MA10={ma10:.2f} / MA20={ma20:.2f} / MA60={ma60:.2f}",
         f"  均線糾結度：{spread:.2f}%" if spread is not None else "",
-        "─ 量能（預估全日 vs 昨量）─",
+        "─ 量能（預估全日 vs 5 日均量）─",
         vol_line,
         "─ 現價 ─",
         f"  {price:.2f}（突破目標 {target:.2f} +{breakout_pct:.2f}%）",
@@ -217,21 +217,21 @@ def run_v5_breakout_check() -> int:
             continue
 
         target = _to_float(it.get("breakout_target"))
-        prev_vol = _to_float(it.get("prev_volume"))
-        if target is None or prev_vol is None or prev_vol <= 0:
+        avg5_vol = _to_float(it.get("vol_ma5"))
+        if target is None or avg5_vol is None or avg5_vol <= 0:
             continue
 
         # 1) 突破目標價（含等於）
         if price < target:
             continue
 
-        # 2) 量增：預估全日量 >= 昨量 × VOLUME_MULT
+        # 2) 量增：預估全日量 >= 前 5 日均量 × VOLUME_MULT
         total_volume = _to_float(snap.get("total_volume"))
         if total_volume is None:
             continue
-        # Shioaji total_volume 單位通常為「張」，與 watchlist 內 prev_volume 同單位
+        # Shioaji total_volume 單位通常為「張」，與 watchlist 內 vol_ma5 同單位
         estimated_vol, scale = _estimate_full_day_volume(total_volume, now)
-        if estimated_vol < prev_vol * VOLUME_MULT:
+        if estimated_vol < avg5_vol * VOLUME_MULT:
             continue
 
         # 3) 量底：預估全日量 >= MIN_LOTS
@@ -306,7 +306,7 @@ def run_v5_breakout_check() -> int:
                 "breakout_target": target,
                 "prev_high": it.get("prev_high"),
                 "prev_close": prev_close,
-                "prev_volume": prev_vol,
+                "vol_ma5": avg5_vol,
                 "total_volume": total_volume,
                 "estimated_volume": estimated_vol,
                 "vol_scale_factor": scale,

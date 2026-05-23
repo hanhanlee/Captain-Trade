@@ -9,7 +9,7 @@ v5 狙擊手版 — 精準型突破與回檔選股雷達
          pullback（預設）：
            - 近 5 日 Low > 前 6~20 日 Low（底底高）
            - 過去 5 日 Close 都 > MA20（守月線）
-           - 近 5 日 High < 近 20 日 High（確認近期有回檔過）
+           - 近 3 日 High < 近 20 日 High（確認近期有回檔過，3 日窗抓快回檔）
          n_pattern（嚴謹）：呼叫 n_pattern_detector，A/B/C 點明確
 
 共同 gate（不分型態都要過）：
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 class V5Params:
     # 共同 gate
     body_ratio_min: float = 0.60         # 實體 K / 全棒振幅
-    vol_mult: float = 1.5                # 今量 ÷ 昨量 倍數門檻
+    vol_mult: float = 1.3                # 今量 ÷ 前 5 日均量 倍數門檻
     min_lots: int = 1000                 # 最低成交張數
     max_gain_pct: Optional[float] = None # 今日漲幅上限（防追高）；None = 停用此 gate
     ma_full_alignment: bool = True       # MA5>MA10>MA20>MA60
@@ -71,14 +71,15 @@ class V5Params:
     # pullback 規格：
     #   條件 1（底底高）：Lowest(Low, 5) > Lowest(Low[5], 15) — 拉回不破前低
     #   條件 2（守月線）：過去 N 日 Close 每天都 > MA20 — 回檔在月線之上
-    #   條件 3（真有回檔）：Highest(High, 5) < Highest(High, 20) — 最近 5 日未創 20 日新高
+    #   條件 3（真有回檔）：Highest(High, 3) < Highest(High, 20) — 最近 3 日未創 20 日新高
     #     避免「連續向上沒回檔」的股票被歸到型態 B（那種應交給型態 A）
+    #     用 3 日（不是 5 日）才能抓到「3–4 日快回檔反彈」型態，5 日窗會誤殺
     #   條件 4、5（紅K突破MA5 / 突破前日高）已在共同 gate，不重複實作
     pattern_b_use_n_pattern: bool = False # True = 呼叫 n_pattern_detector（嚴謹）；False = pullback（守月線）
     pattern_b_recent_low_window: int = 5
     pattern_b_prior_low_window: int = 15  # 前 6~20 日 → 跳過近 5 後再取 15 根
     pattern_b_above_ma20_window: int = 5  # 過去 N 日 Close 都 > MA20
-    pattern_b_recent_high_window: int = 5  # 近 N 日最高
+    pattern_b_recent_high_window: int = 3  # 近 N 日最高（3 天版：抓 3–4 日快回檔反彈）
     pattern_b_compare_high_window: int = 20  # 比對的長視窗（含近 N 日）
 
     # n_pattern_detector 透傳參數（pattern_b_use_n_pattern=True 時生效）
@@ -119,7 +120,7 @@ class V5Result:
     # 型態 B
     pattern_b_higher_low: bool = False
     pattern_b_above_ma20: bool = False     # pullback 模式：過去 N 日 Close 都 > MA20
-    pattern_b_consolidating: bool = False  # pullback 模式：近 5 日高 < 近 20 日高（確認有回檔）
+    pattern_b_consolidating: bool = False  # pullback 模式：近 3 日高 < 近 20 日高（確認有回檔）
     pattern_b_n_pattern_hit: bool = False  # 若改採 n_pattern_detector
 
 
@@ -190,8 +191,10 @@ def evaluate_v5(
 
     # Volume 單位：FinMind Trading_Volume 為「股」，1 張 = 1000 股
     vol_today_lots = float(last[vol_col]) / 1000.0
-    vol_prev_lots = float(prev[vol_col]) / 1000.0
-    result.vol_breakout = vol_today_lots >= vol_prev_lots * p.vol_mult
+    # 量能門檻基準：前 5 日（不含今日）平均成交量
+    prev5_vol_series = pd.to_numeric(df[vol_col].iloc[-6:-1], errors="coerce").dropna()
+    vol_avg5_lots = float(prev5_vol_series.mean()) / 1000.0 if not prev5_vol_series.empty else 0.0
+    result.vol_breakout = vol_avg5_lots > 0 and vol_today_lots >= vol_avg5_lots * p.vol_mult
     result.vol_floor_ok = vol_today_lots >= p.min_lots
 
     # 漲幅上限（防追高）— 可選 gate
@@ -324,8 +327,10 @@ def _pattern_b_via_pullback(
     型態 B 簡化版（pullback / 守月線）：
       條件 1（底底高）：近 5 日 Low 最小 > 前 6~20 日 Low 最小
       條件 2（守月線）：過去 N 日 Close 每天都 > MA20
-      條件 3（真有回檔）：近 5 日 High 最大 < 近 20 日 High 最大
+      條件 3（真有回檔）：近 3 日 High 最大 < 近 20 日 High 最大
                        避免「一路向上沒回檔」的股票被歸到型態 B
+                       （3 日窗是為了能抓「3–4 日快回檔」型態，5 日窗會把
+                       反彈日的視窗回拉到當初的 20 日高，導致誤殺）
 
     註：「紅K + 站上 MA5」、「突破前日高」已在 evaluate_v5 共同 gate 涵蓋
         （red_candle / close_gt_ma5 / high_gt_prev），此函式不重複實作。
@@ -337,7 +342,7 @@ def _pattern_b_via_pullback(
     n_recent = p.pattern_b_recent_low_window           # 5
     n_prior = p.pattern_b_prior_low_window             # 15
     n_above = p.pattern_b_above_ma20_window            # 5
-    n_recent_h = p.pattern_b_recent_high_window        # 5
+    n_recent_h = p.pattern_b_recent_high_window        # 3
     n_compare_h = p.pattern_b_compare_high_window      # 20
 
     if len(df) < max(n_recent + n_prior + 1, n_compare_h):
@@ -423,7 +428,7 @@ def triggered_labels_v5(result: V5Result) -> list[str]:
         "body_strong": "實體紅K≥60%",
         "close_gt_ma5": "站上MA5",
         "high_gt_prev": "破昨高",
-        "vol_breakout": "量增1.5x",
+        "vol_breakout": "量增1.3x(5日均)",
         "vol_floor_ok": "量≥1000張",
         "kd_bull": "KD多頭",
         "macd_bull_zero_above": "MACD零軸上",

@@ -163,7 +163,7 @@ def _render_strategy_condition_reference(
 | 收紅 K 且實體 ≥ 60% | +10 | 實體紅柱佔全棒 60% 以上，避免長上影線倒貨 |
 | 收盤站上 MA5 | +5 | 短線支撐扎實 |
 | 今日最高 > 昨日最高 | +10 | 破昨高的點火訊號 |
-| 量增 ≥ 昨日 × 1.5 | +15 | 真突破必須有資金推進 |
+| 量增 ≥ 前 5 日均量 × 1.3 | +15 | 真突破必須有資金推進 |
 | 成交量 ≥ 1000 張 | +5 | 流動性門檻，過濾冷門股 |
 | KD：K > D | +5 | 多頭黃金交叉或強勢延伸（KD 未實作時自動 pass） |
 | MACD：DIF > DEA 且兩者皆 > 0 | +10 | 零軸上的多頭排列 |
@@ -645,7 +645,7 @@ with st.sidebar:
         "sb_use_fundamental": False, "sb_req_eps": True, "sb_req_cf": True,
         "sb_min_roe": 0, "sb_max_debt": 0,
         "sb_ma_mode": "嚴謹型（三線全穿）",
-        "sb_vol_filter_mode": "前日量前 N 名（推薦）", "sb_min_avg_volume": 0,
+        "sb_vol_filter_mode": "前日交易金額前 N 名（推薦）", "sb_min_avg_volume": 0,
         "sb_strategy_version": "v4 領先攻擊版（精準）",
         "sb_main_force_days": 3,
         "sb_require_new_rank_foreign": False,
@@ -785,7 +785,7 @@ with st.sidebar:
                     "簡化回檔（守月線）：\n"
                     "  ① 近 5 日 Low > 前 6~20 日 Low（底底高）\n"
                     "  ② 過去 5 日 Close 都 > MA20（守月線）\n"
-                    "  ③ 近 5 日 High < 近 20 日 High（確認有回檔，非一路向上）\n"
+                    "  ③ 近 3 日 High < 近 20 日 High（確認有回檔，非一路向上）\n"
                     "N 字底偵測器：重用 n_pattern_detector，用 fractal pivot 嚴格定義 A/B/C 點，較嚴。\n"
                     "註：紅K / 站上 MA5 / 突破前日高已在共同 gate，兩模式都會檢查；"
                     "盤中重跑時，最後一日 Close 由現價替代。"
@@ -881,17 +881,21 @@ with st.sidebar:
 
     # ── 流動性 & 產業過濾 ──────────────────────────────────────
     with st.expander("💧 流動性 & 產業過濾", expanded=True):
+        # 舊 session 值 migration：舊版用「前日量」，新版改成「前日交易金額」
+        if st.session_state.get("sb_vol_filter_mode") == "前日量前 N 名（推薦）":
+            st.session_state["sb_vol_filter_mode"] = "前日交易金額前 N 名（推薦）"
+
         vol_filter_mode = st.radio(
             "流動性過濾",
-            ["不過濾", "前日量前 N 名（推薦）", "日均量 ≥ N 張"],
+            ["不過濾", "前日交易金額前 N 名（推薦）", "日均量 ≥ N 張"],
             key="sb_vol_filter_mode",
             help="先過濾低流動性股票，加快掃描速度並聚焦主流股",
         )
-        if vol_filter_mode == "前日量前 N 名（推薦）":
+        if vol_filter_mode == "前日交易金額前 N 名（推薦）":
             top_volume_n = st.number_input("取前 N 名", min_value=50, max_value=500,
                                             value=100, step=50, key="sb_top_volume_n")
             min_avg_volume = 0
-            st.caption("💡 鎖定當天最活躍的股票，動態追蹤市場熱點")
+            st.caption("💡 以交易金額（量 × 收盤）排名，鎖定資金集中的活躍股")
         elif vol_filter_mode == "日均量 ≥ N 張":
             min_avg_volume = st.number_input("最低日均量（張）", min_value=0,
                                               max_value=50000, value=1000, step=100,
@@ -1242,7 +1246,7 @@ with tab_scan:
             st.stop()
 
         # ── 決定掃描股票清單 ──────────────────────────────────────
-        # 當啟用「前日量前 N 名」時，直接從 DB 全市場取量排前 N 名，
+        # 當啟用「前日交易金額前 N 名」時，直接從 DB 全市場按 volume * close 取前 N 名，
         # 避免 scan_mode 的 head() 截斷造成排名母體不正確。
         _all_ids_set = set(stock_list["stock_id"].tolist())
         if top_volume_n > 0:
@@ -1255,7 +1259,8 @@ with tab_scan:
                         _sqlt(
                             "SELECT stock_id FROM price_cache "
                             "WHERE date = :d AND volume IS NOT NULL AND volume > 0 "
-                            "ORDER BY volume DESC LIMIT :n"
+                            "AND close IS NOT NULL AND close > 0 "
+                            "ORDER BY (volume * close) DESC LIMIT :n"
                         ),
                         {"d": _scan_d_str, "n": top_volume_n},
                     ).fetchall()
@@ -1532,10 +1537,23 @@ with tab_scan:
             st.info(f"📊 本次鎖定產業（近 5 日漲幅前 {top_sector_n} 名）：{ind_tags}")
 
         # 套用 v2 進階過濾
+        # V5 模式 skip：V5 內建多重共振（MA full bull + 月線守住 + 60 日新高 + KD/MACD/量能），
+        # 重複疊週線/RS 會誤殺；且 V5 的 signals 標籤沒有「週線多頭」字樣，字串比對會把所有候選清空。
         if not result_df.empty:
-            if require_weekly:
+            _v5_skip_adv = (strategy_version == "v5")
+            if _v5_skip_adv and (require_weekly or min_rs > 0):
+                _skipped = []
+                if require_weekly:
+                    _skipped.append("必須週線多頭")
+                if min_rs > 0:
+                    _skipped.append(f"最低 RS≥{min_rs}")
+                st.caption(
+                    f"ℹ️ V5 模式已停用進階過濾：{'、'.join(_skipped)}"
+                    "（V5 內建多重共振條件，重複疊加會誤殺；如需這些條件請切回 v3/v4）"
+                )
+            if require_weekly and not _v5_skip_adv:
                 result_df = result_df[result_df["signals"].str.contains("週線多頭", na=False)]
-            if min_rs > 0:
+            if min_rs > 0 and not _v5_skip_adv:
                 result_df = result_df[result_df["rs_score"] >= min_rs]
             _bonus_signals = []
             if require_new_rank_foreign:
@@ -1588,7 +1606,7 @@ with tab_scan:
                 )
 
             vol_filter_str = (
-                f"前日量前{top_volume_n}名" if top_volume_n > 0
+                f"前日交易金額前{top_volume_n}名" if top_volume_n > 0
                 else f"日均量≥{min_avg_volume}張" if min_avg_volume > 0
                 else "不過濾"
             )
