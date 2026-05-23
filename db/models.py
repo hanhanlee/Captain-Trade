@@ -493,4 +493,5 @@ class V5SniperWatchlist(Base):
     ma_spread_pct   = Column(Float)                      # 糾結度 %（型態 A 用；型態 B 可 NULL）
     max_gain_pct    = Column(Float)                      # 漲幅上限 %；NULL = 停用 gate
     alerted_today   = Column(Boolean, default=False)
+    entry_path      = Column(String(10), default="morning")  # "morning"=08:50 builder / "late"=盤中補抓
     created_at      = Column(DateTime, default=datetime.now)

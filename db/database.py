@@ -348,6 +348,15 @@ def _migrate_schema():
             """))
             logger.info("migration: 建立 broker_api_events 表")
 
+        # v5_sniper_watchlist entry_path 欄位（區分晨間 builder 與盤中補抓軌道）
+        if _table_exists(conn, "v5_sniper_watchlist") and not _column_exists(
+            conn, "v5_sniper_watchlist", "entry_path"
+        ):
+            conn.execute(text(
+                "ALTER TABLE v5_sniper_watchlist ADD COLUMN entry_path TEXT DEFAULT 'morning'"
+            ))
+            logger.info("migration: v5_sniper_watchlist 新增 entry_path 欄位")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

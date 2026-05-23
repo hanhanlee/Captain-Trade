@@ -18,7 +18,7 @@ _UPSERT_FIELDS = (
     "stock_name", "industry", "pattern_type",
     "breakout_target", "prev_high", "prev_close", "prev_volume",
     "vol_ma5", "ma5", "ma10", "ma20", "ma60",
-    "ma_spread_pct", "max_gain_pct",
+    "ma_spread_pct", "max_gain_pct", "entry_path",
 )
 
 
@@ -52,6 +52,7 @@ def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> i
                     ma60=it.get("ma60"),
                     ma_spread_pct=it.get("ma_spread_pct"),
                     max_gain_pct=it.get("max_gain_pct"),
+                    entry_path=it.get("entry_path", "morning"),
                     alerted_today=False,
                 ))
             else:
@@ -152,6 +153,7 @@ def _row_to_dict(r: V5SniperWatchlist) -> dict:
         "ma60": r.ma60,
         "ma_spread_pct": r.ma_spread_pct,
         "max_gain_pct": r.max_gain_pct,
+        "entry_path": r.entry_path or "morning",
         "alerted_today": bool(r.alerted_today),
         "scan_date": r.scan_date,
     }

@@ -254,6 +254,25 @@ def job_weekly_performance():
         logger.error(f"週報任務失敗：{e}")
 
 
+def job_coverage_report():
+    """
+    每日 06:30 推播當日(前一交易日)資料覆蓋率到 Telegram。
+    確認盤後 prefetch 是否把股價/法人/融資三表抓完。
+    """
+    try:
+        from scripts.coverage_report import build_report
+        from notifications.telegram_notify import send_message
+
+        msg = build_report()
+        ok = send_message(msg)
+        if ok:
+            logger.info("覆蓋率報告已推 Telegram\n%s", msg)
+        else:
+            logger.warning("覆蓋率報告 Telegram 推播失敗\n%s", msg)
+    except Exception as e:
+        logger.error(f"覆蓋率報告任務失敗：{e}", exc_info=True)
+
+
 def job_etf_holdings_update(attempt: int = 1, max_attempts: int = 3, use_today: bool = True):
     """
     抓取 ETF 成分股持股快照並驗證日期。
@@ -488,6 +507,27 @@ def job_v5_sniper_watchlist_build():
         )
 
 
+@skip_if_not_trading_day
+def job_v5_late_qualifier():
+    """
+    盤中 v5 補抓軌道：對科技股池每 5 分鐘做盤中即時 V5 重判。
+
+    為「早上 08:50 沒進 watchlist 但盤中強勢」的票補捉突破訊號。
+    CronTrigger 設 hour="9-13", minute="*/5"，函式內自行限制在 09:15–13:25。
+    """
+    now = datetime.now().time()
+    # 函式內二次防呆：09:15 之前 / 13:25 之後不執行
+    if now < dtime(9, 15) or now > dtime(13, 25):
+        return
+    try:
+        from modules.intraday_v5_late_qualifier import run_v5_late_qualifier_check
+        sent = run_v5_late_qualifier_check()
+        if sent:
+            logger.info(f"盤中 v5 補抓軌道：推播 {sent} 則")
+    except Exception as e:
+        logger.error(f"盤中 v5 補抓軌道檢查失敗：{e}")
+
+
 def run_scheduler():
     """啟動排程器（blocking，適合獨立程序常駐）"""
     global _scheduler
@@ -533,6 +573,17 @@ def run_scheduler():
         CronTrigger(day_of_week="fri", hour=15, minute=10, timezone="Asia/Taipei"),
         id="weekly_report",
         name="週報",
+    )
+
+    # 盤後 prefetch 覆蓋率報告：週二到週六 06:30（回報前一交易日抓取狀況）
+    # 同 db_backup：剛開機高 jitter 風險，給 10 分鐘容錯。
+    scheduler.add_job(
+        job_coverage_report,
+        CronTrigger(day_of_week="tue-sat", hour=6, minute=30, timezone="Asia/Taipei"),
+        id="coverage_report",
+        name="盤後資料覆蓋率報告",
+        misfire_grace_time=600,
+        coalesce=True,
     )
 
     # 每週五持股分佈更新：22:00
@@ -596,15 +647,29 @@ def run_scheduler():
         name="盤中 v5 狙擊手版候選清單建構",
     )
 
+    # v5 補抓軌道：週一到週五 09:15–13:25，每 5 分鐘一次
+    # 對「08:50 沒進 watchlist 但盤中強勢」的科技股做即時 V5 完整重判，
+    # 命中後寫入同一張 watchlist（entry_path="late"）避免主 checker 重複推播。
+    # CronTrigger 設 9-13 每 5 分，函式內二次限制在 09:15–13:25。
+    scheduler.add_job(
+        job_v5_late_qualifier,
+        CronTrigger(day_of_week="mon-fri", hour="9-13", minute="*/5", timezone="Asia/Taipei"),
+        id="v5_late_qualifier",
+        name="盤中 v5 補抓軌道",
+    )
+
     # DB 備份至 Google Drive：週一到週五 06:50
     # 機器約 06:30 開機，6:50 開始備份 → 約 06:54 結束 → 09:00 開盤前完成。
     # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響），
     # 此時段非交易時間，影響最小。
+    # misfire_grace_time=600：剛開機系統忙時 cron tick 可能延遲 1-2 秒被預設 1s 拒掉，給 10 分鐘容錯。
     scheduler.add_job(
         job_db_backup,
         CronTrigger(day_of_week="mon-fri", hour=6, minute=50, timezone="Asia/Taipei"),
         id="db_backup",
         name="DB 備份 Google Drive 06:50",
+        misfire_grace_time=600,
+        coalesce=True,
     )
 
     logger.info("排程器啟動，等待任務觸發...")
@@ -618,6 +683,7 @@ def run_scheduler():
     logger.info("  DB 備份 Google Drive：週一至週五 06:50")
     logger.info("  V3 三線齊穿 watchlist：週一至週五 08:50")
     logger.info("  v5 狙擊手版 watchlist：週一至週五 08:55")
+    logger.info("  v5 補抓軌道：週一至週五 09:15–13:25（每 5 分鐘）")
 
     try:
         scheduler.start()
