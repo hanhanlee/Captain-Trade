@@ -1,20 +1,24 @@
 """
 盤中 v5 狙擊手版突破即時偵測
 
-每分鐘對 db.v5_sniper_watchlist.today_active() 中尚未推播的候選做下列檢查：
-  1. 用 Shioaji 批次取即時 last_price 與今日累積成交量
-  2. 突破：price >= breakout_target
+推播時點限定 09:15 一次 + 13:00–13:24 每分鐘掃描，對 db.v5_sniper_watchlist.today_active()
+中尚未推播的候選做下列檢查：
+  1. 時間 gate：僅在 09:15 或 13:00–13:24 才啟動，其餘時段 return 0
+  2. 用 Shioaji 批次取即時 last_price 與今日累積成交量
+  3. 突破：price >= breakout_target
        - 型態 A：breakout_target = 近 10 日最高
        - 型態 B：breakout_target = 昨日最高（破昨高即點火）
-  3. 量增：預估全日量 >= 前 5 日均量 × 1.3
-  4. 量底：預估全日量 >= 1000 張
-  5. （選用）漲幅 cap：若 row 上有 max_gain_pct，當日漲幅須 ≤ 該值
-  6. 型態 B 候選：盤中重驗守月線（用現價當今日 close、重算今日 MA20）
+  4. 量增：預估全日量 >= 前 5 日均量 × 1.3
+  5. 量底：預估全日量 >= 1000 張
+  6. （選用）漲幅 cap：若 row 上有 max_gain_pct，當日漲幅須 ≤ 該值
+  7. 型態 B 候選：盤中重驗守月線（用現價當今日 close、重算今日 MA20）
        若型態失效（例：今日跌破月線）則跳過推播
        底底高沿用 EOD 結果（盤中 low 雜訊大）
-  7. 全部通過 → 推 Telegram，標記 alerted_today 防重複
+  8. 全部通過 → 推 Telegram，標記 alerted_today 防重複
 
 設計選擇：
+  - 推播時點來自 4-5 月回測：09:15 抓早盤強勢突破、13:00–13:24 抓持續性確認
+  - 中間時段不推播 → 避免追到衝高拉回的中段
   - 不檢查「實體紅K 60%」與「站上 MA5」：盤中跳動雜訊大，留到收盤再說
   - 量倍對前 5 日均量（與 v3 一致）
   - 型態 B 守月線重驗：對「08:50 入名單，但今日早盤跌破月線」的候選做安全網
@@ -32,6 +36,16 @@ VOLUME_MULT = 1.3            # 預估全日量 ÷ 前 5 日均量 倍數門檻
 MIN_LOTS = 1000              # 預估全日量最低張數
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
+
+
+def _is_push_window(now: datetime) -> bool:
+    """推播時點：09:15 一次 + 13:00–13:24 每分鐘（共 26 次/天）。回測支持此設計（見模組 docstring）。"""
+    t = now.time()
+    if t.hour == 9 and t.minute == 15:
+        return True
+    if t.hour == 13 and 0 <= t.minute <= 24:
+        return True
+    return False
 
 # 模組級 EOD df 快取：key = (stock_id, today)，避免每分鐘對每檔重拉 + 重算指標
 _EOD_DF_CACHE: dict[tuple[str, date], object] = {}
@@ -191,6 +205,9 @@ def run_v5_breakout_check() -> int:
     from db import v5_sniper_watchlist as wl
     from db.event_log import log_event
     from notifications.telegram_notify import send_stock_alert
+
+    if not _is_push_window(datetime.now()):
+        return 0
 
     items = wl.today_active()
     if not items:

@@ -3,12 +3,13 @@
 
 對「早上 08:50 沒進 watchlist 但盤中強勢」的科技股，盤中即時補做 V5 完整重判。
 
-每 5 分鐘（09:15–13:25）對候選池：
-  1. 載入截至昨日 EOD 的日 K（含指標，當日模組級快取）
-  2. Shioaji 批次抓現價、累計量、open/high/low
-  3. 把現價/估全日量當「今日 K 棒」patch 進 df 尾巴
-  4. 重算指標 → evaluate_v5() 完整重判（共同 gate + 型態 A/B）
-  5. 全條件通過 + 現價 ≤ 突破目標 ×(1+buffer) → 推 Telegram + upsert watchlist (entry_path="late")
+推播時點限定 09:15 一次 + 13:00–13:24 每分鐘（與三軌主推播同步），對候選池：
+  1. 時間 gate：僅在 09:15 或 13:00–13:24 才啟動，其餘時段 return 0
+  2. 載入截至昨日 EOD 的日 K（含指標，當日模組級快取）
+  3. Shioaji 批次抓現價、累計量、open/high/low
+  4. 把現價/估全日量當「今日 K 棒」patch 進 df 尾巴
+  5. 重算指標 → evaluate_v5() 完整重判（共同 gate + 型態 A/B）
+  6. 全條件通過 + 現價 ≤ 突破目標 ×(1+buffer) → 推 Telegram + upsert watchlist (entry_path="late")
 
 與 intraday_v5_breakout.py 並行：
   - 主 checker：盯 watchlist 裡的 morning 票
@@ -17,8 +18,8 @@
 
 設計選擇：
   - 候選池：與 v5_sniper_watchlist_builder 同 TECH_INDUSTRIES（~300 檔）
-  - 09:15 開始：給 K 棒先穩定 15 分鐘，避免開盤 5 分鐘 noise
-  - 13:25 結束：避免追尾盤
+  - 推播時點來自 4-5 月回測：09:15 抓早盤強勢突破、13:00–13:24 抓持續性確認
+  - 中間時段不推播 → 避免追到衝高拉回的中段
   - 過熱濾網：現價 ≤ 突破目標 × 1.03（剛過前高才追，不抓拉開段的）
   - vol_breakout 比對 EOD 的「前 5 日均量」（與既有 V5 一致）
   - 預估全日量：(累計量 ÷ 已過分鐘) × 270，patch 進今日 K 棒當 Trading_Volume
@@ -46,8 +47,6 @@ TECH_INDUSTRIES: tuple[str, ...] = (
 )
 
 BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過突破目標 3% 就不追（剛過前高才有意義）
-LATE_START_HM = (9, 15)      # 09:15 開始（讓 K 棒先穩定 15 分鐘）
-LATE_END_HM = (13, 25)       # 13:25 後不再發新 alert
 _TOTAL_TRADING_MINUTES = 270 # 09:00–13:30
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _PATTERN_A_SQUEEZE_PCT = 4.0 # 科技股放寬到 4%（與 v5_sniper_watchlist_builder 同步）
@@ -69,12 +68,14 @@ def _to_float(value) -> float | None:
         return None
 
 
-def _in_market_window(now: datetime) -> bool:
-    sh, sm = LATE_START_HM
-    eh, em = LATE_END_HM
-    start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
-    end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
-    return start <= now <= end
+def _is_push_window(now: datetime) -> bool:
+    """推播時點：09:15 一次 + 13:00–13:24 每分鐘（共 26 次/天）。與三軌主推播同步（見模組 docstring）。"""
+    t = now.time()
+    if t.hour == 9 and t.minute == 15:
+        return True
+    if t.hour == 13 and 0 <= t.minute <= 24:
+        return True
+    return False
 
 
 def _estimate_full_day_volume(current_volume_lots: float, now: datetime) -> tuple[float, float]:
@@ -244,7 +245,7 @@ def run_v5_late_qualifier_check() -> int:
     盤中對科技股池補抓 V5 完整突破。
     回傳本輪推播的 Telegram 訊息數。
 
-    呼叫場景：scheduler 每 5 分鐘（09:15–13:25）觸發。
+    呼叫場景：scheduler 每分鐘觸發，函式內限定 09:15 + 13:00–13:24 才執行。
     """
     from db import v5_sniper_watchlist as wl
     from db.event_log import log_event
@@ -253,7 +254,7 @@ def run_v5_late_qualifier_check() -> int:
     from notifications.telegram_notify import send_stock_alert
 
     now = datetime.now()
-    if not _in_market_window(now):
+    if not _is_push_window(now):
         return 0
 
     today = now.date()

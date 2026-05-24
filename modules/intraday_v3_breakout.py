@@ -1,24 +1,39 @@
 """
 盤中 V3 三線齊穿突破即時偵測
 
-每分鐘對 db.v3_breakout_watchlist.today_active() 中尚未推播的候選做下列檢查：
-  1. 用 Shioaji 批次取即時 last_price 與今日累積成交量
-  2. 突破條件：current_price > ma5 AND current_price > ma10 AND current_price > ma20
-  3. 量能條件：預估全日量 > vol_ma5 × 1.5
+推播時點限定 09:15 一次 + 13:00–13:24 每分鐘掃描，對 db.v3_breakout_watchlist.today_active()
+中尚未推播的候選做下列檢查：
+  1. 時間 gate：僅在 09:15 或 13:00–13:24 才啟動，其餘時段 return 0
+  2. 用 Shioaji 批次取即時 last_price 與今日累積成交量
+  3. 突破條件：current_price > ma5 AND current_price > ma10 AND current_price > ma20
+  4. 量能條件：預估全日量 > vol_ma5 × 1.3
      預估全日量 = 當前累積量 × (270 / 已過交易分鐘數)
      台股交易時間 09:00–13:30，共 270 分鐘
-  4. 兩條件同時成立 → 推 Telegram，標記 alerted_today 防重複
+  5. 兩條件同時成立 → 推 Telegram，標記 alerted_today 防重複
+
+推播時點來自 4-5 月回測：09:15 抓早盤強勢突破、13:00–13:24 抓持續性確認，
+中間時段不推播 → 避免追到衝高拉回的中段。
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-VOLUME_MULT = 1.5
+VOLUME_MULT = 1.3
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
+
+
+def _is_push_window(now: datetime) -> bool:
+    """推播時點：09:15 一次 + 13:00–13:24 每分鐘（共 26 次/天）。回測支持此設計（見模組 docstring）。"""
+    t = now.time()
+    if t.hour == 9 and t.minute == 15:
+        return True
+    if t.hour == 13 and 0 <= t.minute <= 24:
+        return True
+    return False
 
 
 def _estimate_full_day_volume(current_volume: float, now: datetime) -> tuple[float, float]:
@@ -126,6 +141,9 @@ def run_v3_breakout_check() -> int:
     from db.event_log import log_event
     from notifications.telegram_notify import send_stock_alert
 
+    if not _is_push_window(datetime.now()):
+        return 0
+
     items = wl.today_active()
     if not items:
         return 0
@@ -160,7 +178,7 @@ def run_v3_breakout_check() -> int:
         if not (price > ma5 and price > ma10 and price > ma20):
             continue
 
-        # 量能確認：預估全日量 > 五日均量 × 1.5
+        # 量能確認：預估全日量 > 五日均量 × VOLUME_MULT
         total_volume = _to_float(snap.get("total_volume"))
         if total_volume is None:
             continue

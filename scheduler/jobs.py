@@ -510,15 +510,11 @@ def job_v5_sniper_watchlist_build():
 @skip_if_not_trading_day
 def job_v5_late_qualifier():
     """
-    盤中 v5 補抓軌道：對科技股池每 5 分鐘做盤中即時 V5 重判。
+    盤中 v5 補抓軌道：對科技股池在 09:15 + 13:00–13:24 做盤中即時 V5 重判。
 
     為「早上 08:50 沒進 watchlist 但盤中強勢」的票補捉突破訊號。
-    CronTrigger 設 hour="9-13", minute="*/5"，函式內自行限制在 09:15–13:25。
+    CronTrigger 設 hour="9-13", minute="*"，模組內 _is_push_window 限定推播時點。
     """
-    now = datetime.now().time()
-    # 函式內二次防呆：09:15 之前 / 13:25 之後不執行
-    if now < dtime(9, 15) or now > dtime(13, 25):
-        return
     try:
         from modules.intraday_v5_late_qualifier import run_v5_late_qualifier_check
         sent = run_v5_late_qualifier_check()
@@ -647,13 +643,13 @@ def run_scheduler():
         name="盤中 v5 狙擊手版候選清單建構",
     )
 
-    # v5 補抓軌道：週一到週五 09:15–13:25，每 5 分鐘一次
+    # v5 補抓軌道：週一到週五 09:15 + 13:00–13:24，與三軌主推播同步。
     # 對「08:50 沒進 watchlist 但盤中強勢」的科技股做即時 V5 完整重判，
     # 命中後寫入同一張 watchlist（entry_path="late"）避免主 checker 重複推播。
-    # CronTrigger 設 9-13 每 5 分，函式內二次限制在 09:15–13:25。
+    # CronTrigger 設 9-13 每分鐘，模組內 _is_push_window 限定推播時點（26 次/天）。
     scheduler.add_job(
         job_v5_late_qualifier,
-        CronTrigger(day_of_week="mon-fri", hour="9-13", minute="*/5", timezone="Asia/Taipei"),
+        CronTrigger(day_of_week="mon-fri", hour="9-13", minute="*", timezone="Asia/Taipei"),
         id="v5_late_qualifier",
         name="盤中 v5 補抓軌道",
     )
