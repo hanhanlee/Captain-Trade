@@ -679,7 +679,7 @@ def run_scheduler():
     logger.info("  DB 備份 Google Drive：週一至週五 06:50")
     logger.info("  V3 三線齊穿 watchlist：週一至週五 08:50")
     logger.info("  v5 狙擊手版 watchlist：週一至週五 08:55")
-    logger.info("  v5 補抓軌道：週一至週五 09:15–13:25（每 5 分鐘）")
+    logger.info("  v5 補抓軌道：週一至週五 09:15 + 13:00–13:24（共 26 次/天）")
 
     try:
         scheduler.start()
