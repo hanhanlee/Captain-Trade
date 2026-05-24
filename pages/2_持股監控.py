@@ -827,7 +827,19 @@ with tab_monitor:
 
             if update_today_pnl:
                 from datetime import datetime as _dt
-                from data.finmind_client import get_kbar_latest, get_realtime_stock_snapshot
+                from broker.shioaji_adapter import get_adapter as _get_sj_adapter
+
+                def _yahoo_price(sid: str) -> float | None:
+                    try:
+                        import yfinance as yf
+                        for suffix in (".TW", ".TWO"):
+                            hist = yf.Ticker(f"{sid}{suffix}").history(period="1d", interval="1m")
+                            if not hist.empty:
+                                return float(hist["Close"].iloc[-1])
+                    except Exception:
+                        pass
+                    return None
+
                 _now = _dt.now()
                 # 盤中：週一~五 09:00~14:59，且非休市模式
                 _intraday = (
@@ -850,17 +862,18 @@ with tab_monitor:
                         if df_p is not None and not df_p.empty and "close" in df_p.columns:
                             if _intraday:
                                 # 盤中：補抓今日現價插入最後一列，讓 iloc[-1]=現價、iloc[-2]=昨收
+                                # 優先 Shioaji snapshot（tick 級），斷線時 fallback Yahoo（約 15 分鐘延遲）
                                 _cur = None
                                 try:
-                                    _snap = get_realtime_stock_snapshot(h["stock_id"])
-                                    _cur = float(_snap["close"]) if _snap and _snap.get("close") else None
+                                    _sj = _get_sj_adapter()
+                                    if _sj.is_logged_in():
+                                        _snap = _sj.get_snapshot(h["stock_id"])
+                                        if _snap and _snap.get("last_price"):
+                                            _cur = float(_snap["last_price"])
                                 except Exception:
                                     pass
                                 if _cur is None:
-                                    try:
-                                        _cur = get_kbar_latest(h["stock_id"])
-                                    except Exception:
-                                        pass
+                                    _cur = _yahoo_price(h["stock_id"])
                                 if _cur is not None:
                                     _today_row = pd.DataFrame([{
                                         "date": pd.Timestamp(_today_str),

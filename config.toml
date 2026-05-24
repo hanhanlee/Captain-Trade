@@ -18,8 +18,8 @@ watch_after_up     = true
 
 [finmind]
 # tier: free | backer | sponsor | auto
-tier = "sponsor"
-premium_enabled = true
+tier = "free"
+premium_enabled = false
 
 [finmind.features]
 risk_flags = true

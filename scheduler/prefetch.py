@@ -621,8 +621,8 @@ class PrefetchWorker:
         if not self._is_market_holiday():
             return
         try:
-            from db.price_cache import get_no_update_stocks, set_fetch_status, get_cached_dates
-            from data.finmind_client import get_daily_price, save_prices
+            from db.price_cache import get_no_update_stocks, set_fetch_status, get_cached_dates, save_prices
+            from data.finmind_client import get_daily_price
             candidates = get_no_update_stocks(stale_days=7)
             if not candidates:
                 return
@@ -1742,6 +1742,7 @@ class PrefetchWorker:
             active_count = len(active_ids)
         except Exception as e:
             logger.warning(f"法人執行緒取得股票清單失敗：{e}")
+            active_ids = set()
             active_count = 0
 
         try:
@@ -1924,6 +1925,7 @@ class PrefetchWorker:
             active_count = len(active_ids)
         except Exception as e:
             logger.warning(f"融資執行緒取得股票清單失敗：{e}")
+            active_ids = set()
             active_count = 0
 
         try:
@@ -2198,6 +2200,10 @@ class PrefetchWorker:
         except Exception as e:
             if _is_rate_limited(e):
                 self._stop_event.wait(timeout=60)
+                return
+            if "free tier" in str(e).lower():
+                self._price_batch_fetched_date = target_date
+                logger.info(f"股價批次 {target_str}：免費版不支援，今日改由逐檔模式補抓")
                 return
             logger.warning(f"股價全市場批次抓取失敗：{e}")
 

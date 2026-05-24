@@ -135,7 +135,8 @@ def build_from_data(
             "ma5": ma5,
             "ma10": ma10,
             "ma20": ma20,
-            "vol_ma5": float(vol_ma5_val),
+            # Shioaji 盤中 total_volume 單位為「張」，故 vol_ma5 也存「張」對齊 V5
+            "vol_ma5": round(float(vol_ma5_val) / 1000, 0),
             "last_close": last_close,
             "ma_spread_pct": round(spread_pct, 2),
         })

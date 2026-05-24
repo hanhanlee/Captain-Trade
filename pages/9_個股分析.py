@@ -133,10 +133,61 @@ def _fmt_volume(value) -> str:
     return f"{num:.0f} 股"
 
 
+def _fetch_realtime_via_shioaji(stock_id: str) -> dict | None:
+    """Normalize Shioaji snapshot 成本頁面的顯示欄位。"""
+    try:
+        from broker.shioaji_adapter import get_adapter
+        sj = get_adapter()
+        if not sj.is_logged_in():
+            return None
+        snap = sj.get_snapshot(stock_id)
+        if not snap or snap.get("last_price") is None:
+            return None
+        return {
+            "close": snap.get("last_price"),
+            "change_price": snap.get("change_price"),
+            "change_rate": snap.get("change_rate"),
+            "open": snap.get("open"),
+            "high": snap.get("high"),
+            "low": snap.get("low"),
+            "total_volume": snap.get("total_volume"),
+            "date": snap.get("ts"),
+            "_source": "Shioaji",
+        }
+    except Exception:
+        return None
+
+
+def _fetch_realtime_via_yahoo(stock_id: str) -> dict | None:
+    try:
+        import yfinance as yf
+        for suffix in (".TW", ".TWO"):
+            hist = yf.Ticker(f"{stock_id}{suffix}").history(period="1d", interval="1m")
+            if hist.empty:
+                continue
+            last = hist.iloc[-1]
+            first_open = float(hist["Open"].iloc[0]) if "Open" in hist.columns else None
+            close = float(last["Close"])
+            return {
+                "close": close,
+                "change_price": None,
+                "change_rate": None,
+                "open": first_open,
+                "high": float(hist["High"].max()) if "High" in hist.columns else None,
+                "low": float(hist["Low"].min()) if "Low" in hist.columns else None,
+                "total_volume": float(hist["Volume"].sum()) if "Volume" in hist.columns else None,
+                "date": str(last.name),
+                "_source": "Yahoo",
+            }
+    except Exception:
+        pass
+    return None
+
+
 def _load_realtime_snapshot(stock_id: str, *, force: bool = False, ttl_sec: int = 30) -> tuple[dict | None, str]:
     """
-    Load Sponsor real-time quote snapshot with a short Streamlit session TTL.
-    Avoids burning quota on every rerun while still allowing manual refresh.
+    取得即時報價，優先 Shioaji（tick 級），斷線時 fallback Yahoo（約 15 分鐘延遲）。
+    Streamlit session 短 TTL，避免 rerun 重複打 broker。
     """
     cache_key = f"realtime_snapshot:{stock_id}"
     now = time.time()
@@ -148,19 +199,14 @@ def _load_realtime_snapshot(stock_id: str, *, force: bool = False, ttl_sec: int 
     ):
         return cached.get("data"), "cache"
 
-    try:
-        from data.finmind_client import get_realtime_stock_snapshot
-
-        data = get_realtime_stock_snapshot(stock_id)
-        st.session_state[cache_key] = {
-            "fetched_at": now,
-            "data": data,
-        }
+    data = _fetch_realtime_via_shioaji(stock_id) or _fetch_realtime_via_yahoo(stock_id)
+    if data:
+        st.session_state[cache_key] = {"fetched_at": now, "data": data}
         return data, "live"
-    except Exception as exc:
-        if cached and isinstance(cached, dict):
-            return cached.get("data"), f"stale: {exc}"
-        return None, str(exc)
+
+    if cached and isinstance(cached, dict):
+        return cached.get("data"), "stale"
+    return None, "unavailable"
 
 
 def render_realtime_snapshot(stock_id: str, *, is_historical: bool = False) -> None:
@@ -172,16 +218,20 @@ def render_realtime_snapshot(stock_id: str, *, is_historical: bool = False) -> N
     snapshot, source = _load_realtime_snapshot(stock_id, force=force)
 
     if not snapshot:
-        st.caption(f"目前無法取得 FinMind Sponsor 即時快照：{source}")
+        st.caption("目前無法取得即時報價（Shioaji 與 Yahoo 皆失敗）。")
         return
 
     close = _as_float(snapshot.get("close"))
     change_price = _as_float(snapshot.get("change_price"))
     change_rate = _as_float(snapshot.get("change_rate"))
     quote_time = str(snapshot.get("date") or "").strip()
-    source_label = "即時查詢" if source == "live" else "短暫快取"
-    if source.startswith("stale:"):
-        source_label = "沿用上一筆快取"
+    data_source = snapshot.get("_source") or "未知"
+    if source == "cache":
+        source_label = f"{data_source}（短暫快取）"
+    elif source == "stale":
+        source_label = f"{data_source}（沿用上一筆，目前無法即時更新）"
+    else:
+        source_label = data_source
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("最新成交價", _fmt_price(close))
@@ -198,7 +248,7 @@ def render_realtime_snapshot(stock_id: str, *, is_historical: bool = False) -> N
     d1.metric("開盤", _fmt_price(snapshot.get("open")))
     d2.metric("最高 / 最低", f"{_fmt_price(snapshot.get('high'))} / {_fmt_price(snapshot.get('low'))}")
     d3.metric("量比", _fmt_price(snapshot.get("volume_ratio")))
-    st.caption(f"FinMind Sponsor 即時快照，來源：{source_label}" + (f"；資料時間：{quote_time}" if quote_time else ""))
+    st.caption(f"即時報價來源：{source_label}" + (f"；資料時間：{quote_time}" if quote_time else ""))
 
 
 def _to_bool(value, default=False) -> bool:
@@ -960,8 +1010,12 @@ def render_scorecard_v5(
     # 量（張）
     vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else None
     vol_today_lots = float(latest[vol_col]) / 1000.0 if vol_col else float("nan")
-    vol_prev_lots  = float(prev[vol_col])  / 1000.0 if vol_col else float("nan")
-    vol_ratio = vol_today_lots / vol_prev_lots if vol_prev_lots and vol_prev_lots > 0 else float("nan")
+    if vol_col:
+        prev5 = pd.to_numeric(df[vol_col].iloc[-6:-1], errors="coerce").dropna()
+        vol_avg5_lots = float(prev5.mean()) / 1000.0 if not prev5.empty else float("nan")
+    else:
+        vol_avg5_lots = float("nan")
+    vol_ratio = vol_today_lots / vol_avg5_lots if vol_avg5_lots and vol_avg5_lots > 0 else float("nan")
 
     # KD / MACD
     k_val = latest.get("k_value", float("nan"))
@@ -1031,13 +1085,13 @@ def render_scorecard_v5(
             "rule": "High > High[1]，確認盤中有突破動能",
         },
         {
-            "name": f"量增 ≥ 昨量 × {p.vol_mult:.1f}",
+            "name": f"量增 ≥ 前 5 日均量 × {p.vol_mult:.1f}",
             "pass": r.vol_breakout,
             "detail": (
-                f"今量 **{vol_today_lots:,.0f}** 張 / 昨量 **{vol_prev_lots:,.0f}** 張 = **{vol_ratio:.2f}x**"
+                f"今量 **{vol_today_lots:,.0f}** 張 / 前 5 日均量 **{vol_avg5_lots:,.0f}** 張 = **{vol_ratio:.2f}x**"
                 if not pd.isna(vol_ratio) else "成交量資料不足"
             ),
-            "rule": f"Volume ≥ Volume[1] × {p.vol_mult:.1f}",
+            "rule": f"Volume ≥ avg(Volume[-5..-1]) × {p.vol_mult:.1f}",
         },
         {
             "name": f"今量 ≥ {p.min_lots:,} 張（量地板）",

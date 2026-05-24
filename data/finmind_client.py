@@ -344,7 +344,8 @@ def _requests_per_minute() -> int:
             return max(40, min(100, api_limit // 60))
         if tier in {"backer", "auto"}:
             return 40
-    return 8
+    # Free 模式：盤後拉高讓 prefetch hourly cap（HOURLY_LIMIT_OFFPEAK ≈ 600）當實際煞車
+    return 8 if trading_hours else 12
 
 
 def _within_market_request_window() -> bool:
@@ -728,13 +729,9 @@ def get_stock_list(force_refresh: bool = False) -> pd.DataFrame:
                 VALUES (:stock_id, :stock_name, :industry_category, :updated_at)
             """), [{**r, "updated_at": now} for r in rows])
             sess.execute(text("""
-                INSERT INTO stock_info_cache (stock_id, stock_name, industry_category, updated_at)
+                INSERT OR REPLACE INTO stock_info_cache (stock_id, stock_name, industry_category, updated_at)
                 SELECT stock_id, stock_name, industry_category, updated_at
                 FROM stock_info_refresh_stage
-                ON CONFLICT(stock_id) DO UPDATE SET
-                    stock_name = excluded.stock_name,
-                    industry_category = excluded.industry_category,
-                    updated_at = excluded.updated_at
             """))
             sess.execute(text("""
                 DELETE FROM stock_info_cache
@@ -1384,6 +1381,9 @@ def get_all_prices_by_date(date_str: str) -> pd.DataFrame:
     FinMind 特性：省略 data_id 時回傳該日全市場所有股票的 OHLCV。
     回傳 DataFrame 含 stock_id、date、open、max、min、close、Trading_Volume 欄位。
     """
+    # Free tier 不支援全市場單日查詢（API 直接回 400），呼叫端應改走逐檔模式
+    if str(_load_finmind_settings().get("tier", "free")) == "free":
+        raise RuntimeError("TaiwanStockPrice all-market query unavailable on free tier")
     df = _get(
         "TaiwanStockPrice",
         start_date=date_str,
@@ -1405,6 +1405,9 @@ def get_all_institutional_by_date(date_str: str) -> pd.DataFrame:
     FinMind 特性：省略 data_id 時回傳該日全市場所有股票的法人資料。
     回傳 DataFrame 含 stock_id、date、name、buy、sell、net 欄位。
     """
+    # Free tier 不支援全市場單日查詢（API 直接回 400），呼叫端應改走逐檔模式
+    if str(_load_finmind_settings().get("tier", "free")) == "free":
+        raise RuntimeError("TaiwanStockInstitutionalInvestorsBuySell all-market query unavailable on free tier")
     df = _get(
         "TaiwanStockInstitutionalInvestorsBuySell",
         start_date=date_str,
@@ -1426,6 +1429,9 @@ def get_all_margin_by_date(date_str: str) -> pd.DataFrame:
     FinMind 特性：省略 data_id 時回傳該日全市場所有股票的融資券資料。
     回傳 DataFrame 含 stock_id、date 及原始 FinMind 欄位。
     """
+    # Free tier 不支援全市場單日查詢（API 直接回 400），呼叫端應改走逐檔模式
+    if str(_load_finmind_settings().get("tier", "free")) == "free":
+        raise RuntimeError("TaiwanStockMarginPurchaseShortSale all-market query unavailable on free tier")
     df = _get(
         "TaiwanStockMarginPurchaseShortSale",
         start_date=date_str,
