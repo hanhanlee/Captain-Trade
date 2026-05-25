@@ -524,6 +524,23 @@ def job_v5_late_qualifier():
         logger.error(f"盤中 v5 補抓軌道檢查失敗：{e}")
 
 
+@skip_if_not_trading_day
+def job_final_summary():
+    """
+    盤中 13:15 收盤前彙整推播：把當日四軌（V3/V5 主/V5 late/N 字底）watchlist
+    中「現在仍符合條件」的所有票整理成一則 Telegram，給使用者 15 分鐘的決策窗。
+
+    模組內 _is_summary_window 已嚴格限定 13:15；event_log 有當日紀錄則不重發。
+    """
+    try:
+        from modules.intraday_final_summary import run_final_summary_check
+        sent = run_final_summary_check()
+        if sent:
+            logger.info("盤中 13:15 彙整推播：已發送")
+    except Exception as e:
+        logger.error(f"盤中 13:15 彙整推播失敗：{e}")
+
+
 def run_scheduler():
     """啟動排程器（blocking，適合獨立程序常駐）"""
     global _scheduler
@@ -654,6 +671,16 @@ def run_scheduler():
         name="盤中 v5 補抓軌道",
     )
 
+    # 盤中 13:15 收盤前彙整推播：把當日四軌 watchlist 中「現在仍符合條件」的票
+    # 整理成一則 Telegram，使用者在收盤前 15 分鐘可做最後的進場判斷。
+    # 模組內 _is_summary_window 嚴格限 13:15；event_log 有當日紀錄則不重發。
+    scheduler.add_job(
+        job_final_summary,
+        CronTrigger(day_of_week="mon-fri", hour=13, minute=15, timezone="Asia/Taipei"),
+        id="final_summary",
+        name="盤中 13:15 收盤前彙整推播",
+    )
+
     # DB 備份至 Google Drive：週一到週五 06:50
     # 機器約 06:30 開機，6:50 開始備份 → 約 06:54 結束 → 09:00 開盤前完成。
     # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響），
@@ -680,6 +707,7 @@ def run_scheduler():
     logger.info("  V3 三線齊穿 watchlist：週一至週五 08:50")
     logger.info("  v5 狙擊手版 watchlist：週一至週五 08:55")
     logger.info("  v5 補抓軌道：週一至週五 09:15 + 13:00–13:24（共 26 次/天）")
+    logger.info("  13:15 收盤前彙整推播：週一至週五 13:15（每日一次）")
 
     try:
         scheduler.start()
