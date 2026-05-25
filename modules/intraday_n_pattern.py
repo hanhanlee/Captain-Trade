@@ -6,9 +6,11 @@
   1. 時間 gate：僅在 09:15 或 13:00–13:24 才啟動，其餘時段 return 0
   2. 用 Shioaji 批次取即時 last_price 與今日累積成交量
   3. is_breakout(price, b_price)：D > B 即視為突破
-  4. 量能 gate：預估全日量 ≥ avg_volume_b_to_c × 1.3
-  5. 組 Telegram 訊息（含 A/B/C 結構、量能 ✓/✗、假突破提醒）→ 推播
-  6. 推播成功後標記 alerted_today 防同檔重複通知
+  4. 過熱濾網：current_price ≤ b_price × 1.03（剛過 B 才追，拉開段不追）
+  5. 量能 gate：預估全日量 ≥ avg_volume_b_to_c × 1.3
+  6. 量底 gate：預估全日量 ≥ 1000 張（擋低流動性小型股無量假突破）
+  7. 組 Telegram 訊息（含 A/B/C 結構、量能 ✓/✗、假突破提醒）→ 推播
+  8. 推播成功後標記 alerted_today 防同檔重複通知
 
 設計原則：
   - 推播時點來自 4-5 月回測：09:15 抓早盤強勢突破、13:00–13:24 抓持續性確認
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 # 量能 gate：預估全日量 ≥ B→C 期間日均量 × 1.3
 VOL_GATE_MULTIPLIER = 1.3
+MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 從 1000 提高，砍掉低流動性雜訊）
+BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過 B 點 3% 就不追
 _TOTAL_TRADING_MINUTES = 270  # 09:00–13:30
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 
@@ -138,7 +142,7 @@ def format_breakout_alert(
         f"  B→C 量縮：{tick(vol_bc)}",
         f"  今日累積量：{vol_ratio_str}",
         "─ 現價 ─",
-        f"  {price:.2f}（突破 B +{breakout_pct:.2f}%）",
+        f"  {price:.2f}（突破 B +{breakout_pct:.2f}% / buffer {BREAKOUT_BUFFER_PCT:.1f}%）",
         "⚠ 留意假突破：突破後若快速跌回 B 以下，可能為誘多",
         f"📊 報價來源：{quote_source}",
     ]
@@ -205,6 +209,12 @@ def run_n_pattern_check() -> int:
         if not is_breakout(price, b_price):
             continue
 
+        # 過熱濾網：現價超過 B 點 BREAKOUT_BUFFER_PCT% 就不追
+        if b_price and price > b_price * (1 + BREAKOUT_BUFFER_PCT / 100):
+            logger.debug("N 字底 %s 拉開突破過遠（現價 %.2f > B %.2f × %.2f），本輪略過",
+                         sid, price, b_price, 1 + BREAKOUT_BUFFER_PCT / 100)
+            continue
+
         # C 回測過深守門：確保不推播已被 builder 排除條件的舊 watchlist 殘留資料
         c_retrace = _to_float(it.get("c_retrace_pct"))
         if c_retrace is not None and c_retrace >= 50.0:
@@ -226,10 +236,17 @@ def run_n_pattern_check() -> int:
                          sid, total_volume, avg_vol_bc)
             continue
         est_full_day_shares = _estimate_full_day_volume_shares(total_volume, now)
+        est_full_day_lots = est_full_day_shares / 1000.0
         vol_ratio = est_full_day_shares / avg_vol_bc
         if vol_ratio < VOL_GATE_MULTIPLIER:
             logger.debug("N 字底 %s 量能不足，預估全日 %.0f 股 / 日均 %.0f 股 = %.2fx < %.2fx",
                          sid, est_full_day_shares, avg_vol_bc, vol_ratio, VOL_GATE_MULTIPLIER)
+            continue
+
+        # 量底：預估全日量 >= MIN_LOTS
+        if est_full_day_lots < MIN_LOTS:
+            logger.debug("N 字底 %s 預估全日 %.0f 張 < %d 張下限，本輪略過",
+                         sid, est_full_day_lots, MIN_LOTS)
             continue
         msg = format_breakout_alert(
             it,
@@ -267,7 +284,10 @@ def run_n_pattern_check() -> int:
             payload={
                 "price": price,
                 "b_price": b_price,
+                "breakout_pct": (price - b_price) / b_price * 100 if b_price else 0.0,
+                "breakout_buffer_pct": BREAKOUT_BUFFER_PCT,
                 "total_volume": total_volume,
+                "estimated_volume_lots": round(est_full_day_lots, 0),
                 "avg_volume_b_to_c": it.get("avg_volume_b_to_c"),
                 "vol_a_to_b_increase": it.get("vol_a_to_b_increase"),
                 "vol_b_to_c_decrease": it.get("vol_b_to_c_decrease"),

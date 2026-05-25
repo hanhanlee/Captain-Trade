@@ -6,10 +6,13 @@
   1. 時間 gate：僅在 09:15 或 13:00–13:24 才啟動，其餘時段 return 0
   2. 用 Shioaji 批次取即時 last_price 與今日累積成交量
   3. 突破條件：current_price > ma5 AND current_price > ma10 AND current_price > ma20
-  4. 量能條件：預估全日量 > vol_ma5 × 1.3
+  4. 過熱濾網：current_price ≤ max(ma5, ma10, ma20) × 1.03
+     （齊穿才剛發生才追，拉開段不追；max(MA) 即「最後一條被穿越的均線」）
+  5. 量能條件：預估全日量 > vol_ma5 × 1.3
      預估全日量 = 當前累積量 × (270 / 已過交易分鐘數)
      台股交易時間 09:00–13:30，共 270 分鐘
-  5. 兩條件同時成立 → 推 Telegram，標記 alerted_today 防重複
+  6. 量底條件：預估全日量 ≥ 1000 張（擋掉低流動性的小型股無量假突破）
+  7. 全部成立 → 推 Telegram，標記 alerted_today 防重複
 
 推播時點來自 4-5 月回測：09:15 抓早盤強勢突破、13:00–13:24 抓持續性確認，
 中間時段不推播 → 避免追到衝高拉回的中段。
@@ -22,6 +25,8 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 VOLUME_MULT = 1.3
+MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 從 1000 提高，砍掉低流動性雜訊）
+BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過 max(MA5,10,20) × 1.03 就不追
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
 
@@ -96,6 +101,9 @@ def format_v3_alert(
     else:
         vol_line = "  量能未知"
 
+    breakout_ref = max(ma5, ma10, ma20) if (ma5 and ma10 and ma20) else 0
+    breakout_pct = (price - breakout_ref) / breakout_ref * 100 if breakout_ref > 0 else 0.0
+
     lines = [
         f"📈 盤中三線齊穿突破：{label}（{when}）",
         f"產業：{ind}" if ind else "",
@@ -105,7 +113,7 @@ def format_v3_alert(
         "─ 量能（預估全日）─",
         vol_line,
         "─ 現價 ─",
-        f"  {price:.2f}",
+        f"  {price:.2f}（突破基準 max(MA)={breakout_ref:.2f} +{breakout_pct:.2f}%）",
         "⚠ 首日突破，注意假突破；量能持續放大為真突破加分訊號",
         f"📊 報價來源：{quote_source}",
     ]
@@ -178,12 +186,21 @@ def run_v3_breakout_check() -> int:
         if not (price > ma5 and price > ma10 and price > ma20):
             continue
 
+        # 過熱濾網：現價超過 max(MA5,10,20) × buffer 就不追（剛齊穿才有意義）
+        breakout_ref = max(ma5, ma10, ma20)
+        if breakout_ref > 0 and price > breakout_ref * (1 + BREAKOUT_BUFFER_PCT / 100):
+            continue
+
         # 量能確認：預估全日量 > 五日均量 × VOLUME_MULT
         total_volume = _to_float(snap.get("total_volume"))
         if total_volume is None:
             continue
         estimated_vol, scale = _estimate_full_day_volume(total_volume, datetime.now())
         if estimated_vol < vol_ma5 * VOLUME_MULT:
+            continue
+
+        # 量底：預估全日量 >= MIN_LOTS
+        if estimated_vol < MIN_LOTS:
             continue
 
         msg = format_v3_alert(
@@ -218,6 +235,9 @@ def run_v3_breakout_check() -> int:
             payload={
                 "price": price,
                 "ma5": ma5, "ma10": ma10, "ma20": ma20,
+                "breakout_ref": breakout_ref,
+                "breakout_pct": (price - breakout_ref) / breakout_ref * 100 if breakout_ref > 0 else 0.0,
+                "breakout_buffer_pct": BREAKOUT_BUFFER_PCT,
                 "vol_ma5": vol_ma5,
                 "total_volume": total_volume,
                 "estimated_volume": estimated_vol,

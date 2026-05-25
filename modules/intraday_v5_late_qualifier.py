@@ -47,6 +47,7 @@ TECH_INDUSTRIES: tuple[str, ...] = (
 )
 
 BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過突破目標 3% 就不追（剛過前高才有意義）
+MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 與 V3/V5 主/N 同步從 1000 提高）
 _TOTAL_TRADING_MINUTES = 270 # 09:00–13:30
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _PATTERN_A_SQUEEZE_PCT = 4.0 # 科技股放寬到 4%（與 v5_sniper_watchlist_builder 同步）
@@ -282,6 +283,7 @@ def run_v5_late_qualifier_check() -> int:
         body_ratio_min=0.0,
         max_gain_pct=None,
         pattern_a_squeeze_pct=_PATTERN_A_SQUEEZE_PCT,
+        min_lots=MIN_LOTS,
     )
     sent = 0
     cand_by_sid = {c["stock_id"]: c for c in to_scan}

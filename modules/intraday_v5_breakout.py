@@ -8,10 +8,11 @@
   3. 突破：price >= breakout_target
        - 型態 A：breakout_target = 近 10 日最高
        - 型態 B：breakout_target = 昨日最高（破昨高即點火）
-  4. 量增：預估全日量 >= 前 5 日均量 × 1.3
-  5. 量底：預估全日量 >= 1000 張
-  6. （選用）漲幅 cap：若 row 上有 max_gain_pct，當日漲幅須 ≤ 該值
-  7. 型態 B 候選：盤中重驗守月線（用現價當今日 close、重算今日 MA20）
+  4. 過熱濾網：現價 ≤ breakout_target × 1.03（過前高 3% 內才追，剛突破才有意義）
+  5. 量增：預估全日量 >= 前 5 日均量 × 1.3
+  6. 量底：預估全日量 >= 1000 張
+  7. （選用）漲幅 cap：若 row 上有 max_gain_pct，當日漲幅須 ≤ 該值
+  8. 型態 B 候選：盤中重驗守月線（用現價當今日 close、重算今日 MA20）
        若型態失效（例：今日跌破月線）則跳過推播
        底底高沿用 EOD 結果（盤中 low 雜訊大）
   8. 全部通過 → 推 Telegram，標記 alerted_today 防重複
@@ -33,7 +34,8 @@ from datetime import date, datetime
 logger = logging.getLogger(__name__)
 
 VOLUME_MULT = 1.3            # 預估全日量 ÷ 前 5 日均量 倍數門檻
-MIN_LOTS = 1000              # 預估全日量最低張數
+MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 從 1000 提高，砍掉低流動性雜訊）
+BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過突破目標 3% 就不追（與 late qualifier 同邏輯）
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
 
@@ -166,7 +168,7 @@ def format_v5_alert(
         "─ 量能（預估全日 vs 5 日均量）─",
         vol_line,
         "─ 現價 ─",
-        f"  {price:.2f}（突破目標 {target:.2f} +{breakout_pct:.2f}%）",
+        f"  {price:.2f}（突破目標 {target:.2f} +{breakout_pct:.2f}% / buffer {BREAKOUT_BUFFER_PCT:.1f}%）",
     ]
     if gain_pct is not None:
         lines.append(f"  今日漲幅 {gain_pct:+.2f}%")
@@ -242,7 +244,11 @@ def run_v5_breakout_check() -> int:
         if price < target:
             continue
 
-        # 2) 量增：預估全日量 >= 前 5 日均量 × VOLUME_MULT
+        # 2) 過熱濾網：現價超過突破目標 BREAKOUT_BUFFER_PCT% 就不追
+        if price > target * (1 + BREAKOUT_BUFFER_PCT / 100):
+            continue
+
+        # 3) 量增：預估全日量 >= 前 5 日均量 × VOLUME_MULT
         total_volume = _to_float(snap.get("total_volume"))
         if total_volume is None:
             continue
@@ -251,11 +257,11 @@ def run_v5_breakout_check() -> int:
         if estimated_vol < avg5_vol * VOLUME_MULT:
             continue
 
-        # 3) 量底：預估全日量 >= MIN_LOTS
+        # 4) 量底：預估全日量 >= MIN_LOTS
         if estimated_vol < MIN_LOTS:
             continue
 
-        # 4) 漲幅 cap（選用，row 上有設才檢查）
+        # 5) 漲幅 cap（選用，row 上有設才檢查）
         max_gain = _to_float(it.get("max_gain_pct"))
         prev_close = _to_float(it.get("prev_close"))
         gain_pct = None
@@ -264,7 +270,7 @@ def run_v5_breakout_check() -> int:
             if max_gain is not None and gain_pct > max_gain:
                 continue
 
-        # 5) 型態 B 盤中重驗：守月線是否仍成立（底底高沿用 EOD）
+        # 6) 型態 B 盤中重驗：守月線是否仍成立（底底高沿用 EOD）
         if it.get("pattern_type") == "B":
             hit, reason = _verify_pattern_b_still_valid(sid, price, today)
             if not hit:
@@ -321,6 +327,8 @@ def run_v5_breakout_check() -> int:
                 "pattern_type": it.get("pattern_type"),
                 "price": price,
                 "breakout_target": target,
+                "breakout_pct": (price - target) / target * 100 if target > 0 else 0.0,
+                "breakout_buffer_pct": BREAKOUT_BUFFER_PCT,
                 "prev_high": it.get("prev_high"),
                 "prev_close": prev_close,
                 "vol_ma5": avg5_vol,
