@@ -527,16 +527,23 @@ def job_v5_late_qualifier():
 @skip_if_not_trading_day
 def job_final_summary():
     """
-    盤中 13:15 收盤前彙整推播：把當日四軌（V3/V5 主/V5 late/N 字底）watchlist
-    中「現在仍符合條件」的所有票整理成一則 Telegram，給使用者 15 分鐘的決策窗。
+    盤中 13:15 收盤前彙整推播，分成兩則獨立訊息：
+      1. 機會彙整：四軌（V3/V5主/V5late/N 字底）watchlist 中「現仍符合條件」的票
+      2. 停損彙整：Portfolio 有設停損且現價 ≤ 停損的持股（繞過每分鐘監控的 60 分鐘 cooldown）
 
-    模組內 _is_summary_window 已嚴格限定 13:15；event_log 有當日紀錄則不重發。
+    模組內 _is_summary_window 嚴格限 13:15；兩個函式各自寫 event_log 防同分鐘重發。
     """
     try:
-        from modules.intraday_final_summary import run_final_summary_check
-        sent = run_final_summary_check()
-        if sent:
-            logger.info("盤中 13:15 彙整推播：已發送")
+        from modules.intraday_final_summary import (
+            run_final_summary_check,
+            run_stop_loss_summary_check,
+        )
+        opp_sent = run_final_summary_check()
+        if opp_sent:
+            logger.info("盤中 13:15 機會彙整推播：已發送")
+        sl_sent = run_stop_loss_summary_check()
+        if sl_sent:
+            logger.info("盤中 13:15 停損彙整推播：已發送")
     except Exception as e:
         logger.error(f"盤中 13:15 彙整推播失敗：{e}")
 

@@ -1,9 +1,12 @@
 """
 盤中 13:15 收盤前彙整推播（distinct from per-minute alerts）
 
-每個交易日 13:15 一次：對當日 V3 / V5 主 / V5 late / N 字底四軌的整份 watchlist
-重跑「現在 13:15」的條件檢查，把所有現仍符合「>5000 張 + 過突破點 ≤ 3%」的票
-彙整成一則 Telegram 訊息，給使用者距離 13:30 收盤 15 分鐘做最後的進場判斷。
+每個交易日 13:15 一次，產出兩份獨立的 Telegram 訊息：
+  1. 機會彙整 run_final_summary_check：四軌（V3/V5主/V5late/N 字底）watchlist
+     中現仍符合「>5000 張 + 過突破點 ≤ 3%」的票，給「進場」最後機會。
+  2. 停損彙整 run_stop_loss_summary_check：Portfolio 有設停損的持股中現價
+     ≤ 停損的票，給「出場」收尾風控提示，繞過 intraday_monitor 60 分鐘 cooldown。
+兩個函式分別寫 event_log 防重發，互不依賴。
 
 設計選擇：
   - 時點 gate：嚴格 13:15（hour=13, minute=15），其餘時間 return 0
@@ -432,6 +435,168 @@ def run_final_summary_check() -> int:
             "n": [h["stock_id"] for h in n_hits],
             "min_lots": MIN_LOTS,
             "breakout_buffer_pct": BREAKOUT_BUFFER_PCT,
+        },
+    )
+    return 1 if ok else 0
+
+
+# ---------------------------------------------------------------------------
+# 13:15 持股停損彙整推播（與機會彙整 run_final_summary_check 並存）
+# ---------------------------------------------------------------------------
+
+def _check_stop_loss_hit(holding: dict, snap: dict) -> dict | None:
+    """單一持股當下是否觸及停損，命中則回傳含 price / pnl / stop_loss 的 dict。"""
+    price = _to_float(snap.get("last_price"))
+    stop_loss = _to_float(holding.get("stop_loss"))
+    if price is None or stop_loss is None or stop_loss <= 0:
+        return None
+    if price > stop_loss:
+        return None
+    cost = _to_float(holding.get("cost_price"))
+    pnl_pct = (price - cost) / cost * 100 if cost and cost > 0 else None
+    return {
+        "stock_id": str(holding.get("stock_id", "")),
+        "stock_name": holding.get("stock_name") or "",
+        "price": price,
+        "stop_loss": stop_loss,
+        "cost_price": cost,
+        "pnl_pct": pnl_pct,
+    }
+
+
+def _format_stop_loss_summary(hits: list[dict], now_str: str) -> str | None:
+    if not hits:
+        return None
+    lines = [
+        f"🛡 13:15 持股停損彙整（共 {len(hits)} 檔觸及）",
+        f"距 13:30 收盤剩 15 分鐘，請評估是否認賠出場",
+        "",
+    ]
+    for h in hits:
+        label = f"{h['stock_id']} {h['stock_name']}".strip()
+        pnl_str = f"，未實現 {h['pnl_pct']:+.1f}%" if h.get("pnl_pct") is not None else ""
+        lines.append(
+            f"  {label}　現價 {h['price']:.2f} ≤ 停損 {h['stop_loss']:.2f}{pnl_str}"
+        )
+    lines.append("")
+    lines.append("⚠ 條件：現價 ≤ 設定停損價")
+    lines.append("📊 報價來源：Shioaji")
+    return "\n".join(lines)
+
+
+def _already_sent_stop_loss_today() -> bool:
+    """查 event_log 看今日是否已發過停損彙整，防止同分鐘重複觸發。"""
+    try:
+        from db.database import get_session
+        from db.models import EventLog
+        from sqlalchemy import select, and_
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        with get_session() as s:
+            row = s.execute(
+                select(EventLog.id).where(
+                    and_(
+                        EventLog.event_type == "intraday_stop_loss_summary_sent",
+                        EventLog.created_at >= f"{today_str} 00:00:00",
+                        EventLog.created_at < f"{today_str} 23:59:59",
+                    )
+                ).limit(1)
+            ).first()
+            return row is not None
+    except Exception as exc:
+        logger.debug("查停損彙整重發紀錄失敗（保守當未發）：%s", exc)
+        return False
+
+
+def run_stop_loss_summary_check() -> int:
+    """
+    13:15 持股停損彙整推播：掃 Portfolio.stop_loss 有設定的所有持股，
+    列出當下現價 ≤ 停損的票，組成一則 Telegram。回傳是否發送（0/1）。
+
+    與機會彙整 run_final_summary_check 解耦：
+      - 兩函式分別寫 event_log 防重發
+      - 各自抓 Shioaji 報價（13:15 多一次 batch 可接受，避免共享狀態複雜化）
+      - 四軌全空 + 停損也空 → 兩則訊息都不發，安靜
+      - 機會空 / 停損空，任一邊有命中時，仍會發對應訊息
+    """
+    from db.database import get_session
+    from db.event_log import log_event
+    from db.models import Portfolio
+    from notifications.telegram_notify import send_stock_alert
+
+    now = datetime.now()
+    if not _is_summary_window(now):
+        return 0
+    if _already_sent_stop_loss_today():
+        return 0
+
+    with get_session() as s:
+        rows = (
+            s.query(Portfolio)
+            .filter(Portfolio.stop_loss != None)  # noqa: E711
+            .all()
+        )
+        holdings = [
+            {
+                "stock_id": r.stock_id,
+                "stock_name": r.stock_name or "",
+                "stop_loss": r.stop_loss,
+                "cost_price": r.cost_price,
+            }
+            for r in rows
+        ]
+
+    if not holdings:
+        logger.info("13:15 停損彙整：無設停損的持股，略過")
+        return 0
+
+    sids = sorted({str(h["stock_id"]) for h in holdings})
+    snapshots = _get_shioaji_snapshots(sids)
+    if not snapshots:
+        return 0
+
+    hits: list[dict] = []
+    for h in holdings:
+        snap = snapshots.get(str(h["stock_id"]))
+        if not snap:
+            continue
+        hit = _check_stop_loss_hit(h, snap)
+        if hit:
+            hits.append(hit)
+
+    msg = _format_stop_loss_summary(hits, now.strftime("%H:%M"))
+    if msg is None:
+        log_event(
+            "intraday_stop_loss_summary_empty",
+            module="intraday_final_summary",
+            severity="info",
+            summary="13:15 停損彙整：無持股觸及停損",
+            payload={"checked": len(holdings)},
+        )
+        return 0
+
+    try:
+        ok = send_stock_alert(msg)
+    except Exception as exc:
+        ok = False
+        logger.warning("13:15 停損彙整 Telegram 推播失敗：%s", exc)
+
+    log_event(
+        "intraday_stop_loss_summary_sent" if ok else "intraday_stop_loss_summary_failed",
+        module="intraday_final_summary",
+        severity="info" if ok else "error",
+        summary=f"13:15 停損彙整推播：共 {len(hits)} 檔觸及（{'成功' if ok else '失敗'}）",
+        payload={
+            "hits": [
+                {
+                    "stock_id": h["stock_id"],
+                    "price": h["price"],
+                    "stop_loss": h["stop_loss"],
+                    "pnl_pct": h["pnl_pct"],
+                }
+                for h in hits
+            ],
+            "checked": len(holdings),
         },
     )
     return 1 if ok else 0
