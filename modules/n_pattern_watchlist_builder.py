@@ -172,6 +172,20 @@ def build_from_data(
 
         info = stock_info.get(sid, {}) or {}
         vol = pat.volume
+
+        # 前 5 日均量（張）：盤中流動性 gate 的基準；單位「股」÷1000 = 張
+        vol_ma5_lots: float | None = None
+        vol_col = "Trading_Volume" if "Trading_Volume" in df.columns else (
+            "volume" if "volume" in df.columns else None
+        )
+        if vol_col is not None:
+            try:
+                vol_series = pd.to_numeric(df[vol_col].iloc[-5:], errors="coerce").dropna()
+                if not vol_series.empty:
+                    vol_ma5_lots = float(vol_series.mean()) / 1000.0
+            except Exception:
+                vol_ma5_lots = None
+
         candidates.append({
             "stock_id": sid,
             "stock_name": info.get("stock_name"),
@@ -187,6 +201,7 @@ def build_from_data(
             "vol_a_to_b_increase": bool(vol.a_to_b_volume_increase) if vol else None,
             "vol_b_to_c_decrease": bool(vol.b_to_c_volume_decrease) if vol else None,
             "avg_volume_b_to_c": float(vol.avg_b_to_c) if vol and vol.avg_b_to_c is not None else None,
+            "vol_ma5": vol_ma5_lots,
             "last_close": last_close,
             "distance_to_b_pct": distance_pct,
         })

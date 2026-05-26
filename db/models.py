@@ -395,6 +395,7 @@ class NPatternWatchlist(Base):
     vol_a_to_b_increase = Column(Boolean)                      # A→B 量增？
     vol_b_to_c_decrease = Column(Boolean)                      # B→C 量縮？
     avg_volume_b_to_c   = Column(Float)                        # B→C 平均量（盤中算突破量倍數的基準）
+    vol_ma5             = Column(Float)                        # 前 5 日均量（張，盤中流動性 gate 用）
     last_close          = Column(Float)                        # 建表當下最新收盤
     distance_to_b_pct   = Column(Float)                        # 現價距 B 還差 %（負值=已突破）
     alerted_today       = Column(Boolean, default=False)       # 今日是否已推播

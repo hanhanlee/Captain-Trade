@@ -28,7 +28,7 @@ def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> i
     批次寫入今日候選清單。
     items 內每筆需含：stock_id, stock_name, industry, a_date, a_price, b_date, b_price,
                     c_date, c_price, b_rise_pct, c_retrace_pct, vol_a_to_b_increase,
-                    vol_b_to_c_decrease, avg_volume_b_to_c, last_close, distance_to_b_pct
+                    vol_b_to_c_decrease, avg_volume_b_to_c, vol_ma5, last_close, distance_to_b_pct
     回傳寫入筆數。
     """
     init_db()
@@ -59,6 +59,7 @@ def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> i
                     vol_a_to_b_increase=it.get("vol_a_to_b_increase"),
                     vol_b_to_c_decrease=it.get("vol_b_to_c_decrease"),
                     avg_volume_b_to_c=it.get("avg_volume_b_to_c"),
+                    vol_ma5=it.get("vol_ma5"),
                     last_close=it.get("last_close"),
                     distance_to_b_pct=it.get("distance_to_b_pct"),
                     alerted_today=False,
@@ -68,7 +69,7 @@ def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> i
                     "stock_name", "industry", "a_date", "a_price", "b_date", "b_price",
                     "c_date", "c_price", "b_rise_pct", "c_retrace_pct",
                     "vol_a_to_b_increase", "vol_b_to_c_decrease",
-                    "avg_volume_b_to_c", "last_close", "distance_to_b_pct",
+                    "avg_volume_b_to_c", "vol_ma5", "last_close", "distance_to_b_pct",
                 ):
                     if field in it:
                         setattr(existing, field, it[field])
@@ -240,6 +241,7 @@ def _row_to_dict(r: NPatternWatchlist) -> dict:
         "vol_a_to_b_increase": r.vol_a_to_b_increase,
         "vol_b_to_c_decrease": r.vol_b_to_c_decrease,
         "avg_volume_b_to_c": r.avg_volume_b_to_c,
+        "vol_ma5": r.vol_ma5,
         "last_close": r.last_close,
         "distance_to_b_pct": r.distance_to_b_pct,
         "alerted_today": bool(r.alerted_today),

@@ -8,7 +8,7 @@
   3. is_breakout(price, b_price)：D > B 即視為突破
   4. 過熱濾網：current_price ≤ b_price × 1.03（剛過 B 才追，拉開段不追）
   5. 量能 gate：預估全日量 ≥ avg_volume_b_to_c × 1.3
-  6. 量底 gate：預估全日量 ≥ 1000 張（擋低流動性小型股無量假突破）
+  6. 流動性 gate：前 5 日均量 ≥ MIN_LOTS 張（看「平常流動性」，不受 9:15 外推誤差影響）
   7. 組 Telegram 訊息（含 A/B/C 結構、量能 ✓/✗、假突破提醒）→ 推播
   8. 推播成功後標記 alerted_today 防同檔重複通知
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # 量能 gate：預估全日量 ≥ B→C 期間日均量 × 1.3
 VOL_GATE_MULTIPLIER = 1.3
-MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 從 1000 提高，砍掉低流動性雜訊）
+MIN_LOTS = 5000              # 前 5 日均量下限（張）— 看「平常流動性」，2026-05-26 從「預估全日量」改基準
 BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過 B 點 3% 就不追
 _TOTAL_TRADING_MINUTES = 270  # 09:00–13:30
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
@@ -220,6 +220,13 @@ def run_n_pattern_check() -> int:
         if c_retrace is not None and c_retrace >= 50.0:
             continue
 
+        # 流動性 gate：前 5 日均量 ≥ MIN_LOTS（過濾平常無量的小型股；不受 9:15 外推誤差影響）
+        vol_ma5_lots = _to_float(it.get("vol_ma5"))
+        if vol_ma5_lots is None or vol_ma5_lots < MIN_LOTS:
+            logger.debug("N 字底 %s 平常流動性不足 vol_ma5=%s 張 < %d，本輪略過",
+                         sid, vol_ma5_lots, MIN_LOTS)
+            continue
+
         # 跨日去重：同 stock_id + b_date 的 B 點只推一次，不論是否為不同交易日或不同 C 點
         b_date = it.get("b_date")
         if wl.is_b_point_alerted(sid, b_date):
@@ -241,12 +248,6 @@ def run_n_pattern_check() -> int:
         if vol_ratio < VOL_GATE_MULTIPLIER:
             logger.debug("N 字底 %s 量能不足，預估全日 %.0f 股 / 日均 %.0f 股 = %.2fx < %.2fx",
                          sid, est_full_day_shares, avg_vol_bc, vol_ratio, VOL_GATE_MULTIPLIER)
-            continue
-
-        # 量底：預估全日量 >= MIN_LOTS
-        if est_full_day_lots < MIN_LOTS:
-            logger.debug("N 字底 %s 預估全日 %.0f 張 < %d 張下限，本輪略過",
-                         sid, est_full_day_lots, MIN_LOTS)
             continue
         msg = format_breakout_alert(
             it,

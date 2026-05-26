@@ -47,7 +47,7 @@ TECH_INDUSTRIES: tuple[str, ...] = (
 )
 
 BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過突破目標 3% 就不追（剛過前高才有意義）
-MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 與 V3/V5 主/N 同步從 1000 提高）
+MIN_LOTS = 5000              # 前 5 日均量下限（張）— 看「平常流動性」，2026-05-26 從「預估全日量」改基準
 _TOTAL_TRADING_MINUTES = 270 # 09:00–13:30
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _PATTERN_A_SQUEEZE_PCT = 4.0 # 科技股放寬到 4%（與 v5_sniper_watchlist_builder 同步）
@@ -279,11 +279,12 @@ def run_v5_late_qualifier_check() -> int:
     # 把 body_ratio_min / max_gain_pct 解禁，讓 evaluate_v5 跑得到 pattern detection；
     # late_qualifier 自己用 _late_gate_passed + gain_pct 手動把關（與主 checker 一致：
     # 盤中 K 棒下影線雜訊大，body/range 不可信，這層留到收盤再驗）
+    # min_lots 用 V5Params 預設（1000）即可——本軌新的流動性 gate 是「前 5 日均量 ≥ MIN_LOTS」，
+    # 在迴圈內手動把關，evaluate_v5 內部的 vol_floor_ok（檢預估全日量）作為弱保底。
     params = V5Params(
         body_ratio_min=0.0,
         max_gain_pct=None,
         pattern_a_squeeze_pct=_PATTERN_A_SQUEEZE_PCT,
-        min_lots=MIN_LOTS,
     )
     sent = 0
     cand_by_sid = {c["stock_id"]: c for c in to_scan}
@@ -300,6 +301,16 @@ def run_v5_late_qualifier_check() -> int:
 
         df_eod = _get_eod_df(sid, today)
         if df_eod is None:
+            continue
+
+        # 流動性 gate：前 5 日均量 ≥ MIN_LOTS（過濾平常無量的小型股；不受 9:15 外推誤差影響）
+        try:
+            prev_5_vol = pd.to_numeric(df_eod["Trading_Volume"].iloc[-5:],
+                                        errors="coerce").dropna()
+            vol_ma5_lots = float(prev_5_vol.mean()) / 1000.0 if not prev_5_vol.empty else 0.0
+        except Exception:
+            vol_ma5_lots = 0.0
+        if vol_ma5_lots < MIN_LOTS:
             continue
 
         est_full_day_lots, scale = _estimate_full_day_volume(total_volume_lots, now)
@@ -335,16 +346,12 @@ def run_v5_late_qualifier_check() -> int:
         if result.pattern_type not in ("A", "B"):
             continue
 
-        # 蒐集突破目標 + watchlist 寫入用資料
+        # 蒐集突破目標 + watchlist 寫入用資料（vol_ma5_lots 已在流動性 gate 前算過）
         try:
             prev_row = df_eod.iloc[-1]
             prev_close = float(prev_row["close"])
             prev_high = float(prev_row["max"])
             prev_volume_lots = float(prev_row["Trading_Volume"]) / 1000.0
-
-            prev_5_vol = pd.to_numeric(df_eod["Trading_Volume"].iloc[-5:],
-                                        errors="coerce").dropna()
-            vol_ma5_lots = float(prev_5_vol.mean()) / 1000.0 if not prev_5_vol.empty else 0.0
 
             # breakout_target：型態 A=近10日高（不含今日）；型態 B=昨日高
             if result.pattern_type == "A":

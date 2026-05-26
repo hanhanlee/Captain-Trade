@@ -11,7 +11,7 @@
   5. 量能條件：預估全日量 > vol_ma5 × 1.3
      預估全日量 = 當前累積量 × (270 / 已過交易分鐘數)
      台股交易時間 09:00–13:30，共 270 分鐘
-  6. 量底條件：預估全日量 ≥ 1000 張（擋掉低流動性的小型股無量假突破）
+  6. 流動性條件：vol_ma5 ≥ MIN_LOTS 張（看「平常流動性」，不受 9:15 外推誤差影響）
   7. 全部成立 → 推 Telegram，標記 alerted_today 防重複
 
 推播時點來自 4-5 月回測：09:15 抓早盤強勢突破、13:00–13:24 抓持續性確認，
@@ -25,7 +25,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 VOLUME_MULT = 1.3
-MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 從 1000 提高，砍掉低流動性雜訊）
+MIN_LOTS = 5000              # 前 5 日均量下限（張）— 看「平常流動性」，2026-05-26 從「預估全日量」改基準
 BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過 max(MA5,10,20) × 1.03 就不追
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
@@ -182,6 +182,10 @@ def run_v3_breakout_check() -> int:
         if not (ma5 and ma10 and ma20 and vol_ma5):
             continue
 
+        # 流動性：前 5 日均量 >= MIN_LOTS（過濾平常無量的小型股；不受 9:15 外推誤差影響）
+        if vol_ma5 < MIN_LOTS:
+            continue
+
         # 三線齊穿：現價必須同時高於三條均線
         if not (price > ma5 and price > ma10 and price > ma20):
             continue
@@ -197,10 +201,6 @@ def run_v3_breakout_check() -> int:
             continue
         estimated_vol, scale = _estimate_full_day_volume(total_volume, datetime.now())
         if estimated_vol < vol_ma5 * VOLUME_MULT:
-            continue
-
-        # 量底：預估全日量 >= MIN_LOTS
-        if estimated_vol < MIN_LOTS:
             continue
 
         msg = format_v3_alert(

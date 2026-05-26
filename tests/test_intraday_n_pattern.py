@@ -32,6 +32,7 @@ def _sample_item(**overrides) -> dict:
         "vol_a_to_b_increase": True,
         "vol_b_to_c_decrease": True,
         "avg_volume_b_to_c": 1500.0,
+        "vol_ma5": 8000.0,  # 過流動性 gate（MIN_LOTS=5000）
         "last_close": 70.5,
         "distance_to_b_pct": 0.7,
         "alerted_today": False,

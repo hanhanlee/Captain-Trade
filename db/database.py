@@ -357,6 +357,15 @@ def _migrate_schema():
             ))
             logger.info("migration: v5_sniper_watchlist 新增 entry_path 欄位")
 
+        # n_pattern_watchlist vol_ma5 欄位（盤中流動性 gate 改用前 5 日均量基準）
+        if _table_exists(conn, "n_pattern_watchlist") and not _column_exists(
+            conn, "n_pattern_watchlist", "vol_ma5"
+        ):
+            conn.execute(text(
+                "ALTER TABLE n_pattern_watchlist ADD COLUMN vol_ma5 REAL"
+            ))
+            logger.info("migration: n_pattern_watchlist 新增 vol_ma5 欄位")
+
 
 def vacuum_db():
     """清理資料庫碎片，定期維護用"""

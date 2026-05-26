@@ -10,7 +10,7 @@
        - 型態 B：breakout_target = 昨日最高（破昨高即點火）
   4. 過熱濾網：現價 ≤ breakout_target × 1.03（過前高 3% 內才追，剛突破才有意義）
   5. 量增：預估全日量 >= 前 5 日均量 × 1.3
-  6. 量底：預估全日量 >= 1000 張
+  6. 流動性：前 5 日均量 >= MIN_LOTS 張（看「平常流動性」，不受 9:15 外推誤差影響）
   7. （選用）漲幅 cap：若 row 上有 max_gain_pct，當日漲幅須 ≤ 該值
   8. 型態 B 候選：盤中重驗守月線（用現價當今日 close、重算今日 MA20）
        若型態失效（例：今日跌破月線）則跳過推播
@@ -34,7 +34,7 @@ from datetime import date, datetime
 logger = logging.getLogger(__name__)
 
 VOLUME_MULT = 1.3            # 預估全日量 ÷ 前 5 日均量 倍數門檻
-MIN_LOTS = 5000              # 預估全日量最低張數（2026-05-25 從 1000 提高，砍掉低流動性雜訊）
+MIN_LOTS = 5000              # 前 5 日均量下限（張）— 看「平常流動性」，2026-05-26 從「預估全日量」改基準
 BREAKOUT_BUFFER_PCT = 3.0    # 過熱濾網：現價超過突破目標 3% 就不追（與 late qualifier 同邏輯）
 _MARKET_OPEN_H, _MARKET_OPEN_M = 9, 0
 _TOTAL_TRADING_MINUTES = 270   # 09:00–13:30
@@ -240,25 +240,25 @@ def run_v5_breakout_check() -> int:
         if target is None or avg5_vol is None or avg5_vol <= 0:
             continue
 
-        # 1) 突破目標價（含等於）
+        # 1) 流動性：前 5 日均量 >= MIN_LOTS（過濾平常無量的小型股）
+        if avg5_vol < MIN_LOTS:
+            continue
+
+        # 2) 突破目標價（含等於）
         if price < target:
             continue
 
-        # 2) 過熱濾網：現價超過突破目標 BREAKOUT_BUFFER_PCT% 就不追
+        # 3) 過熱濾網：現價超過突破目標 BREAKOUT_BUFFER_PCT% 就不追
         if price > target * (1 + BREAKOUT_BUFFER_PCT / 100):
             continue
 
-        # 3) 量增：預估全日量 >= 前 5 日均量 × VOLUME_MULT
+        # 4) 量增：預估全日量 >= 前 5 日均量 × VOLUME_MULT
         total_volume = _to_float(snap.get("total_volume"))
         if total_volume is None:
             continue
         # Shioaji total_volume 單位通常為「張」，與 watchlist 內 vol_ma5 同單位
         estimated_vol, scale = _estimate_full_day_volume(total_volume, now)
         if estimated_vol < avg5_vol * VOLUME_MULT:
-            continue
-
-        # 4) 量底：預估全日量 >= MIN_LOTS
-        if estimated_vol < MIN_LOTS:
             continue
 
         # 5) 漲幅 cap（選用，row 上有設才檢查）
