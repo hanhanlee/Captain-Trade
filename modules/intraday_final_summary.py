@@ -356,6 +356,13 @@ def run_final_summary_check() -> int:
 
     snapshots = _get_shioaji_snapshots(sorted(all_sids))
     if not snapshots:
+        log_event(
+            "intraday_final_summary_skipped",
+            module="intraday_final_summary",
+            severity="warning",
+            summary="13:15 機會彙整：Shioaji snapshots 取得失敗，本輪略過",
+            payload={"checked_sids": len(all_sids)},
+        )
         return 0
 
     v3_hits: list[dict] = []
@@ -553,6 +560,13 @@ def run_stop_loss_summary_check() -> int:
     sids = sorted({str(h["stock_id"]) for h in holdings})
     snapshots = _get_shioaji_snapshots(sids)
     if not snapshots:
+        log_event(
+            "intraday_stop_loss_summary_skipped",
+            module="intraday_final_summary",
+            severity="warning",
+            summary="13:15 停損彙整：Shioaji snapshots 取得失敗，本輪略過",
+            payload={"checked_holdings": len(holdings)},
+        )
         return 0
 
     hits: list[dict] = []

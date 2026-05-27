@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _MARKET_LIMIT = 50
 _MARKET_WINDOW = 5.0  # seconds
+_LOGIN_RETRY_COOLDOWN_SEC = 300  # 收到 401/Token expired 後最多每 5 分鐘自動重登一次
 
 
 class ShioajiAdapter:
@@ -36,6 +37,7 @@ class ShioajiAdapter:
                     inst._api = None
                     inst._logged_in = False
                     inst._mkt_calls: deque = deque()
+                    inst._last_login_attempt = 0.0
                     cls._instance = inst
         return cls._instance
 
@@ -125,6 +127,36 @@ class ShioajiAdapter:
     def is_logged_in(self) -> bool:
         return self._logged_in and self._api is not None
 
+    # ── Token expired self-heal ──────────────────────────────────────────────
+
+    @staticmethod
+    def _is_token_expired_error(exc: Exception) -> bool:
+        msg = str(exc)
+        return (
+            "Token is expired" in msg
+            or "StatusCode: 401" in msg
+            or "'status_code': 401" in msg
+        )
+
+    def _maybe_relogin_after_token_expired(self) -> bool:
+        """
+        收到 401/Token expired 時嘗試重登。回傳是否成功。
+        cooldown 防止燒掉每日 1000 次 login 上限與多執行緒搶登。
+        """
+        with self._state_lock:
+            now = time.time()
+            if now - self._last_login_attempt < _LOGIN_RETRY_COOLDOWN_SEC:
+                return False
+            self._last_login_attempt = now
+            if self._api is not None:
+                try:
+                    self._api.logout()
+                except Exception:
+                    pass
+                self._api = None
+            self._logged_in = False
+        return self.login()
+
     # ── Usage ─────────────────────────────────────────────────────────────────
 
     def usage(self) -> dict:
@@ -183,29 +215,62 @@ class ShioajiAdapter:
         if not self.is_logged_in() or not stock_ids:
             return {}
 
-        contracts = []
-        id_map: dict[str, object] = {}
-        for sid in stock_ids:
-            c = self.get_contract(str(sid))
-            if c is not None:
-                contracts.append(c)
-                id_map[str(sid)] = c
+        def _build_contracts():
+            cs = []
+            mp: dict[str, object] = {}
+            for sid in stock_ids:
+                c = self.get_contract(str(sid))
+                if c is not None:
+                    cs.append(c)
+                    mp[str(sid)] = c
+            return cs, mp
 
+        contracts, id_map = _build_contracts()
         if not contracts:
             return {}
 
-        self._throttle()
+        from db.event_log import log_event
 
+        self._throttle()
         try:
             raw = self._api.snapshots(contracts)
         except Exception as exc:
-            logger.warning("Shioaji snapshots() failed: %s", exc)
-            from db.event_log import log_event
+            if not self._is_token_expired_error(exc):
+                logger.warning("Shioaji snapshots() failed: %s", exc)
+                log_event(
+                    "broker_snapshot_failed", module="shioaji_adapter", severity="warning",
+                    summary=f"snapshots 失敗：{exc}",
+                )
+                return {}
+
+            logger.warning("Shioaji token expired，嘗試自動重登…")
             log_event(
-                "broker_snapshot_failed", module="shioaji_adapter", severity="warning",
-                summary=f"snapshots 失敗：{exc}",
+                "broker_token_expired", module="shioaji_adapter", severity="warning",
+                summary="snapshots 偵測到 token 過期，觸發自動重登",
             )
-            return {}
+            if not self._maybe_relogin_after_token_expired():
+                logger.warning("Shioaji 自動重登被 cooldown 跳過或失敗")
+                log_event(
+                    "broker_snapshot_failed", module="shioaji_adapter", severity="warning",
+                    summary="snapshots 失敗：token 過期，重登被 cooldown 跳過或失敗",
+                )
+                return {}
+
+            # 重登後 contract 物件需重新從新 api 取得
+            contracts, id_map = _build_contracts()
+            if not contracts:
+                return {}
+            self._throttle()
+            try:
+                raw = self._api.snapshots(contracts)
+                logger.info("Shioaji 重登後 snapshots retry 成功（%d 檔）", len(contracts))
+            except Exception as exc2:
+                logger.warning("Shioaji snapshots() retry failed: %s", exc2)
+                log_event(
+                    "broker_snapshot_failed", module="shioaji_adapter", severity="warning",
+                    summary=f"snapshots retry 失敗：{exc2}",
+                )
+                return {}
 
         result: dict[str, dict] = {}
         for snap in raw:
@@ -260,14 +325,30 @@ class ShioajiAdapter:
         contract = self.get_contract(stock_id)
         if contract is None:
             return None
+        import pandas as pd
+
         self._throttle()
         try:
-            import pandas as pd
             kbars = self._api.kbars(contract=contract, start=start, end=end)
             return pd.DataFrame({**kbars})
         except Exception as exc:
-            logger.warning("Shioaji kbars(%s) failed: %s", stock_id, exc)
-            return None
+            if not self._is_token_expired_error(exc):
+                logger.warning("Shioaji kbars(%s) failed: %s", stock_id, exc)
+                return None
+            logger.warning("Shioaji token expired (kbars %s)，嘗試自動重登…", stock_id)
+            if not self._maybe_relogin_after_token_expired():
+                return None
+            contract = self.get_contract(stock_id)
+            if contract is None:
+                return None
+            self._throttle()
+            try:
+                kbars = self._api.kbars(contract=contract, start=start, end=end)
+                logger.info("Shioaji 重登後 kbars(%s) retry 成功", stock_id)
+                return pd.DataFrame({**kbars})
+            except Exception as exc2:
+                logger.warning("Shioaji kbars(%s) retry failed: %s", stock_id, exc2)
+                return None
 
     # ── Health Check ──────────────────────────────────────────────────────────
 
