@@ -9,6 +9,7 @@ import random
 import time
 import logging
 from datetime import datetime, time as dtime, timedelta
+from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -34,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 # 供 job_etf_holdings_update 安排一次性 retry 用；由 run_scheduler() 注入
 _scheduler = None
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_TUNNEL_URL_FILE = _REPO_ROOT / "runtime" / "cloudflared_url.txt"
 
 
 @skip_if_not_trading_day
@@ -385,6 +389,34 @@ def job_db_backup():
         logger.error("DB 備份任務失敗：%s", e)
 
 
+def job_tunnel_url_daily_push():
+    """每天 08:30 推播當前 Cloudflare tunnel 對外網址，方便在 Telegram 歷史快速查找。"""
+    try:
+        if _TUNNEL_URL_FILE.exists():
+            url = _TUNNEL_URL_FILE.read_text(encoding="utf-8").strip()
+        else:
+            url = ""
+
+        if url:
+            msg = f"🔗 srock tool 對外網址（每日 08:30 自動推送）\n{url}"
+        else:
+            msg = (
+                "⚠️ srock tool Cloudflare tunnel 未啟動\n"
+                f"找不到 {_TUNNEL_URL_FILE.name}，請手動啟動 tunnel。"
+            )
+
+        ok = tg_alert(msg)
+        log_event(
+            "tunnel_url_daily_push_sent" if ok else "tunnel_url_daily_push_failed",
+            module="scheduler",
+            severity="info" if ok else "warning",
+            summary=f"08:30 tunnel URL 推播：{'成功' if ok else '失敗'}",
+            payload={"url": url or None},
+        )
+    except Exception as e:
+        logger.error(f"08:30 tunnel URL 推播失敗：{e}")
+
+
 @skip_if_not_trading_day
 def job_v3_breakout_watchlist_build():
     """
@@ -688,6 +720,17 @@ def run_scheduler():
         name="盤中 13:15 收盤前彙整推播",
     )
 
+    # Cloudflare tunnel 對外網址每日推播：08:30（每天，含週末）
+    # 服務可能很久才重開一次 → URL 不變但每天推一次方便在 Telegram 歷史快速查找。
+    scheduler.add_job(
+        job_tunnel_url_daily_push,
+        CronTrigger(hour=8, minute=30, timezone="Asia/Taipei"),
+        id="tunnel_url_daily",
+        name="每日 08:30 對外網址推播",
+        misfire_grace_time=600,
+        coalesce=True,
+    )
+
     # DB 備份至 Google Drive：週一到週五 06:50
     # 機器約 06:30 開機，6:50 開始備份 → 約 06:54 結束 → 09:00 開盤前完成。
     # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響），
@@ -715,6 +758,7 @@ def run_scheduler():
     logger.info("  v5 狙擊手版 watchlist：週一至週五 08:55")
     logger.info("  v5 補抓軌道：週一至週五 09:15 + 13:00–13:24（共 26 次/天）")
     logger.info("  13:15 收盤前彙整推播：週一至週五 13:15（每日一次）")
+    logger.info("  對外網址推播：每天 08:30")
 
     try:
         scheduler.start()
