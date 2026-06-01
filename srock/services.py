@@ -374,7 +374,13 @@ class SchedulerService:
         try:
             pid = int(pid_file.read_text().strip())
             proc = _psutil.Process(pid)
-            if proc.is_running() and proc.status() != _psutil.STATUS_ZOMBIE:
+            # 防 PID 重用：重開機後同一 PID 可能被其他進程拿走
+            cmdline = " ".join(proc.cmdline()).replace("\\", "/")
+            if (
+                proc.is_running()
+                and proc.status() != _psutil.STATUS_ZOMBIE
+                and ("scheduler.jobs" in cmdline or "scheduler/jobs.py" in cmdline)
+            ):
                 return pid
         except Exception:
             pass
@@ -459,7 +465,13 @@ class PrefetchService:
         try:
             pid = int(pid_file.read_text().strip())
             proc = _psutil.Process(pid)
-            if proc.is_running() and proc.status() != _psutil.STATUS_ZOMBIE:
+            # 防 PID 重用：重開機後同一 PID 可能被其他進程拿走
+            cmdline = " ".join(proc.cmdline()).replace("\\", "/")
+            if (
+                proc.is_running()
+                and proc.status() != _psutil.STATUS_ZOMBIE
+                and ("scheduler.prefetch" in cmdline or "scheduler/prefetch.py" in cmdline)
+            ):
                 return pid
         except Exception:
             pass
@@ -536,7 +548,13 @@ class TelegramBotService:
         try:
             pid = int(pid_file.read_text().strip())
             proc = _psutil.Process(pid)
-            if proc.is_running() and proc.status() != _psutil.STATUS_ZOMBIE:
+            # 防 PID 重用：重開機後同一 PID 可能被其他進程拿走
+            cmdline = " ".join(proc.cmdline()).replace("\\", "/")
+            if (
+                proc.is_running()
+                and proc.status() != _psutil.STATUS_ZOMBIE
+                and "telegram_bot.py" in cmdline
+            ):
                 return pid
         except Exception:
             pass
