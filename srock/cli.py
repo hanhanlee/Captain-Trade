@@ -141,29 +141,43 @@ def _startup_public_url(cfg, profile: Profile, funnel: FunnelService) -> str:
 
 
 def _notify_startup_complete(cfg, profile: Profile, funnel: FunnelService) -> None:
-    now = datetime.now()
-    if not (dtime(8, 0) <= now.time() <= dtime(20, 0)):
-        return
+    """重啟後推播服務狀態 + Cloudflare tunnel 對外網址。
 
+    Telegram 永遠推（凌晨修 bug 重啟時也要知道新 URL），LINE 只在 08:00–20:00
+    推（避免半夜被吵；且 LINE 的 multicast 配額有限）。
+    """
+    now = datetime.now()
     url = _startup_public_url(cfg, profile, funnel)
     msg = (
         "Srock 服務已啟動\n"
         f"時間：{now.strftime('%Y-%m-%d %H:%M')}\n"
         f"對外網址：{url}"
     )
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
+    tg_ok = False
     try:
-        if str(ROOT) not in sys.path:
-            sys.path.insert(0, str(ROOT))
-        from notifications.line_notify import send_multicast
         from notifications.telegram_notify import send_system_message as tg_system
-        line_ok = send_multicast(msg)
         tg_ok = tg_system(msg)
-        if line_ok or tg_ok:
-            _ok("已推播服務啟動通知")
-        else:
-            _warn("服務已啟動，但啟動通知未送出（LINE + Telegram 均失敗）")
     except Exception as e:
-        _warn(f"服務已啟動，但 LINE 啟動通知失敗：{e}")
+        _warn(f"Telegram 啟動通知失敗：{e}")
+
+    line_ok = False
+    in_line_window = dtime(8, 0) <= now.time() <= dtime(20, 0)
+    if in_line_window:
+        try:
+            from notifications.line_notify import send_multicast
+            line_ok = send_multicast(msg)
+        except Exception as e:
+            _warn(f"LINE 啟動通知失敗：{e}")
+
+    if tg_ok or line_ok:
+        _ok("已推播服務啟動通知")
+    elif in_line_window:
+        _warn("服務已啟動，但啟動通知未送出（LINE + Telegram 均失敗）")
+    else:
+        _warn("服務已啟動，但 Telegram 啟動通知失敗（LINE 時段外略過）")
 
 
 # ── Default command (no subcommand → show status) ─────────────

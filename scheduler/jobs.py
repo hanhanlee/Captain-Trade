@@ -389,6 +389,128 @@ def job_db_backup():
         logger.error("DB 備份任務失敗：%s", e)
 
 
+# 每日 03:00 log rotation：runtime log 超過 50MB 就重啟對應服務並 gzip 歸檔
+# Windows 上 active file 不能 rename，所以一定要先 stop 服務才能 rotate。
+# 目標只挑跑量大的：streamlit / prefetch / telegram_bot。scheduler 自己的 log 跳過
+# （目前 ~7MB，且自殺式 stop 不合理）。caddy / cloudflared 也跳過（都很小）。
+_LOG_ROTATION_TARGETS = [
+    ("streamlit",    "streamlit.err.log",    50),
+    ("streamlit",    "streamlit.out.log",    50),
+    ("prefetch",     "prefetch.err.log",     50),
+    ("prefetch",     "prefetch.out.log",     50),
+    ("telegram_bot", "telegram_bot.err.log", 50),
+]
+_LOG_ARCHIVE_RETAIN_DAYS = 7
+
+
+def _gzip_in_place(src: Path) -> Path:
+    import gzip
+    import shutil
+    gz_path = src.with_suffix(src.suffix + ".gz")
+    with open(src, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    src.unlink()
+    return gz_path
+
+
+def _cleanup_old_log_archives(runtime_dir: Path, retain_days: int) -> int:
+    cutoff = datetime.now() - timedelta(days=retain_days)
+    deleted = 0
+    for f in runtime_dir.glob("*.log.*"):
+        if not f.is_file():
+            continue
+        try:
+            if datetime.fromtimestamp(f.stat().st_mtime) < cutoff:
+                f.unlink()
+                deleted += 1
+        except Exception as e:
+            logger.warning(f"log_rotation: 無法刪除舊歸檔 {f.name}：{e}")
+    return deleted
+
+
+def job_log_rotation():
+    """每日 03:00：runtime/*.log > 50MB 就重啟對應服務、gzip 歸檔，保留 7 天。"""
+    from srock.config import load_config
+    from srock.services import StreamlitService, PrefetchService, TelegramBotService
+
+    cfg = load_config()
+    runtime_dir = _REPO_ROOT / "runtime"
+    today = datetime.now().strftime("%Y%m%d")
+
+    by_service: dict[str, list[tuple[Path, float]]] = {}
+    for svc_name, log_name, max_mb in _LOG_ROTATION_TARGETS:
+        path = runtime_dir / log_name
+        if not path.exists():
+            continue
+        size_mb = path.stat().st_size / (1024 * 1024)
+        if size_mb > max_mb:
+            by_service.setdefault(svc_name, []).append((path, size_mb))
+
+    service_classes = {
+        "streamlit":    StreamlitService,
+        "prefetch":     PrefetchService,
+        "telegram_bot": TelegramBotService,
+    }
+    rotated_summary: list[str] = []
+    failed_services: list[str] = []
+
+    for svc_name, files in by_service.items():
+        try:
+            svc = service_classes[svc_name](cfg)
+            logger.info(f"log_rotation: 停止 {svc_name} 以 rotate {len(files)} 個 log")
+            svc.stop()
+            time.sleep(1.5)
+            for path, size_mb in files:
+                # 避免同日多次跑撞名
+                final = path.with_suffix(path.suffix + f".{today}")
+                i = 0
+                while final.exists() or final.with_suffix(final.suffix + ".gz").exists():
+                    i += 1
+                    final = path.with_suffix(path.suffix + f".{today}.{i}")
+                path.rename(final)
+                gz = _gzip_in_place(final)
+                rotated_summary.append(f"{path.name} ({size_mb:.0f}MB) → {gz.name}")
+            logger.info(f"log_rotation: 重啟 {svc_name}")
+            svc.start()
+        except Exception as e:
+            logger.exception(f"log_rotation: {svc_name} 處理失敗")
+            failed_services.append(svc_name)
+
+    deleted = _cleanup_old_log_archives(runtime_dir, _LOG_ARCHIVE_RETAIN_DAYS)
+
+    if rotated_summary or deleted:
+        logger.info(f"log_rotation 完成：rotate {len(rotated_summary)} 檔、清理過期 {deleted} 檔")
+        for line in rotated_summary:
+            logger.info(f"  {line}")
+    else:
+        logger.info("log_rotation: 無需處理（全部 < 50MB）")
+
+    log_event(
+        "log_rotation_done" if not failed_services else "log_rotation_partial",
+        module="scheduler",
+        severity="info" if not failed_services else "warning",
+        summary=(
+            f"rotate {len(rotated_summary)} 檔、清理 {deleted} 檔"
+            + (f"、失敗 {failed_services}" if failed_services else "")
+        ),
+        payload={
+            "rotated": rotated_summary,
+            "deleted_archives": deleted,
+            "failed_services": failed_services,
+        },
+    )
+
+    if failed_services:
+        try:
+            tg_alert(
+                "⚠️ log_rotation 失敗\n"
+                f"服務：{', '.join(failed_services)}\n"
+                "請手動檢查服務是否還在跑。"
+            )
+        except Exception as e:
+            logger.warning(f"log_rotation 失敗推播寫不出：{e}")
+
+
 def job_tunnel_url_daily_push():
     """每天 08:30 推播當前 Cloudflare tunnel 對外網址，方便在 Telegram 歷史快速查找。"""
     try:
@@ -720,6 +842,17 @@ def run_scheduler():
         name="盤中 13:15 收盤前彙整推播",
     )
 
+    # 每日 03:00 log rotation：runtime/*.log > 50MB 就重啟對應服務 + gzip 歸檔
+    # 凌晨非交易、非備份時段（DB 備份 06:50），重啟最不擾人。
+    scheduler.add_job(
+        job_log_rotation,
+        CronTrigger(hour=3, minute=0, timezone="Asia/Taipei"),
+        id="log_rotation",
+        name="每日 03:00 log rotation",
+        misfire_grace_time=600,
+        coalesce=True,
+    )
+
     # Cloudflare tunnel 對外網址每日推播：08:30（每天，含週末）
     # 服務可能很久才重開一次 → URL 不變但每天推一次方便在 Telegram 歷史快速查找。
     scheduler.add_job(
@@ -759,6 +892,7 @@ def run_scheduler():
     logger.info("  v5 補抓軌道：週一至週五 09:15 + 13:00–13:24（共 26 次/天）")
     logger.info("  13:15 收盤前彙整推播：週一至週五 13:15（每日一次）")
     logger.info("  對外網址推播：每天 08:30")
+    logger.info("  Log rotation：每天 03:00（> 50MB 自動 rotate + gzip，保留 7 天）")
 
     try:
         scheduler.start()
