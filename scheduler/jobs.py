@@ -787,38 +787,50 @@ def run_scheduler():
     )
 
     # ETF成分股持股更新 — 絕對防禦：週二到週六 08:10（補前一交易日）
+    # misfire_grace_time=1800：晚開機 30 分鐘內仍補抓；超過 08:40 就放生（08:50 V3 要用）。
     scheduler.add_job(
         job_etf_holdings_update,
         CronTrigger(day_of_week="tue-sat", hour=8, minute=10, timezone="Asia/Taipei"),
         kwargs={"attempt": 1, "max_attempts": 2, "use_today": False},
         id="etf_holdings_0810",
         name="ETF持股更新 08:10（防禦補抓）",
+        misfire_grace_time=1800,
+        coalesce=True,
     )
 
     # 盤中 N 字底候選清單建構：週一到週五 08:00（開盤前 1 小時，留時間人工審視名單）
+    # misfire_grace_time=1800：晚開機 30 分鐘內補做；超過 08:30 就跳過避免盤中半套清單。
     scheduler.add_job(
         job_n_pattern_watchlist_build,
         CronTrigger(day_of_week="mon-fri", hour=8, minute=0, timezone="Asia/Taipei"),
         id="n_pattern_watchlist",
         name="盤中 N 字底候選清單建構",
+        misfire_grace_time=1800,
+        coalesce=True,
     )
 
     # V3 三線齊穿候選清單建構：週一到週五 08:50（與 N 字底錯開 50 分鐘避免資源衝突）
+    # misfire_grace_time=1800：晚開機 30 分鐘內補做（最遠補到 09:20）；過了就放生。
     scheduler.add_job(
         job_v3_breakout_watchlist_build,
         CronTrigger(day_of_week="mon-fri", hour=8, minute=50, timezone="Asia/Taipei"),
         id="v3_breakout_watchlist",
         name="盤中 V3 三線齊穿候選清單建構",
+        misfire_grace_time=1800,
+        coalesce=True,
     )
 
     # v5 狙擊手版候選清單建構：週一到週五 08:55
     # 排 v3 之後 5 分鐘：v5 載入 120 天日 K（比 v3 重）+ 跑 n_pattern_detector，
     # 錯開可避免兩者同時打 SQLite price_cache 與 compute_indicators CPU peak。
+    # misfire_grace_time=1800：晚開機 30 分鐘內補做（最遠補到 09:25）；過了就放生。
     scheduler.add_job(
         job_v5_sniper_watchlist_build,
         CronTrigger(day_of_week="mon-fri", hour=8, minute=55, timezone="Asia/Taipei"),
         id="v5_sniper_watchlist",
         name="盤中 v5 狙擊手版候選清單建構",
+        misfire_grace_time=1800,
+        coalesce=True,
     )
 
     # v5 補抓軌道：週一到週五 09:15 + 13:00–13:24，與三軌主推播同步。
