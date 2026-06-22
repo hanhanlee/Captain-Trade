@@ -4,7 +4,7 @@
 每日 08:50 由排程呼叫 build_watchlist()：
   1. 篩出科技股產業（同 N 字底定義）
   2. 讀日 K 快取 → 計算指標
-  3. 過濾條件（昨收貼近三線均值 ±2% 以內 + 三線糾結度 < 3%）
+  3. 過濾條件（昨收 < MA5 且 < MA10 且 < MA20，即三線全線以下 + 三線糾結度 < 3%）
   4. 寫入 db.v3_breakout_watchlist
 
 純函式 build_from_data() 可在不打 DB / 不打 API 的情況下被單元測試。
@@ -38,16 +38,16 @@ TECH_INDUSTRIES: tuple[str, ...] = (
 class BuildStats:
     scanned: int = 0
     written: int = 0
-    skipped_no_vol: int = 0        # 無成交量欄位
-    skipped_far_from_ma: int = 0   # 昨收距三線均值超過 proximity 閾值
-    skipped_no_squeeze: int = 0    # 三線未糾結（spread >= 3%）
+    skipped_no_vol: int = 0          # 無成交量欄位
+    skipped_not_below_ma: int = 0    # 昨收未在三線全線以下（已突破或部分突破）
+    skipped_no_squeeze: int = 0      # 三線未糾結（spread >= 3%）
     errors: int = 0
 
     def as_dict(self) -> dict:
         return {
             "scanned": self.scanned,
             "written": self.written,
-            "skipped_far_from_ma": self.skipped_far_from_ma,
+            "skipped_not_below_ma": self.skipped_not_below_ma,
             "skipped_no_squeeze": self.skipped_no_squeeze,
             "skipped_no_vol": self.skipped_no_vol,
             "errors": self.errors,
@@ -59,10 +59,12 @@ def build_from_data(
     price_data: dict[str, pd.DataFrame],
     stock_info: dict[str, dict],
     ma_squeeze_threshold: float = 3.0,
-    ma_proximity_pct: float = 2.0,
 ) -> tuple[list[dict], BuildStats]:
     """
-    純函式版：掃描所有股票，找出「昨收貼近三線均值 ± proximity% + 三線糾結」的候選。
+    純函式版：掃描所有股票，找出「昨收在三線全線以下 + 三線糾結」的候選。
+
+    昨收必須 < MA5 且 < MA10 且 < MA20，確保盤中突破是真正「從三線下齊穿到三線上」，
+    而非昨日已部分站上、盤中只補站最後一條線。
 
     回傳 (candidates, stats)。
     candidates 每筆含：stock_id, stock_name, industry, ma5, ma10, ma20,
@@ -103,16 +105,15 @@ def build_from_data(
             stats.errors += 1
             continue
 
-        # 條件 1：昨收貼近三線均值（不限方向，允許在線上或線下）
+        # 條件 1：昨收必須在三線全線以下（等待突破而非已突破）
         # 建表在 08:50，DB 裡最新一筆即昨日收盤
         last_close = float(latest["close"])
         ma5 = float(latest["ma5"])
         ma10 = float(latest["ma10"])
         ma20 = float(latest["ma20"])
 
-        ma_avg = (ma5 + ma10 + ma20) / 3
-        if abs(last_close - ma_avg) / ma_avg * 100 > ma_proximity_pct:
-            stats.skipped_far_from_ma += 1
+        if not (last_close < ma5 and last_close < ma10 and last_close < ma20):
+            stats.skipped_not_below_ma += 1
             continue
 
         # 條件 2：三線糾結度 < threshold（用昨日，即最後一筆）
@@ -149,7 +150,6 @@ def build_watchlist(
     *,
     industries: tuple[str, ...] | list[str] | None = None,
     ma_squeeze_threshold: float = 3.0,
-    ma_proximity_pct: float = 2.0,
     lookback_days: int = 40,
 ) -> dict:
     """
@@ -190,7 +190,6 @@ def build_watchlist(
         price_data=price_data,
         stock_info=stock_info,
         ma_squeeze_threshold=ma_squeeze_threshold,
-        ma_proximity_pct=ma_proximity_pct,
     )
 
     wl.purge_old(older_than_days=7)

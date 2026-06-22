@@ -11,6 +11,8 @@ import logging
 from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
@@ -88,11 +90,50 @@ def job_daily_scan(top_n: int = 5, scan_count: int = 200):
         tg_alert(f"⚠️ 選股掃描失敗：{e}")
 
 
+def _overlay_live_price(df: pd.DataFrame, snap: dict) -> pd.DataFrame:
+    """把 Shioaji snapshot 的即時價疊到日K df 末端。
+
+    收盤前/收盤後 FinMind 日K 可能尚無今日列、或只有暫定收盤值，導致持股警示的
+    現價落後實際。以 snapshot 的即時成交價覆蓋：
+      - 末列已是今日 → 直接覆蓋 OHLCV
+      - 末列早於今日 → 新增一列今日
+    使 run_portfolio_check 取到的 close = 即時價。
+    snapshot 量 total_volume 為「張」，乘 1000 轉「股」與 FinMind 對齊。
+    """
+    price = snap.get("last_price")
+    if price is None or df is None or df.empty:
+        return df
+
+    today = pd.Timestamp(datetime.now().date())
+    vol = snap.get("total_volume")
+    new_row = {
+        "date": today,
+        "open": snap.get("open"),
+        "max": snap.get("high"),
+        "min": snap.get("low"),
+        "close": float(price),
+        "Trading_Volume": (float(vol) * 1000) if vol is not None else None,
+    }
+
+    df = df.copy()
+    last_date = pd.Timestamp(df["date"].iloc[-1]).normalize()
+    if last_date == today:
+        for col, val in new_row.items():
+            if col in df.columns and val is not None:
+                df.iloc[-1, df.columns.get_loc(col)] = val
+    else:
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    return df
+
+
 @skip_if_not_trading_day
 def job_portfolio_check():
     """
     持股警示任務
     每日 13:30（盤中）、14:35（盤後）執行
+
+    現價取得：FinMind 日K 為底，再用 Shioaji 即時 snapshot 覆蓋今日收盤，
+    避免收盤前/盤後 FinMind 尚未定案時用到暫定或落後的價格。
     """
     logger.info("開始持股警示檢查...")
     try:
@@ -121,6 +162,16 @@ def job_portfolio_check():
             except Exception:
                 pass
 
+        # Shioaji 即時報價覆蓋今日收盤（失敗則沿用 FinMind，不阻斷）
+        try:
+            from broker.live_price import fetch_snapshots_safe
+            snaps = fetch_snapshots_safe([h["stock_id"] for h in holdings])
+            for sid, snap in snaps.items():
+                if sid in price_data:
+                    price_data[sid] = _overlay_live_price(price_data[sid], snap)
+        except Exception as e:
+            logger.debug("持股即時報價覆蓋略過：%s", e)
+
         stats_list, all_alerts = run_portfolio_check(holdings, price_data)
 
         if not all_alerts:
@@ -146,6 +197,105 @@ def job_portfolio_check():
 
     except Exception as e:
         logger.error(f"持股警示任務失敗：{e}")
+
+
+def _gather_close_correction_ids() -> list[str]:
+    """蒐集收盤補正目標：持股 + 四軌 watchlist + 近期選股候選（去重）。"""
+    ids: set[str] = set()
+
+    # 持股
+    try:
+        with get_session() as sess:
+            ids |= {str(r.stock_id) for r in sess.query(Portfolio).all()}
+    except Exception as e:
+        logger.debug("收盤補正取持股清單失敗：%s", e)
+
+    # 四軌 watchlist（V5 主/late 共用 v5_sniper_watchlist）
+    try:
+        from db import (
+            n_pattern_watchlist as n_wl,
+            v3_breakout_watchlist as v3_wl,
+            v5_sniper_watchlist as v5_wl,
+        )
+        for wl in (n_wl, v3_wl, v5_wl):
+            try:
+                ids |= {str(it["stock_id"]) for it in wl.today_all()}
+            except Exception as e:
+                logger.debug("收盤補正取 %s watchlist 失敗：%s", wl.__name__, e)
+    except Exception as e:
+        logger.debug("收盤補正載入 watchlist 模組失敗：%s", e)
+
+    # 近期選股候選（最近 5 場、各取前 20）
+    try:
+        from db.scan_history import load_scan_history, load_session_results
+        for rec in load_scan_history(limit=5):
+            df = load_session_results(rec["id"])
+            if not df.empty and "stock_id" in df.columns:
+                ids |= {str(s) for s in df["stock_id"].dropna().head(20)}
+    except Exception as e:
+        logger.debug("收盤補正取選股候選失敗：%s", e)
+
+    return sorted(i for i in ids if i)
+
+
+@skip_if_not_trading_day
+def job_shioaji_close_correction():
+    """
+    13:35 收盤補正：用 Shioaji 即時 snapshot 把當日真實收盤寫進 price_cache。
+
+    台股 13:30 收盤集合競價後 snapshot 即為定案收盤，比 FinMind 日K 定案（約 14:30 後）
+    與 Yahoo Bridge（13:45+，常抓到收盤集合競價前的價）都早且準。
+    以 replace=True 覆蓋；因排在 Yahoo Bridge 之前，Yahoo 的 INSERT OR IGNORE 不會蓋掉本值，
+    FinMind 在 15:00 前被交易日 gate 擋住、之後見今日快取直接跳過，故本值得以保留。
+    Shioaji 不可用（未登入/token 過期/cooldown）時略過，保留 Yahoo/FinMind 後援。
+    """
+    logger.info("開始 Shioaji 收盤補正...")
+    try:
+        ids = _gather_close_correction_ids()
+        if not ids:
+            logger.info("收盤補正：無目標股票，略過")
+            return
+
+        from broker.live_price import fetch_snapshots_safe
+        snaps = fetch_snapshots_safe(ids)
+        if not snaps:
+            logger.info("收盤補正：Shioaji 無報價（未登入或失敗），略過")
+            return
+
+        today = pd.Timestamp(datetime.now().date())
+        rows = []
+        for sid, snap in snaps.items():
+            price = snap.get("last_price")
+            if price is None:
+                continue
+            vol = snap.get("total_volume")
+            rows.append({
+                "stock_id": str(sid),
+                "date": today,
+                "open": snap.get("open"),
+                "max": snap.get("high"),
+                "min": snap.get("low"),
+                "close": float(price),
+                # snapshot total_volume 單位為「張」，乘 1000 轉「股」與 FinMind 對齊
+                "Trading_Volume": (float(vol) * 1000) if vol is not None else None,
+            })
+
+        if not rows:
+            logger.info("收盤補正：snapshot 無有效收盤價，略過")
+            return
+
+        from db.price_cache import save_prices_batch
+        saved = save_prices_batch(pd.DataFrame(rows))
+        logger.info("收盤補正完成：寫入 %d 檔（目標 %d 檔）", saved, len(ids))
+        log_event(
+            "shioaji_close_correction",
+            module="scheduler",
+            severity="info",
+            summary=f"Shioaji 收盤補正：{saved} 檔寫入 price_cache（目標 {len(ids)} 檔）",
+            payload={"target_count": len(ids), "written": saved},
+        )
+    except Exception as e:
+        logger.error("Shioaji 收盤補正失敗：%s", e, exc_info=True)
 
 
 @skip_if_not_trading_day
@@ -553,7 +703,7 @@ def job_v3_breakout_watchlist_build():
         msg = (
             f"📋 V3 三線齊穿候選清單建構完成\n"
             f"  掃描 {stats['scanned']} 檔｜命中 {stats['written']} 檔\n"
-            f"  剔除：遠離均線 {stats['skipped_far_from_ma']}、"
+            f"  剔除：未在三線下 {stats['skipped_not_below_ma']}、"
             f"未糾結 {stats['skipped_no_squeeze']}、無量能 {stats['skipped_no_vol']}"
         )
         tg_alert(msg)
@@ -741,6 +891,18 @@ def run_scheduler():
         name="盤後持股警示",
     )
 
+    # Shioaji 收盤補正：週一到週五 13:35（收盤集合競價後、Yahoo Bridge 13:45 之前）
+    # 把持股 + 四軌 watchlist + 近期候選的真實收盤寫進 price_cache，覆蓋暫定值。
+    # misfire_grace_time=600：剛收盤系統忙時容錯；coalesce 避免堆積重跑。
+    scheduler.add_job(
+        job_shioaji_close_correction,
+        CronTrigger(day_of_week="mon-fri", hour=13, minute=35, timezone="Asia/Taipei"),
+        id="shioaji_close_correction",
+        name="Shioaji 收盤補正 13:35",
+        misfire_grace_time=600,
+        coalesce=True,
+    )
+
     # 每週五績效摘要：15:10
     scheduler.add_job(
         job_weekly_performance,
@@ -895,6 +1057,7 @@ def run_scheduler():
     logger.info("  盤中分K監控：週一至週五 09:00–13:30（每分鐘）")
     logger.info("  盤後選股：週一至週五 14:45")
     logger.info("  持股警示：週一至週五 13:30 / 14:35")
+    logger.info("  Shioaji 收盤補正：週一至週五 13:35")
     logger.info("  ETF持股更新：週一至週五 17:30 / 20:00；週二至週六 08:10")
     logger.info("  週績效報告：週五 15:10")
     logger.info("  持股分佈更新：週五 22:00")
