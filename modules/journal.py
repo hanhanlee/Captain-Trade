@@ -165,30 +165,22 @@ def _open_positions_from_trades(rows: list[TradeJournal]) -> dict:
 
 def sync_open_trades_to_portfolio() -> list[dict]:
     """
-    將交易日誌推算出的仍持有部位同步到持股監控。
+    將交易日誌推算出的仍持有部位「補入」持股監控（純新增，不動既有列）。
 
-    對有交易日誌的股票，同步目前股數；若已無未平倉部位則移除。
-    已存在的停損、停利與備註不會被覆蓋。
+    只新增持股監控裡尚未存在的股票；絕不刪除、也不覆寫任何既有持股列。
+
+    為什麼純新增：
+        交易日誌不是持股的完整來源。許多部位是早期累積、從未記進日誌
+        （日誌可能只有後來的零星加減碼）。若拿不完整的日誌做 FIFO 反推，
+        再回頭刪除/覆寫持股監控，會把實際仍持有的股票整列誤刪——例如某檔
+        日誌只剩「買 478、賣 4000」淨部位 ≤ 0，就會抹掉實際還有 3500 股的紀錄。
+        因此這裡只做加法：缺漏才補，既有列一律不碰，由使用者在 UI 自行維護。
     回傳新增項目清單。
     """
     added = []
     with get_session() as sess:
         rows = sess.query(TradeJournal).all()
         positions = _open_positions_from_trades(rows)
-        trade_stock_ids = {(r.stock_id or "").strip() for r in rows if (r.stock_id or "").strip()}
-
-        existing_rows = sess.query(Portfolio).filter(Portfolio.stock_id.in_(trade_stock_ids)).all() if trade_stock_ids else []
-        for row in existing_rows:
-            sid = (row.stock_id or "").strip()
-            pos = positions.get(sid)
-            if not pos:
-                sess.delete(row)
-                continue
-            row.shares = int(pos["shares"])
-            if not row.stock_name and pos["stock_name"]:
-                row.stock_name = pos["stock_name"]
-            if not row.buy_date and pos["buy_date"]:
-                row.buy_date = pos["buy_date"]
 
         for sid, pos in positions.items():
             exists = sess.query(Portfolio).filter(Portfolio.stock_id == sid).first()
