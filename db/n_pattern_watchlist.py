@@ -73,22 +73,28 @@ def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> i
                 ):
                     if field in it:
                         setattr(existing, field, it[field])
-                existing.alerted_today = False     # 重建即視為新候選，重置推播旗標
+                # 不重置 alerted_today：既有列若已推播過，重建/再 upsert 時必須保留，
+                # 否則頁面把已推播票顯示成 ⏳、且該票會重新進入 today_active()。
+                # （跨日去重另有 NPatternAlertHistory 把關，此處只管當日旗標。）
             n += 1
         sess.commit()
     return n
 
 
-def clear_today(scan_date: date | None = None) -> int:
-    """重建前清掉今日紀錄（避免 actionable 名單變動後遺留舊條目）。"""
+def clear_today(scan_date: date | None = None, *,
+                preserve_alerted: bool = False) -> int:
+    """重建前清掉今日紀錄（避免 actionable 名單變動後遺留舊條目）。
+
+    preserve_alerted=True 時保留「已推播」的列，只刪尚未推播的——供當天重建
+    （手動 / 服務重啟在 misfire grace 內二次觸發）使用，避免洗掉已推播的票。
+    """
     init_db()
     sd = scan_date or _today()
     with get_session() as sess:
-        deleted = (
-            sess.query(NPatternWatchlist)
-            .filter(NPatternWatchlist.scan_date == sd)
-            .delete(synchronize_session=False)
-        )
+        q = sess.query(NPatternWatchlist).filter(NPatternWatchlist.scan_date == sd)
+        if preserve_alerted:
+            q = q.filter(NPatternWatchlist.alerted_today == False)  # noqa: E712
+        deleted = q.delete(synchronize_session=False)
         sess.commit()
     return int(deleted or 0)
 

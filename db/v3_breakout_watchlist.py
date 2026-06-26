@@ -45,21 +45,27 @@ def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> i
                               "vol_ma5", "last_close", "ma_spread_pct"):
                     if field in it:
                         setattr(existing, field, it[field])
-                existing.alerted_today = False
+                # 不重置 alerted_today：既有列若已推播過，重建/再 upsert 時必須保留，
+                # 否則頁面把已推播票顯示成 ⏳，且該票會重新進入 today_active() 被重推。
             n += 1
         sess.commit()
     return n
 
 
-def clear_today(scan_date: date | None = None) -> int:
+def clear_today(scan_date: date | None = None, *,
+                preserve_alerted: bool = False) -> int:
+    """清空今日候選。
+
+    preserve_alerted=True 時保留「已推播」的列，只刪尚未推播的——供當天重建
+    （手動 / 服務重啟在 misfire grace 內二次觸發）使用，避免洗掉已推播的票。
+    """
     init_db()
     sd = scan_date or _today()
     with get_session() as sess:
-        deleted = (
-            sess.query(V3BreakoutWatchlist)
-            .filter(V3BreakoutWatchlist.scan_date == sd)
-            .delete(synchronize_session=False)
-        )
+        q = sess.query(V3BreakoutWatchlist).filter(V3BreakoutWatchlist.scan_date == sd)
+        if preserve_alerted:
+            q = q.filter(V3BreakoutWatchlist.alerted_today == False)  # noqa: E712
+        deleted = q.delete(synchronize_session=False)
         sess.commit()
     return int(deleted or 0)
 

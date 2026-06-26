@@ -274,7 +274,9 @@ def build_watchlist(
     )
 
     wl.purge_old(older_than_days=7)
-    wl.clear_today()
+    # 保留盤中已推播的列：當天重建（手動或服務重啟在 misfire grace 內二次觸發）
+    # 不要把已推播的票洗掉、也不要把 alerted 旗標重置成未推播。
+    wl.clear_today(preserve_alerted=True)
     wl.upsert_candidates(candidates, scan_date=today)
 
     return stats.as_dict()
