@@ -59,21 +59,36 @@ def upsert_candidates(items: Iterable[dict], scan_date: date | None = None) -> i
                 for field in _UPSERT_FIELDS:
                     if field in it:
                         setattr(existing, field, it[field])
-                existing.alerted_today = False
+                # 不重置 alerted_today：既有列若已推播過（早盤 checker 或 late
+                # qualifier 標記），重建/再 upsert 時必須保留標記，否則頁面會把
+                # 已推播票顯示成 ⏳、且該票會重新進入 today_active() 被重推。
             n += 1
         sess.commit()
     return n
 
 
-def clear_today(scan_date: date | None = None) -> int:
+def clear_today(scan_date: date | None = None, *,
+                preserve_alerted_and_late: bool = False) -> int:
+    """清空今日候選。
+
+    preserve_alerted_and_late=True 時，保留「已推播」與「late qualifier 盤中補進」
+    的列，只刪掉尚未推播的 morning 列——供當天重建（手動重建 / 服務重啟在 misfire
+    grace 內二次觸發）使用，避免把盤中才補進、已推播的票整列洗掉。
+    """
     init_db()
     sd = scan_date or _today()
     with get_session() as sess:
-        deleted = (
-            sess.query(V5SniperWatchlist)
-            .filter(V5SniperWatchlist.scan_date == sd)
-            .delete(synchronize_session=False)
-        )
+        q = sess.query(V5SniperWatchlist).filter(V5SniperWatchlist.scan_date == sd)
+        if preserve_alerted_and_late:
+            from sqlalchemy import or_
+            q = q.filter(
+                V5SniperWatchlist.alerted_today == False,  # noqa: E712
+                or_(
+                    V5SniperWatchlist.entry_path == None,   # noqa: E711
+                    V5SniperWatchlist.entry_path != "late",
+                ),
+            )
+        deleted = q.delete(synchronize_session=False)
         sess.commit()
     return int(deleted or 0)
 

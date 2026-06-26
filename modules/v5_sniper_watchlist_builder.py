@@ -198,7 +198,9 @@ def build_watchlist(
     )
 
     wl.purge_old(older_than_days=7)
-    wl.clear_today()
+    # 保留盤中已推播 / late qualifier 補進的列：當天若重建（手動或服務重啟在
+    # misfire grace 內二次觸發），不要把這些票整列洗掉。
+    wl.clear_today(preserve_alerted_and_late=True)
     wl.upsert_candidates(candidates, scan_date=today)
 
     logger.info(
