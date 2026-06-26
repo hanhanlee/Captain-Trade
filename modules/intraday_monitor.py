@@ -2,9 +2,13 @@
 盤中持股監控
 
 每分鐘掃描 intraday_monitor=True 的持股，判斷：
-  - 現價 < MA5 / MA10 / MA20（日K MA + 即時價納入視窗，與圖表工具一致）
   - 現價 <= stop_loss（若有設）
   - 現價 >= take_profit（若有設）
+  - 未設停損且未實現虧損 <= -5%（提醒設停損）
+  - 接近漲停 / 接近跌停（需 Shioaji 漲跌停資料）
+
+註：跌破 MA5 / MA10 / MA20 的提醒已於 2026-06-26 移除——盤中價在均線上下
+穿梭雜訊太多，只保留停損等決策型提醒。
 
 觸發時同步推 LINE + Telegram。同一檔同一條件 60 分鐘內只推一次（in-memory cooldown）。
 """
@@ -49,30 +53,6 @@ def _mark(stock_id: str, key: str) -> None:
 
 def _unmark(stock_id: str, key: str) -> None:
     _cooldown.get(stock_id, {}).pop(key, None)
-
-
-def _daily_mas(stock_id: str, current_price: float | None = None) -> dict[str, float]:
-    """
-    從日K快取計算 MA5 / MA10 / MA20。
-    若提供 current_price，將其附加到收盤序列末端（模擬今日收盤），
-    使結果與圖表工具的即時 MA 一致。
-    """
-    try:
-        from db.price_cache import load_prices
-        df = load_prices(stock_id, lookback_days=25)
-        if df.empty or "close" not in df.columns:
-            return {}
-        closes = pd.to_numeric(df["close"], errors="coerce").dropna()
-        if current_price is not None:
-            closes = pd.concat([closes, pd.Series([current_price])], ignore_index=True)
-        result: dict[str, float] = {}
-        for n, label in [(5, "ma5"), (10, "ma10"), (20, "ma20")]:
-            if len(closes) >= n:
-                result[label] = float(closes.tail(n).mean())
-        return result
-    except Exception as e:
-        logger.debug(f"_daily_mas {stock_id}: {e}")
-        return {}
 
 
 def _check_one(
@@ -132,18 +112,11 @@ def _check_one(
     if price is None:
         return [], [], None, ""
 
-    mas = _daily_mas(stock_id, current_price=price)
     alerts: list[str] = []
     keys: list[str] = []
 
-    for label, key in [("MA5", "ma5"), ("MA10", "ma10"), ("MA20", "ma20")]:
-        val = mas.get(key)
-        if val is None:
-            continue
-        cond = f"below_{key}"
-        if price < val and _cooled_down(stock_id, cond):
-            alerts.append(f"現價 {price:.2f} 跌破 {label}（{val:.2f}）")
-            keys.append(cond)
+    # 均線跌破提醒（MA5/MA10/MA20）已於 2026-06-26 移除：盤中價在均線上下穿梭
+    # 雜訊過多，只保留停損 / 停利 / 接近漲跌停 / 未設停損-5% 等決策型提醒。
 
     if stop_loss and price <= stop_loss:
         if _cooled_down(stock_id, "stop_loss"):
