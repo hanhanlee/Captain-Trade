@@ -253,8 +253,16 @@ events_built = query_events(
     date_to=date_to.isoformat(),
     limit=50,
 )
+events_summary = query_events(
+    event_type="intraday_final_summary_sent",
+    date_from=date_from.isoformat(),
+    date_to=date_to.isoformat(),
+    limit=50,
+)
 
-tab_alert, tab_late, tab_built = st.tabs(["🌅 主軌道推播", "⚡ late qualifier 推播", "watchlist 建構"])
+tab_alert, tab_late, tab_summary, tab_built = st.tabs(
+    ["🌅 主軌道推播", "⚡ late qualifier 推播", "🏁 13:15 彙整", "watchlist 建構"]
+)
 
 with tab_alert:
     rows_a = []
@@ -311,6 +319,38 @@ with tab_late:
             "近 14 天無 late qualifier 推播紀錄。"
             "（軌道於 09:15–13:25 每 5 分鐘掃描，補抓晨間 watchlist 外的票。"
             "過熱濾網用「過前高 3% 內」，比主軌道嚴格。）"
+        )
+
+with tab_summary:
+    st.caption(
+        "13:15 收盤前彙整是獨立的「再檢查」軌道，推一則合併訊息到 Telegram，"
+        "寫的是 `intraday_final_summary_sent`（不是 v5_sniper_alert，也不會 mark_alerted），"
+        "所以這些命中票不會出現在上面兩個分頁、watchlist 也仍顯示 ⏳。此處列出彙整當下的 V5 命中票。"
+    )
+    rows_s = []
+    for e in events_summary:
+        try:
+            payload = json.loads(e.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        v5_main = payload.get("v5_main") or []
+        v5_late = payload.get("v5_late") or []
+        if not v5_main and not v5_late:
+            continue
+        rows_s.append({
+            "時間": e["created_at"],
+            "V5 主 checker 命中": "、".join(str(s) for s in v5_main) or "—",
+            "V5 late 命中": "、".join(str(s) for s in v5_late) or "—",
+            "V5 命中數": len(v5_main) + len(v5_late),
+            "彙整總數(含V3/N)": payload.get("total"),
+        })
+    if rows_s:
+        rows_s.sort(key=lambda r: r["時間"], reverse=True)
+        st.dataframe(pd.DataFrame(rows_s), use_container_width=True, height=380)
+    else:
+        st.info(
+            "近 14 天的 13:15 彙整推播中無 V5 命中票（彙整本身可能仍有 V3 / N 字底命中，"
+            "或當日四軌皆空）。"
         )
 
 with tab_built:
