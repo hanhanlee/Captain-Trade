@@ -4,8 +4,8 @@
 每分鐘掃描 intraday_monitor=True 的持股，判斷：
   - 現價 <= stop_loss（若有設）
   - 現價 >= take_profit（若有設）
-  - 未設停損且未實現虧損 <= -5%（提醒設停損）
-  - 接近漲停 / 接近跌停（需 Shioaji 漲跌停資料）
+  - 未設停損且未實現虧損 <= -10%（提醒設停損）
+  - 接近漲停（距 <= 3%）/ 接近跌停（距 <= 3%）（需 Shioaji 漲跌停資料）
 
 註：跌破 MA5 / MA10 / MA20 的提醒已於 2026-06-26 移除——盤中價在均線上下
 穿梭雜訊太多，只保留停損等決策型提醒。
@@ -116,7 +116,7 @@ def _check_one(
     keys: list[str] = []
 
     # 均線跌破提醒（MA5/MA10/MA20）已於 2026-06-26 移除：盤中價在均線上下穿梭
-    # 雜訊過多，只保留停損 / 停利 / 接近漲跌停 / 未設停損-5% 等決策型提醒。
+    # 雜訊過多，只保留停損 / 停利 / 接近漲跌停 / 未設停損-10% 等決策型提醒。
 
     if stop_loss and price <= stop_loss:
         if _cooled_down(stock_id, "stop_loss"):
@@ -130,7 +130,7 @@ def _check_one(
 
     if not stop_loss and cost_price and cost_price > 0:
         pnl_pct = (price - cost_price) / cost_price * 100
-        if pnl_pct <= -5 and _cooled_down(stock_id, "unrealized_loss"):
+        if pnl_pct <= -10 and _cooled_down(stock_id, "unrealized_loss"):
             alerts.append(f"現價 {price:.2f} / 成本 {cost_price:.2f}，未實現虧損 {pnl_pct:.1f}%，建議設定停損")
             keys.append("unrealized_loss")
 
@@ -156,7 +156,7 @@ def _check_one(
 
     if limit_down and price:
         dist_down_pct = (price - limit_down) / price * 100
-        if 0 <= dist_down_pct <= 5.0 and _cooled_down(stock_id, "near_limit_down"):
+        if 0 <= dist_down_pct <= 3.0 and _cooled_down(stock_id, "near_limit_down"):
             alerts.append(f"現價 {price:.2f} 接近跌停 {limit_down:.2f}（距離 {dist_down_pct:.1f}%）")
             keys.append("near_limit_down")
 
