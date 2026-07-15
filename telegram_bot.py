@@ -4,12 +4,18 @@ Telegram Bot 輪詢伺服器
 每一則訊息（包含加入群組事件）都會自動記錄發送者到 DB。
 
 支援指令：
-  /getid    — 取得當前 chat_id 與 user_id（設定 .env 用）
-  /members  — 列出本群組所有已記錄成員
-  /status   — 服務狀態、上線時間、公開網址、最後心跳
-  /url      — 目前公開服務網址
-  /health   — 資料庫 / 模組 / 排程器健康狀態
-  /help     — 顯示可用指令
+  查詢（modules/telegram_queries.py）：
+    /brief         — 晨會摘要（部位風險 + 今日機會）
+    /p <代號>      — 個股報價 + 技術位置（/price 同義）
+    /hold          — 持股部位與風險
+    /watch         — 今日四軌狙擊清單
+    /chips <代號>  — 法人 / 融資籌碼
+    /pnl           — 平倉績效
+  系統：
+    /getid /members /joinlist /leavelist /status /url /health /help
+
+白名單：.env 的 TELEGRAM_ALLOWED_CHAT_IDS（逗號分隔 chat_id）。
+未設定 = 全部放行（單人使用）；設定後只回應名單內的 chat。
 
 啟動方式：python telegram_bot.py
 .env 必填：TELEGRAM_BOT_TOKEN=...
@@ -312,19 +318,95 @@ def _handle_help(msg: dict):
     chat_id = msg["chat"]["id"]
     text = (
         "📖 可用指令：\n"
+        "\n── 看盤查詢 ──"
+        "\n/brief      — 晨會摘要（部位＋今日機會）"
+        "\n/p 2330     — 個股報價＋技術位置"
+        "\n/hold       — 持股部位與風險"
+        "\n/watch      — 今日狙擊清單（N/V3/V5）"
+        "\n/chips 2330 — 法人／融資籌碼"
+        "\n/pnl        — 平倉績效"
+        "\n\n── 系統 ──"
+        "\n/status    — 服務狀態與上線時間"
+        "\n/url       — 目前公開網址"
+        "\n/health    — 資料庫 / 排程器健康狀態"
         "\n/joinlist  — 登記加入推播名單"
         "\n/leavelist — 取消登記"
         "\n/members   — 列出已登記成員"
         "\n/getid     — 查詢自己的 chat_id / user_id"
-        "\n/status    — 服務狀態與上線時間"
-        "\n/url       — 目前公開網址"
-        "\n/health    — 資料庫 / 排程器健康狀態"
         "\n/help      — 顯示此說明"
     )
     _reply(chat_id, text)
 
 
+# ── Query command handlers（資料層在 modules/telegram_queries.py）──
+
+def _cmd_arg(msg: dict) -> str:
+    """取指令後第一個參數，例：'/p 2330' → '2330'。"""
+    parts = (msg.get("text") or "").strip().split()
+    return parts[1] if len(parts) > 1 else ""
+
+
+def _run_query(chat_id: int | str, fn, *args):
+    """查詢跑在背景執行緒：Shioaji 首次登入可能要幾秒，不能卡住 polling。"""
+    def _bg():
+        try:
+            _reply(chat_id, fn(*args))
+        except Exception as e:
+            logger.error("Query handler failed: %s", e)
+            _reply(chat_id, f"⚠️ 查詢失敗：{e}")
+    threading.Thread(target=_bg, daemon=True).start()
+
+
+def _handle_price(msg: dict):
+    chat_id = msg["chat"]["id"]
+    sid = _cmd_arg(msg)
+    if not sid:
+        _reply(chat_id, "用法：/p 股票代號（例：/p 2330）")
+        return
+    from modules.telegram_queries import query_price
+    _run_query(chat_id, query_price, sid)
+
+
+def _handle_hold(msg: dict):
+    from modules.telegram_queries import query_holdings
+    _run_query(msg["chat"]["id"], query_holdings)
+
+
+def _handle_watch(msg: dict):
+    from modules.telegram_queries import query_watchlists
+    _run_query(msg["chat"]["id"], query_watchlists)
+
+
+def _handle_chips(msg: dict):
+    chat_id = msg["chat"]["id"]
+    sid = _cmd_arg(msg)
+    if not sid:
+        _reply(chat_id, "用法：/chips 股票代號（例：/chips 2330）")
+        return
+    from modules.telegram_queries import query_chips
+    _run_query(chat_id, query_chips, sid)
+
+
+def _handle_pnl(msg: dict):
+    from modules.telegram_queries import query_pnl
+    _run_query(msg["chat"]["id"], query_pnl)
+
+
+def _handle_brief(msg: dict):
+    from modules.telegram_queries import query_brief
+    _run_query(msg["chat"]["id"], query_brief)
+
+
 _COMMANDS: dict[str, callable] = {
+    # 看盤查詢
+    "/brief":     _handle_brief,
+    "/p":         _handle_price,
+    "/price":     _handle_price,
+    "/hold":      _handle_hold,
+    "/watch":     _handle_watch,
+    "/chips":     _handle_chips,
+    "/pnl":       _handle_pnl,
+    # 系統
     "/joinlist":  _handle_joinlist,
     "/leavelist": _handle_leavelist,
     "/members":   _handle_members,
@@ -335,6 +417,31 @@ _COMMANDS: dict[str, callable] = {
     "/help":      _handle_help,
     "/start":     _handle_help,
 }
+
+# Telegram 用戶端打「/」時跳出的指令選單（setMyCommands）
+_MENU_COMMANDS = [
+    {"command": "brief", "description": "晨會摘要（部位＋今日機會）"},
+    {"command": "p", "description": "個股報價＋技術位置（/p 2330）"},
+    {"command": "hold", "description": "持股部位與風險"},
+    {"command": "watch", "description": "今日狙擊清單（N/V3/V5）"},
+    {"command": "chips", "description": "法人／融資籌碼（/chips 2330）"},
+    {"command": "pnl", "description": "平倉績效"},
+    {"command": "status", "description": "服務狀態"},
+    {"command": "help", "description": "指令說明"},
+]
+
+
+# ── 白名單 ──────────────────────────────────────────────────────
+
+def _allowed_chat_ids() -> set[str]:
+    """TELEGRAM_ALLOWED_CHAT_IDS=id1,id2,...；空 = 全部放行（單人使用階段）。"""
+    raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def _is_allowed(chat_id: int | str) -> bool:
+    allowed = _allowed_chat_ids()
+    return not allowed or str(chat_id) in allowed
 
 
 # ── Update dispatcher ───────────────────────────────────────────
@@ -363,6 +470,11 @@ def _dispatch(update: dict):
     cmd = raw_text.split()[0].split("@")[0].lower()
     handler = _COMMANDS.get(cmd)
     if not handler:
+        return
+
+    # 白名單：不在名單內靜默忽略（不回覆，避免被外人探測 Bot 功能）
+    if not _is_allowed(chat_id):
+        logger.warning("Blocked command %s from non-whitelisted chat %s", cmd, chat_id)
         return
 
     try:
@@ -396,6 +508,14 @@ def run_polling(heartbeat_interval: int = 60):
 
     logger.info("Telegram Bot 啟動（long-polling）")
     logger.info("功能：自動記錄群組成員 + 指令：%s", " ".join(_COMMANDS))
+    allowed = _allowed_chat_ids()
+    logger.info("白名單：%s", "、".join(sorted(allowed)) if allowed else "未設定（全部放行）")
+
+    # 註冊指令選單（打「/」跳出清單）；失敗不影響運作
+    result = _call("setMyCommands", commands=_MENU_COMMANDS)
+    if result and result.get("ok"):
+        logger.info("指令選單已註冊（%d 個）", len(_MENU_COMMANDS))
+
     threading.Thread(target=_heartbeat_worker, args=(heartbeat_interval,), daemon=True).start()
 
     offset = 0
