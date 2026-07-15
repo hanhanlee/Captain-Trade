@@ -34,6 +34,19 @@ def get_cached_dates(stock_id: str) -> tuple:
         return result[0], result[1]
 
 
+def get_row_updated_at(stock_id: str, date_str: str) -> str | None:
+    """回傳某股某日那筆的 updated_at（ISO 字串），無此列回 None。
+
+    供「當日暫定收盤」判斷用：盤後早期寫入的暫定值需在定案時間後重抓覆蓋。
+    """
+    with get_session() as sess:
+        row = sess.execute(
+            text("SELECT updated_at FROM price_cache WHERE stock_id = :sid AND date = :d"),
+            {"sid": stock_id, "d": date_str},
+        ).fetchone()
+    return row[0] if row else None
+
+
 def save_prices(stock_id: str, df: pd.DataFrame, replace: bool = True) -> int:
     """
     批次寫入日K資料。

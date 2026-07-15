@@ -25,7 +25,7 @@ def _set_sqlite_pragmas(dbapi_conn, _):
     cur.execute("PRAGMA cache_size=-32000")       # 32 MB 記憶體快取
     cur.execute("PRAGMA temp_store=MEMORY")       # 暫存表放記憶體
     cur.execute("PRAGMA mmap_size=268435456")     # 256 MB memory-mapped I/O
-    cur.execute("PRAGMA busy_timeout=5000")       # 寫入衝突時等待最多 5 秒，避免 "database is locked"
+    cur.execute("PRAGMA busy_timeout=30000")      # 寫入衝突時等待最多 30 秒（2.2GB 多程序搶寫，5 秒不夠）
     cur.close()
 
 

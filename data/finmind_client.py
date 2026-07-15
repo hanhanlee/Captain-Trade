@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time as dtime
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -1115,6 +1115,36 @@ def resolve_latest_trading_day() -> date:
         return result
 
 
+# 當日收盤定案時間：FinMind 日K 約此時後才把當日收盤定案。
+# 在此之前由盤後早期來源（Yahoo Bridge / 即時源）寫入的今日收盤視為「暫定值」，
+# 過此時間後允許重抓 FinMind 官方收盤覆蓋，避免暫定值被永久信任。
+CLOSE_FINALIZE_HHMM = (14, 30)
+
+
+def is_today_cache_provisional(stock_id: str) -> bool:
+    """今日快取是否為『定案時間(14:30)前寫入』且現在已過定案時間，需重抓覆蓋。
+
+    用於避免收盤後早期寫入的暫定收盤被永久鎖死。Shioaji 收盤補正(13:35)寫入的值在
+    過 14:30 後也會被視為可重抓，但屆時 FinMind 已定案，重抓得到相同官方收盤，不會劣化。
+    """
+    now = datetime.now()
+    if now.time() < dtime(*CLOSE_FINALIZE_HHMM):
+        return False
+    today_iso = now.date().isoformat()
+    try:
+        from db.price_cache import get_row_updated_at
+        ua = get_row_updated_at(stock_id, today_iso)
+    except Exception:
+        return False
+    if not ua:
+        return False
+    try:
+        ua_dt = datetime.fromisoformat(ua)
+    except Exception:
+        return False
+    return ua_dt.date() == now.date() and ua_dt.time() < dtime(*CLOSE_FINALIZE_HHMM)
+
+
 def smart_get_price(stock_id: str, required_days: int = 150) -> pd.DataFrame:
     """
     智慧取價：先查本機快取，只補缺少的資料。
@@ -1122,6 +1152,9 @@ def smart_get_price(stock_id: str, required_days: int = 150) -> pd.DataFrame:
     - 快取已是最新交易日 → 視窗查詢快取，0 次 API
     - 快取有舊資料       → 補抓缺失段後，視窗查詢快取
     - 完全無快取         → 全段抓取存入後，視窗查詢快取
+
+    例外：今日這筆若為定案時間前寫入的暫定值（is_today_cache_provisional），
+    過 14:30 後會重抓 FinMind 官方收盤覆蓋一次。
 
     最新交易日由 resolve_latest_trading_day() 確立（含 2330 基準驗證）。
     查詢使用 lookback_days 視窗，避免載入全量歷史造成記憶體瓶頸。
@@ -1138,6 +1171,16 @@ def smart_get_price(stock_id: str, required_days: int = 150) -> pd.DataFrame:
                      else datetime.strptime(str(max_date), "%Y-%m-%d").date())
 
         if max_cache >= latest_trading_day:
+            # 今日暫定值：過定案時間後重抓官方收盤覆蓋一次
+            if max_cache == today and is_today_cache_provisional(stock_id):
+                logger.info(f"smart_get_price {stock_id}: 今日為暫定收盤，重抓定案值覆蓋")
+                try:
+                    new_df = get_daily_price(stock_id, start_date=today.isoformat())
+                    if not new_df.empty:
+                        save_prices(stock_id, new_df)
+                except Exception as e:
+                    logger.warning(f"smart_get_price {stock_id}: 暫定值重抓失敗（{e}），沿用舊值")
+                return load_prices(stock_id, lookback_days=required_days)
             # 快取已是最新，直接視窗讀取
             logger.debug(f"smart_get_price {stock_id}: 快取命中（{max_cache}）")
             return load_prices(stock_id, lookback_days=required_days)

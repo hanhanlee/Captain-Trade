@@ -6,7 +6,10 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 from datetime import date as date_type, timedelta
 from sqlalchemy import text
 
@@ -98,19 +101,45 @@ def _intraday_monitor_enabled_count() -> int:
 
 
 def save_holding(stock_id, stock_name, shares, cost_price, stop_loss, take_profit, notes):
-    with get_session() as sess:
-        p = Portfolio(
-            stock_id=stock_id,
-            stock_name=stock_name,
-            shares=shares,
-            cost_price=cost_price,
-            stop_loss=stop_loss if stop_loss else None,
-            take_profit=take_profit if take_profit else None,
-            note=notes,
-            notes=notes,
-        )
-        sess.add(p)
-        sess.commit()
+    """新增持股，回傳 (ok, err)。
+
+    寫入後讀回驗證，確保不會「commit 沒生效卻當成功」；任何例外（含 DB 鎖）
+    都明確回報並寫 event_log，不再靜默失敗。
+    """
+    try:
+        with get_session() as sess:
+            p = Portfolio(
+                stock_id=stock_id,
+                stock_name=stock_name,
+                shares=shares,
+                cost_price=cost_price,
+                stop_loss=stop_loss if stop_loss else None,
+                take_profit=take_profit if take_profit else None,
+                note=notes,
+                notes=notes,
+            )
+            sess.add(p)
+            sess.commit()
+            new_id = p.id
+
+        # 讀回驗證：確認該筆確實寫入
+        with get_session() as sess:
+            persisted = sess.query(Portfolio).filter(Portfolio.id == new_id).first() is not None
+        if not persisted:
+            log_event("portfolio_add_failed", module="portfolio_page", severity="error",
+                      stock_id=str(stock_id), stock_name=str(stock_name),
+                      summary="新增持股後讀回驗證失敗（commit 未生效）")
+            return False, "寫入後讀不到該筆，請重試"
+        return True, ""
+    except Exception as e:
+        logger.exception("save_holding 失敗：%s", e)
+        try:
+            log_event("portfolio_add_failed", module="portfolio_page", severity="error",
+                      stock_id=str(stock_id), stock_name=str(stock_name),
+                      summary=f"新增持股失敗：{e}")
+        except Exception:
+            pass
+        return False, str(e)
 
 
 def delete_holding(holding_id: int):
@@ -1553,7 +1582,7 @@ with tab_manage:
             if not new_id:
                 st.error("請輸入股票代碼")
             else:
-                save_holding(
+                ok, err = save_holding(
                     stock_id=new_id.strip(),
                     stock_name=new_name.strip(),
                     shares=new_shares,
@@ -1562,8 +1591,11 @@ with tab_manage:
                     take_profit=new_tp if new_tp > 0 else None,
                     notes=new_note,
                 )
-                st.success(f"已新增 {new_id} {new_name}")
-                st.rerun()
+                if ok:
+                    st.success(f"已新增 {new_id} {new_name}")
+                    st.rerun()
+                else:
+                    st.error(f"新增失敗：{err}")
 
     st.markdown("---")
     st.subheader("匯入 / 匯出持股")

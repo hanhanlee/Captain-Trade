@@ -2102,14 +2102,15 @@ class PrefetchWorker:
     def _fetch_one(self, stock_id: str) -> str:
         try:
             from db.price_cache import get_cached_dates, set_fetch_status
-            from data.finmind_client import smart_get_price
+            from data.finmind_client import smart_get_price, is_today_cache_provisional
 
             _, max_before = get_cached_dates(stock_id)
 
             if max_before is not None:
                 max_d = (max_before if isinstance(max_before, date)
                          else datetime.strptime(str(max_before), "%Y-%m-%d").date())
-                if max_d >= _latest_trading_day():
+                # 今日為定案前寫入的暫定值時不視為命中，往下走 smart_get_price 重抓覆蓋
+                if max_d >= _latest_trading_day() and not is_today_cache_provisional(stock_id):
                     return "cached"
 
             smart_get_price(stock_id, required_days=PREFETCH_DAYS)
