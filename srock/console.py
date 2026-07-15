@@ -45,18 +45,24 @@ def _setup_windows_terminal():
     """
     PowerShell / conhost 預設不啟用 VT100 處理，Rich 的 escape code 會變亂碼。
     用 Win32 API 強制開啟 ENABLE_VIRTUAL_TERMINAL_PROCESSING，再切換 UTF-8 codepage。
+
+    注意：不可用 os.system("chcp")——pythonw 等無主控台進程（排程跑 srock ensure）
+    會為 cmd.exe 另開黑視窗；一律走 Win32 API，且無主控台時整段跳過。
     """
     if sys.platform != "win32":
         return
     import ctypes
-    ENABLE_VT = 0x0004
     kernel32 = ctypes.windll.kernel32
+    if not kernel32.GetConsoleWindow():
+        return
+    ENABLE_VT = 0x0004
     for handle_id in (-10, -11, -12):   # stdin / stdout / stderr
         h = kernel32.GetStdHandle(handle_id)
         mode = ctypes.c_ulong()
         if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
             kernel32.SetConsoleMode(h, mode.value | ENABLE_VT)
-    os.system("chcp 65001 > nul 2>&1")
+    kernel32.SetConsoleOutputCP(65001)
+    kernel32.SetConsoleCP(65001)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")

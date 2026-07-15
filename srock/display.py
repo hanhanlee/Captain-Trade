@@ -22,20 +22,24 @@ from srock.services import (
 )
 
 # Windows: 啟用 VT100 + UTF-8（PowerShell / conhost 預設皆未啟用）
+# 注意：不可用 os.system("chcp")——pythonw 等無主控台進程（排程跑 srock ensure）
+# 會為 cmd.exe 另開黑視窗；一律走 Win32 API，且無主控台時整段跳過。
 if sys.platform == "win32":
     import ctypes
-    _ENABLE_VT = 0x0004
     _k32 = ctypes.windll.kernel32
-    for _hid in (-10, -11, -12):
-        _h = _k32.GetStdHandle(_hid)
-        _m = ctypes.c_ulong()
-        if _k32.GetConsoleMode(_h, ctypes.byref(_m)):
-            _k32.SetConsoleMode(_h, _m.value | _ENABLE_VT)
-    os.system("chcp 65001 > nul 2>&1")
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    if _k32.GetConsoleWindow():
+        _ENABLE_VT = 0x0004
+        for _hid in (-10, -11, -12):
+            _h = _k32.GetStdHandle(_hid)
+            _m = ctypes.c_ulong()
+            if _k32.GetConsoleMode(_h, ctypes.byref(_m)):
+                _k32.SetConsoleMode(_h, _m.value | _ENABLE_VT)
+        _k32.SetConsoleOutputCP(65001)
+        _k32.SetConsoleCP(65001)
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 console = Console(legacy_windows=False, force_terminal=True)
 

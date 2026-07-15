@@ -2526,14 +2526,30 @@ def get_worker() -> PrefetchWorker:
 # ── 獨立執行入口 ────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from pathlib import Path as _Path
     from db.database import init_db
     init_db()
 
+    # heartbeat：每 30 秒寫一次，供 srock ensure 殭屍偵測
+    _hb_file = _Path(__file__).resolve().parent.parent / "runtime" / "prefetch.heartbeat"
+
+    def _write_heartbeat():
+        try:
+            _hb_file.parent.mkdir(parents=True, exist_ok=True)
+            _hb_file.write_text(datetime.now().isoformat(timespec="seconds"), encoding="ascii")
+        except OSError:
+            pass
+
     worker = get_worker()
     worker.start()
+    _write_heartbeat()
+    _hb_last = time.monotonic()
     print("背景預抓取已啟動，Ctrl+C 停止")
     try:
         while True:
+            if time.monotonic() - _hb_last >= 30:
+                _write_heartbeat()
+                _hb_last = time.monotonic()
             s = worker.status()
             pause_str = f"  ⏸ 429暫停剩 {s['pause_remaining_sec']//60}分{s['pause_remaining_sec']%60}秒" \
                         if s["pause_remaining_sec"] > 0 else ""

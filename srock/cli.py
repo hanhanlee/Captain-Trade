@@ -200,7 +200,8 @@ def up(
     no_watch: bool = typer.Option(False, "--no-watch",
         help="啟動完成後不進入 console 模式"),
     watchdog: bool = typer.Option(False, "--watchdog",
-        help="進入 console 後啟用 watchdog 自動復原"),
+        help="（--classic 限定）舊版 console 內建 watchdog"),
+    classic: bool = typer.Option(False, "--classic", help="收尾進舊版 Rich console"),
 ):
     """啟動服務（預設 full：Streamlit + Caddy + Funnel）。"""
     cfg = load_config()
@@ -216,8 +217,14 @@ def up(
     funnel = FunnelService(cfg)
     scheduler = SchedulerService(cfg)
     prefetch = PrefetchService(cfg)
+    telegram_bot = TelegramBotService(cfg)
 
     console.rule("[bold]srock up[/bold]")
+
+    # 解除維護模式：ensure 恢復自動看守
+    if cfg.hold_file.exists():
+        cfg.hold_file.unlink(missing_ok=True)
+        _ok("已解除維護模式（srock.hold 移除，ensure 恢復自動看守）")
 
     _step("Streamlit")
     _run_step("啟動 Streamlit...", streamlit.start)
@@ -229,6 +236,12 @@ def up(
     if profile == Profile.full:
         _step("Cloudflare Tunnel")
         _start_tunnel(funnel)
+
+    _step("Telegram Bot")
+    try:
+        _ok(telegram_bot.start())
+    except Exception as e:
+        _warn(f"Telegram Bot 啟動失敗 — {e}")
 
     _step("Scheduler (cron jobs)")
     _run_step("啟動 Scheduler...", scheduler.start)
@@ -245,24 +258,36 @@ def up(
         webbrowser.open(url)
 
     if not no_watch and cfg.watch_after_up:
-        run_console(cfg, watchdog=watchdog, profile=profile.value)
+        if classic:
+            run_console(cfg, watchdog=watchdog, profile=profile.value)
+        else:
+            from srock.tui import run_tui
+            run_tui(cfg, profile=profile.value)
 
 
 # ── down ───────────────────────────────────────────────────────
 
 @app.command()
 def down():
-    """停止所有服務。"""
+    """停止所有服務（並進入維護模式，ensure 不會自動拉回）。"""
     cfg = load_config()
     funnel = FunnelService(cfg)
     caddy = CaddyService(cfg)
     streamlit = StreamlitService(cfg)
     scheduler = SchedulerService(cfg)
     prefetch = PrefetchService(cfg)
+    telegram_bot = TelegramBotService(cfg)
 
     console.rule("[bold]srock down[/bold]")
+
+    # 先立 hold 檔再停服務，避免 ensure 排程在停到一半時把服務拉回來
+    cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+    cfg.hold_file.write_text(datetime.now().isoformat(timespec="seconds"), encoding="ascii")
+    _ok("已進入維護模式（srock.hold）— ensure 排程不會自動拉回服務，srock up 時自動解除")
+
     _run_step("停止 Prefetch...", prefetch.stop)
     _run_step("停止 Scheduler...", scheduler.stop)
+    _run_step("停止 Telegram Bot...", telegram_bot.stop)
     _run_step("停止 Funnel...", funnel.stop)
     _run_step("停止 Auth Proxy...", caddy.stop)
     _run_step("停止 Streamlit...", streamlit.stop)
@@ -277,7 +302,8 @@ def restart(
     profile: Profile = typer.Option(None, "--profile", "-p"),
     no_watch: bool = typer.Option(False, "--no-watch"),
     watchdog: bool = typer.Option(False, "--watchdog",
-        help="進入 console 後啟用 watchdog 自動復原"),
+        help="（--classic 限定）舊版 console 內建 watchdog"),
+    classic: bool = typer.Option(False, "--classic", help="收尾進舊版 Rich console"),
 ):
     """重啟所有服務（down → up）。"""
     cfg = load_config()
@@ -289,10 +315,12 @@ def restart(
     streamlit = StreamlitService(cfg)
     scheduler = SchedulerService(cfg)
     prefetch = PrefetchService(cfg)
+    telegram_bot = TelegramBotService(cfg)
 
     console.rule("[bold]srock restart[/bold]")
     _run_step("停止 Prefetch...", prefetch.stop)
     _run_step("停止 Scheduler...", scheduler.stop)
+    _run_step("停止 Telegram Bot...", telegram_bot.stop)
     _run_step("停止 Funnel...", funnel.stop)
     _run_step("停止 Auth Proxy...", caddy.stop)
     _run_step("停止 Streamlit...", streamlit.stop)
@@ -302,6 +330,10 @@ def restart(
         _start_caddy(caddy)
     if profile == Profile.full:
         _start_tunnel(funnel)
+    try:
+        _ok(telegram_bot.start())
+    except Exception as e:
+        _warn(f"Telegram Bot 啟動失敗 — {e}")
     _run_step("啟動 Scheduler...", scheduler.start)
     _run_step("啟動 Prefetch...", prefetch.start)
 
@@ -310,7 +342,55 @@ def restart(
     _notify_startup_complete(cfg, profile, funnel)
 
     if not no_watch and cfg.watch_after_up:
-        run_console(cfg, watchdog=watchdog, profile=profile.value)
+        if classic:
+            run_console(cfg, watchdog=watchdog, profile=profile.value)
+        else:
+            from srock.tui import run_tui
+            run_tui(cfg, profile=profile.value)
+
+
+# ── ensure（自癒）───────────────────────────────────────────────
+
+@app.command()
+def ensure(
+    dry_run: bool = typer.Option(False, "--dry-run", help="只診斷不動作"),
+    quiet: bool = typer.Option(False, "--quiet", help="無畫面輸出（給 Task Scheduler 用）"),
+):
+    """自癒檢查：沒跑的拉起、殭屍的重啟（設計給排程每 5 分鐘跑一次）。"""
+    from srock.ensure import run_ensure
+    cfg = load_config()
+    results = run_ensure(cfg, dry_run=dry_run)
+    if quiet:
+        return
+    _COLORS = {
+        "ok": "green", "started": "cyan", "restarted": "cyan",
+        "would-start": "yellow", "would-restart": "yellow",
+        "cooldown": "yellow", "backoff": "yellow",
+        "failed": "red", "hold": "magenta",
+    }
+    for r in results:
+        c = _COLORS.get(r.action, "white")
+        console.print(f"  [{c}]{r.action:<14}[/{c}] [bold]{r.name:<14}[/bold] {r.detail}")
+
+
+@app.command()
+def hold():
+    """進入維護模式：ensure 排程不再自動拉起服務（srock up / resume 解除）。"""
+    cfg = load_config()
+    cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+    cfg.hold_file.write_text(datetime.now().isoformat(timespec="seconds"), encoding="ascii")
+    _ok("已進入維護模式（runtime/srock.hold）")
+
+
+@app.command()
+def resume():
+    """解除維護模式：ensure 排程恢復自動看守。"""
+    cfg = load_config()
+    if cfg.hold_file.exists():
+        cfg.hold_file.unlink()
+        _ok("已解除維護模式，ensure 恢復自動看守")
+    else:
+        _warn("目前不在維護模式")
 
 
 # ── console ────────────────────────────────────────────────────
@@ -318,14 +398,19 @@ def restart(
 @app.command(name="console")
 def run_console_cmd(
     watchdog: bool = typer.Option(False, "--watchdog",
-        help="啟用 watchdog 自動復原"),
+        help="（--classic 限定）啟用舊版 console 內建 watchdog"),
     profile: Profile = typer.Option(None, "--profile", "-p"),
+    classic: bool = typer.Option(False, "--classic", help="使用舊版 Rich console"),
 ):
-    """進入互動監控台（r/s/u/t/c/f/l/q/?）。"""
+    """進入互動監控台（預設 Textual TUI；--classic 用舊版）。"""
     cfg = load_config()
     if profile is None:
         profile = Profile(cfg.default_profile)
-    run_console(cfg, watchdog=watchdog, profile=profile.value)
+    if classic:
+        run_console(cfg, watchdog=watchdog, profile=profile.value)
+    else:
+        from srock.tui import run_tui
+        run_tui(cfg, profile=profile.value)
 
 
 # ── status / watch ─────────────────────────────────────────────

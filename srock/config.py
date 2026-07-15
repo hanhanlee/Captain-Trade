@@ -137,6 +137,28 @@ class Config:
     def prefetch_err_log(self) -> Path:
         return self.runtime_dir / "prefetch.err.log"
 
+    # heartbeat / ensure (self-healing)
+    @property
+    def scheduler_heartbeat_file(self) -> Path:
+        return self.runtime_dir / "scheduler.heartbeat"
+
+    @property
+    def prefetch_heartbeat_file(self) -> Path:
+        return self.runtime_dir / "prefetch.heartbeat"
+
+    @property
+    def ensure_state_file(self) -> Path:
+        return self.runtime_dir / "ensure_state.json"
+
+    @property
+    def ensure_log(self) -> Path:
+        return self.runtime_dir / "ensure.log"
+
+    @property
+    def hold_file(self) -> Path:
+        # 存在時代表使用者主動 srock down（維護模式），ensure 不得自動拉起服務
+        return self.runtime_dir / "srock.hold"
+
     # startup
     default_profile: str = "full"
     auto_open_browser: bool = False

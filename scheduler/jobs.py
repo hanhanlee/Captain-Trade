@@ -16,6 +16,7 @@ import pandas as pd
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from data.finmind_client import get_stock_list, get_daily_price
 from modules.scanner import run_scan
@@ -40,6 +41,22 @@ _scheduler = None
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TUNNEL_URL_FILE = _REPO_ROOT / "runtime" / "cloudflared_url.txt"
+_HEARTBEAT_FILE = _REPO_ROOT / "runtime" / "scheduler.heartbeat"
+
+
+def job_heartbeat():
+    """每 60 秒寫 heartbeat，供 srock ensure 殭屍偵測（進程活著但排程卡死時重啟）。
+
+    APScheduler 的 job 跑在 thread pool，長任務不會擋住這個 job；
+    只有整個進程真的卡死（GIL deadlock、SQLite 鎖死等）heartbeat 才會停更。
+    """
+    try:
+        _HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _HEARTBEAT_FILE.write_text(
+            datetime.now().isoformat(timespec="seconds"), encoding="ascii"
+        )
+    except OSError:
+        pass
 
 
 @skip_if_not_trading_day
@@ -858,6 +875,17 @@ def run_scheduler():
     init_db()
     scheduler = BlockingScheduler(timezone="Asia/Taipei")
     _scheduler = scheduler
+
+    # heartbeat：啟動先寫一次，之後每 60 秒（srock ensure 據此判定殭屍）
+    job_heartbeat()
+    scheduler.add_job(
+        job_heartbeat,
+        IntervalTrigger(seconds=60),
+        id="heartbeat",
+        name="heartbeat（自癒偵測用）",
+        misfire_grace_time=30,
+        coalesce=True,
+    )
 
     # 盤後選股：週一到週五 14:45
     scheduler.add_job(
