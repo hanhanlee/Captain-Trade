@@ -26,6 +26,18 @@ from srock.services import (
 # 會為 cmd.exe 另開黑視窗；一律走 Win32 API，且無主控台時整段跳過。
 if sys.platform == "win32":
     import ctypes
+
+    # stdout/stderr 一律轉 UTF-8（含無主控台的 pipe / pythonw 情境）。
+    # 這一段必須在 GetConsoleWindow() 判斷「之外」——否則被工具/管線呼叫時
+    # stdout 維持 cp950(strict)，Rich 印 ✓ / ⚠ 等字元就 UnicodeEncodeError。
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+    # VT100 + 主控台 codepage 只在有真正主控台時設（pythonw 無主控台要跳過）。
     _k32 = ctypes.windll.kernel32
     if _k32.GetConsoleWindow():
         _ENABLE_VT = 0x0004
@@ -36,10 +48,6 @@ if sys.platform == "win32":
                 _k32.SetConsoleMode(_h, _m.value | _ENABLE_VT)
         _k32.SetConsoleOutputCP(65001)
         _k32.SetConsoleCP(65001)
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        if hasattr(sys.stderr, "reconfigure"):
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 console = Console(legacy_windows=False, force_terminal=True)
 

@@ -115,6 +115,59 @@ def _get_shioaji_snapshots(stock_ids: list[str]) -> dict[str, dict]:
         return {}
 
 
+def _alert_shioaji_unavailable(context: str) -> None:
+    """
+    13:15 彙整因 Shioaji 報價未就緒而略過時，發一則 Telegram 告警。
+
+    機會彙整與停損彙整各自呼叫，但每日僅推一次：透過查 event_log 是否已有當日
+    `intraday_final_summary_shioaji_alert` 來去重，避免同一次 Shioaji 中斷送兩則。
+    兩函式在同一個 job 內先後執行（機會 → 停損），無併發競態。
+    永不 raise：告警本身失敗只 warning，不影響原本的略過流程。
+    """
+    try:
+        from db.database import get_session
+        from db.models import EventLog
+        from sqlalchemy import select, and_
+        from db.event_log import log_event
+        from notifications.telegram_notify import send_stock_alert
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        with get_session() as s:
+            already = s.execute(
+                select(EventLog.id).where(
+                    and_(
+                        EventLog.event_type == "intraday_final_summary_shioaji_alert",
+                        EventLog.created_at >= f"{today_str} 00:00:00",
+                        EventLog.created_at < f"{today_str} 23:59:59",
+                    )
+                ).limit(1)
+            ).first()
+        if already:
+            return
+
+        msg = (
+            "⚠ 13:15 收盤前彙整略過\n"
+            "Shioaji 即時報價未就緒，無法產生機會／停損彙整。\n"
+            "本則不代表無標的，而是取不到報價；請確認 Shioaji 連線"
+            "（可能 token 過期或行情未連上）。"
+        )
+        try:
+            ok = send_stock_alert(msg)
+        except Exception as exc:
+            ok = False
+            logger.warning("Shioaji 未就緒告警推播失敗：%s", exc)
+
+        log_event(
+            "intraday_final_summary_shioaji_alert",
+            module="intraday_final_summary",
+            severity="warning",
+            summary=f"13:15 彙整 Shioaji 報價未就緒告警（{context}，{'已推播' if ok else '推播失敗'}）",
+            payload={"context": context, "pushed": ok},
+        )
+    except Exception as exc:
+        logger.warning("送出 Shioaji 未就緒告警時發生例外：%s", exc)
+
+
 def _check_v3(item: dict, snap: dict, now: datetime) -> dict | None:
     """V3 三線齊穿：現價同時 > MA5/10/20，過 max(MA) buffer 內，量 ≥ MIN_LOTS。"""
     price = _to_float(snap.get("last_price"))
@@ -363,6 +416,7 @@ def run_final_summary_check() -> int:
             summary="13:15 機會彙整：Shioaji snapshots 取得失敗，本輪略過",
             payload={"checked_sids": len(all_sids)},
         )
+        _alert_shioaji_unavailable("機會彙整")
         return 0
 
     v3_hits: list[dict] = []
@@ -567,6 +621,7 @@ def run_stop_loss_summary_check() -> int:
             summary="13:15 停損彙整：Shioaji snapshots 取得失敗，本輪略過",
             payload={"checked_holdings": len(holdings)},
         )
+        _alert_shioaji_unavailable("停損彙整")
         return 0
 
     hits: list[dict] = []
