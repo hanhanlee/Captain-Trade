@@ -378,5 +378,10 @@ def get_session():
     session = SessionLocal()
     try:
         yield session
+    except Exception:
+        # 寫入衝突（database is locked）或 commit 失敗時，明確回滾，
+        # 避免 session 停留在髒狀態被下一次借用，並讓上層能收到例外。
+        session.rollback()
+        raise
     finally:
         session.close()

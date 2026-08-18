@@ -2442,6 +2442,6 @@ if _is_hist:
                     return ""
                 return "color: #e74c3c" if val > 0 else ("color: #27ae60" if val < 0 else "")
             st.dataframe(
-                _future_df.style.applymap(_style_ret, subset=["報酬%"]),
+                _future_df.style.map(_style_ret, subset=["報酬%"]),
                 hide_index=True, use_container_width=True,
             )

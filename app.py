@@ -150,6 +150,15 @@ st.markdown("""
 
 # ── 背景工作器狀態快覽 ───────────────────────────────────────────
 st.markdown("---")
+
+# worker 由獨立進程 (PrefetchService) 管理，見 commit 4dee591；
+# 首頁僅讀取狀態顯示，不在此啟動 in-process 工作器（auto_start=False）
+try:
+    from modules.worker_runtime import get_prefetch_worker
+    worker = get_prefetch_worker(auto_start=False)
+except Exception:
+    worker = None
+
 if worker is not None:
     s = worker.status()
     if s.get("rebuild_mode"):

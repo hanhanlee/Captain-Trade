@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,13 @@ _BUSY_TIMEOUT_MS = 120_000   # 2 分鐘
 
 # Rclone 子程序預設逾時（秒）。preflight/ls/delete 走較短逾時，upload 不限。
 _RCLONE_QUICK_TIMEOUT = 30
+
+# preflight 專用：shared client_id 偶爾被 Google 限流，lsd 會突然變慢
+# （平常約 7 秒，限流時可能 >30 秒）。用較長逾時 + 重試，避免 06:50 備份
+# 因一次卡頓就整個 abort。
+_PREFLIGHT_TIMEOUT = 90
+_PREFLIGHT_RETRIES = 3
+_PREFLIGHT_BACKOFF = 5   # 每次失敗後等待秒數
 
 
 # ── rclone 路徑解析 ────────────────────────────────────────────────
@@ -142,18 +150,35 @@ def step_preflight_remote() -> None:
     """
     rclone = _rclone_path()
     cmd = [rclone, "lsd", RCLONE_REMOTE, "--max-depth", "1"]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=_RCLONE_QUICK_TIMEOUT
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"rclone preflight 逾時（{_RCLONE_QUICK_TIMEOUT}s），網路可能斷線") from exc
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"rclone preflight 失敗（exit {result.returncode}）。"
-            f"OAuth token 可能過期或設定有誤：\n{result.stderr.strip()}"
-        )
-    logger.info("rclone preflight OK")
+    last_err = ""
+    for attempt in range(1, _PREFLIGHT_RETRIES + 1):
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True,
+                encoding="utf-8", errors="replace", timeout=_PREFLIGHT_TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            last_err = f"逾時（>{_PREFLIGHT_TIMEOUT}s）"
+            logger.warning(
+                "rclone preflight 第 %s/%s 次逾時，%s 秒後重試…",
+                attempt, _PREFLIGHT_RETRIES, _PREFLIGHT_BACKOFF,
+            )
+        else:
+            if result.returncode == 0:
+                logger.info("rclone preflight OK（第 %s 次）", attempt)
+                return
+            last_err = f"exit {result.returncode}：{result.stderr.strip()}"
+            logger.warning(
+                "rclone preflight 第 %s/%s 次失敗（%s），%s 秒後重試…",
+                attempt, _PREFLIGHT_RETRIES, last_err, _PREFLIGHT_BACKOFF,
+            )
+        if attempt < _PREFLIGHT_RETRIES:
+            time.sleep(_PREFLIGHT_BACKOFF)
+
+    raise RuntimeError(
+        f"rclone preflight 連續 {_PREFLIGHT_RETRIES} 次失敗（最後：{last_err}）。"
+        f"OAuth token 可能過期、網路斷線，或 shared client_id 被限流。"
+    )
 
 
 def step_backup_db() -> None:
@@ -199,7 +224,7 @@ def step_upload() -> None:
 
     cmd = [rclone, "copyto", str(TEMP_GZ), remote, "--stats", "10s"]
     logger.info("上傳指令: %s", cmd)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(
             f"rclone upload 失敗 (exit {result.returncode}):\n{result.stderr.strip()}"
@@ -214,7 +239,7 @@ def step_verify_upload() -> None:
     target = f"srock_backup_{today}.db.gz"
 
     cmd    = [rclone, "ls", RCLONE_REMOTE, "--include", target]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
     if result.returncode != 0 or target not in result.stdout:
         raise RuntimeError(
             f"上傳驗證失敗，雲端找不到 {target}:\n{result.stdout}{result.stderr}"
@@ -229,7 +254,8 @@ def step_delete_old_backups() -> None:
     cmd = [rclone, "delete", RCLONE_REMOTE,
            "--min-age", min_age, "--include", "srock_backup_*.db.gz"]
     result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=_RCLONE_QUICK_TIMEOUT
+        cmd, capture_output=True,
+        encoding="utf-8", errors="replace", timeout=_RCLONE_QUICK_TIMEOUT
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -244,7 +270,8 @@ def list_remote_backups() -> list[str]:
     cmd = [rclone, "lsf", RCLONE_REMOTE, "--include", "srock_backup_*.db.gz"]
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=_RCLONE_QUICK_TIMEOUT
+            cmd, capture_output=True,
+        encoding="utf-8", errors="replace", timeout=_RCLONE_QUICK_TIMEOUT
         )
     except subprocess.TimeoutExpired:
         return []

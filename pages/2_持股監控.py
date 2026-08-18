@@ -107,6 +107,17 @@ def save_holding(stock_id, stock_name, shares, cost_price, stop_loss, take_profi
     都明確回報並寫 event_log，不再靜默失敗。
     """
     try:
+        # 擋重複：同 stock_id 已存在時不再新增第二筆，避免持股與損益被重複計算。
+        with get_session() as sess:
+            exists = (
+                sess.query(Portfolio)
+                .filter(Portfolio.stock_id == stock_id)
+                .first()
+                is not None
+            )
+        if exists:
+            return False, f"{stock_id} 已在持股清單中，請至下方表格修改，勿重複新增"
+
         with get_session() as sess:
             p = Portfolio(
                 stock_id=stock_id,
@@ -142,64 +153,126 @@ def save_holding(stock_id, stock_name, shares, cost_price, stop_loss, take_profi
         return False, str(e)
 
 
-def delete_holding(holding_id: int):
-    with get_session() as sess:
-        row = sess.query(Portfolio).filter(Portfolio.id == holding_id).first()
-        if row:
-            sess.delete(row)
+def delete_holding(holding_id: int) -> tuple[bool, str]:
+    """刪除持股，回傳 (ok, err)。DB 鎖等例外明確回報，不再靜默失敗。"""
+    try:
+        with get_session() as sess:
+            row = sess.query(Portfolio).filter(Portfolio.id == holding_id).first()
+            if row:
+                sess.delete(row)
+                sess.commit()
+        return True, ""
+    except Exception as e:
+        logger.exception("delete_holding 失敗：%s", e)
+        try:
+            log_event("portfolio_delete_failed", module="portfolio_page", severity="error",
+                      summary=f"刪除持股（id={holding_id}）失敗：{e}")
+        except Exception:
+            pass
+        return False, str(e)
+
+
+def update_holdings_bulk(records: list[dict]) -> tuple[bool, str]:
+    """整批更新持股，回傳 (ok, err)。
+
+    單一 session / 單一 commit — 全部成功才生效，遇 DB 鎖等例外整批回滾，
+    避免逐筆各自 commit 造成「改到一半」的部分寫入。records 每筆需含：
+    id, shares, cost_price, stop_loss, take_profit, notes, intraday_monitor。
+    """
+    try:
+        with get_session() as sess:
+            for row in records:
+                r = sess.query(Portfolio).filter(Portfolio.id == int(row["id"])).first()
+                if r is None:
+                    continue
+                r.shares = int(row["shares"])
+                r.cost_price = float(row["cost_price"])
+                r.stop_loss = row["stop_loss"]
+                r.take_profit = row["take_profit"]
+                r.note = row["notes"]
+                if hasattr(r, "notes"):
+                    r.notes = row["notes"]
+                if hasattr(r, "intraday_monitor"):
+                    r.intraday_monitor = bool(row.get("intraday_monitor", False))
             sess.commit()
+        return True, ""
+    except Exception as e:
+        logger.exception("update_holdings_bulk 失敗：%s", e)
+        try:
+            log_event("portfolio_update_failed", module="portfolio_page", severity="error",
+                      summary=f"整批更新持股失敗（{len(records)} 筆）：{e}")
+        except Exception:
+            pass
+        return False, str(e)
 
 
-def update_holding(holding_id: int, shares, cost_price, stop_loss, take_profit, notes,
-                   intraday_monitor: bool = False):
-    with get_session() as sess:
-        row = sess.query(Portfolio).filter(Portfolio.id == holding_id).first()
-        if row:
-            row.shares = int(shares)
-            row.cost_price = float(cost_price)
-            row.stop_loss = stop_loss if stop_loss else None
-            row.take_profit = take_profit if take_profit else None
-            row.note = notes
-            if hasattr(row, "notes"):
-                row.notes = notes
-            if hasattr(row, "intraday_monitor"):
-                row.intraday_monitor = bool(intraday_monitor)
+def replace_holdings(df: pd.DataFrame) -> tuple[bool, str]:
+    """以匯入結果整批覆寫 portfolio，回傳 (ok, err)。
+
+    DELETE + 重新插入在同一 transaction，全成或全不成；失敗回滾，原持股不會遺失。
+    """
+    try:
+        with get_session() as sess:
+            sess.execute(text("DELETE FROM portfolio"))
+            for row in df.to_dict("records"):
+                sess.add(Portfolio(
+                    stock_id=row["stock_id"],
+                    stock_name=row.get("stock_name", ""),
+                    shares=int(row["shares"]),
+                    cost_price=float(row["cost_price"]),
+                    stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) else None,
+                    take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) else None,
+                    note=row.get("notes", "") or "",
+                    notes=row.get("notes", "") or "",
+                ))
             sess.commit()
+        return True, ""
+    except Exception as e:
+        logger.exception("replace_holdings 失敗：%s", e)
+        try:
+            log_event("portfolio_replace_failed", module="portfolio_page", severity="error",
+                      summary=f"覆寫持股失敗：{e}")
+        except Exception:
+            pass
+        return False, str(e)
 
 
-def replace_holdings(df: pd.DataFrame):
-    """以匯入結果整批覆寫 portfolio。"""
-    with get_session() as sess:
-        sess.execute(text("DELETE FROM portfolio"))
-        for row in df.to_dict("records"):
-            sess.add(Portfolio(
-                stock_id=row["stock_id"],
-                stock_name=row.get("stock_name", ""),
-                shares=int(row["shares"]),
-                cost_price=float(row["cost_price"]),
-                stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) else None,
-                take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) else None,
-                note=row.get("notes", "") or "",
-                notes=row.get("notes", "") or "",
-            ))
-        sess.commit()
+def append_holdings(df: pd.DataFrame) -> tuple[bool, str, list[str]]:
+    """將匯入結果附加到 portfolio，回傳 (ok, err, skipped_ids)。
 
-
-def append_holdings(df: pd.DataFrame):
-    """將匯入結果附加到 portfolio。"""
-    with get_session() as sess:
-        for row in df.to_dict("records"):
-            sess.add(Portfolio(
-                stock_id=row["stock_id"],
-                stock_name=row.get("stock_name", ""),
-                shares=int(row["shares"]),
-                cost_price=float(row["cost_price"]),
-                stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) else None,
-                take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) else None,
-                note=row.get("notes", "") or "",
-                notes=row.get("notes", "") or "",
-            ))
-        sess.commit()
+    已存在的 stock_id 會被跳過（不重複建立第二筆），跳過的代碼列在 skipped_ids。
+    整批在同一 transaction 內完成，失敗回滾。
+    """
+    try:
+        with get_session() as sess:
+            existing = {sid for (sid,) in sess.query(Portfolio.stock_id).all()}
+            skipped: list[str] = []
+            for row in df.to_dict("records"):
+                sid = row["stock_id"]
+                if sid in existing:
+                    skipped.append(sid)
+                    continue
+                existing.add(sid)
+                sess.add(Portfolio(
+                    stock_id=sid,
+                    stock_name=row.get("stock_name", ""),
+                    shares=int(row["shares"]),
+                    cost_price=float(row["cost_price"]),
+                    stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) else None,
+                    take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) else None,
+                    note=row.get("notes", "") or "",
+                    notes=row.get("notes", "") or "",
+                ))
+            sess.commit()
+        return True, "", skipped
+    except Exception as e:
+        logger.exception("append_holdings 失敗：%s", e)
+        try:
+            log_event("portfolio_append_failed", module="portfolio_page", severity="error",
+                      summary=f"附加持股失敗：{e}")
+        except Exception:
+            pass
+        return False, str(e), []
 
 
 def collect_premium_portfolio_alerts(stats_list: list[dict], price_data: dict) -> tuple[list[StockAlert], dict[str, list[StockAlert]]]:
@@ -944,7 +1017,7 @@ with tab_monitor:
 
                     today_styled = (
                         today_df.style
-                        .applymap(_color_today, subset=["漲跌", "本日損益(元)"])
+                        .map(_color_today, subset=["漲跌", "本日損益(元)"])
                         .format({
                             "現價": "{:.2f}",
                             "昨收": "{:.2f}",
@@ -985,7 +1058,7 @@ with tab_monitor:
 
             styled = (
                 df_display.style
-                .applymap(color_pnl, subset=["損益(元)", "損益%", "高點回撤%"])
+                .map(color_pnl, subset=["損益(元)", "損益%", "高點回撤%"])
                 .format({
                     "成本": "{:.2f}",
                     "現價": "{:.2f}",
@@ -1655,11 +1728,14 @@ with tab_manage:
                     for err in errors:
                         st.error(err)
                 else:
-                    replace_holdings(clean_df)
-                    st.success(f"已覆寫資料庫，共儲存 {len(clean_df)} 筆持股。")
-                    st.session_state.pop("portfolio_import_df", None)
-                    st.session_state.pop("portfolio_import_meta", None)
-                    st.rerun()
+                    ok, err = replace_holdings(clean_df)
+                    if ok:
+                        st.success(f"已覆寫資料庫，共儲存 {len(clean_df)} 筆持股。")
+                        st.session_state.pop("portfolio_import_df", None)
+                        st.session_state.pop("portfolio_import_meta", None)
+                        st.rerun()
+                    else:
+                        st.error(f"覆寫失敗（原持股未變動）：{err}")
         with act2:
             if st.button("確認並附加至資料庫", use_container_width=True):
                 clean_df, errors = validate_holdings_df(pd.DataFrame(editable_df))
@@ -1667,11 +1743,17 @@ with tab_manage:
                     for err in errors:
                         st.error(err)
                 else:
-                    append_holdings(clean_df)
-                    st.success(f"已附加至資料庫，共新增 {len(clean_df)} 筆持股。")
-                    st.session_state.pop("portfolio_import_df", None)
-                    st.session_state.pop("portfolio_import_meta", None)
-                    st.rerun()
+                    ok, err, skipped = append_holdings(clean_df)
+                    if ok:
+                        added = len(clean_df) - len(skipped)
+                        st.success(f"已附加至資料庫，共新增 {added} 筆持股。")
+                        if skipped:
+                            st.info(f"已略過 {len(skipped)} 筆已存在的股票：{'、'.join(skipped[:10])}")
+                        st.session_state.pop("portfolio_import_df", None)
+                        st.session_state.pop("portfolio_import_meta", None)
+                        st.rerun()
+                    else:
+                        st.error(f"附加失敗：{err}")
 
     st.markdown("---")
     st.subheader("現有持股")
@@ -1729,18 +1811,24 @@ with tab_manage:
                 bad_ids = "、".join(invalid["stock_id"].astype(str).tolist()[:5])
                 st.error(f"以下持股的股數或成本價不合法：{bad_ids}")
             else:
-                for row in edited_df.to_dict("records"):
-                    update_holding(
-                        holding_id=int(row["id"]),
-                        shares=int(row["shares"]),
-                        cost_price=float(row["cost_price"]),
-                        stop_loss=float(row["stop_loss"]) if pd.notna(row["stop_loss"]) and row["stop_loss"] > 0 else None,
-                        take_profit=float(row["take_profit"]) if pd.notna(row["take_profit"]) and row["take_profit"] > 0 else None,
-                        notes=row["notes"],
-                        intraday_monitor=bool(row.get("intraday_monitor", False)),
-                    )
-                st.toast("持股資料已更新 ✅")
-                st.rerun()
+                records = [
+                    {
+                        "id": int(row["id"]),
+                        "shares": int(row["shares"]),
+                        "cost_price": float(row["cost_price"]),
+                        "stop_loss": float(row["stop_loss"]) if pd.notna(row["stop_loss"]) and row["stop_loss"] > 0 else None,
+                        "take_profit": float(row["take_profit"]) if pd.notna(row["take_profit"]) and row["take_profit"] > 0 else None,
+                        "notes": row["notes"],
+                        "intraday_monitor": bool(row.get("intraday_monitor", False)),
+                    }
+                    for row in edited_df.to_dict("records")
+                ]
+                ok, err = update_holdings_bulk(records)
+                if ok:
+                    st.toast("持股資料已更新 ✅")
+                    st.rerun()
+                else:
+                    st.error(f"儲存失敗（本次修改未生效，請稍後重試）：{err}")
 
         st.markdown("---")
         st.markdown("#### 刪除持股")
@@ -1750,5 +1838,8 @@ with tab_manage:
                 st.write(f"{h['stock_id']} {h['stock_name']} | {h['shares']} 股 | 成本 {_fmt_price(h['cost_price'])} 元")
             with col2:
                 if st.button("刪除", key=f"del_{h['id']}", type="secondary", use_container_width=True):
-                    delete_holding(h["id"])
-                    st.rerun()
+                    ok, err = delete_holding(h["id"])
+                    if ok:
+                        st.rerun()
+                    else:
+                        st.error(f"刪除失敗：{err}")

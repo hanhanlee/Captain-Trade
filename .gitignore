@@ -30,9 +30,17 @@ dist/
 build/
 .eggs/
 
+# 虛擬環境
+.venv/
+venv/
+
 # 本機快取與暫存
 data/cache/
 *.log
+*.err
+
+# DB 手動備份 / 換檔留下的舊檔（srock.db.OLD-YYYYMMDD-… 不符 *.db）
+*.OLD-*
 
 # IDE
 .vscode/
@@ -43,3 +51,6 @@ data/cache/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code 本機/個人設定 (不上傳公開 repo)
+CLAUDE.local.md

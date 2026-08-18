@@ -1811,7 +1811,7 @@ with tab_scan:
                     return f"color: {color}" if color else ""
 
                 ret_cols = [c for c in _perf_df.columns if c.endswith("%")]
-                styled = _perf_df.style.applymap(_color_ret, subset=ret_cols)
+                styled = _perf_df.style.map(_color_ret, subset=ret_cols)
                 st.dataframe(styled, use_container_width=True, hide_index=True)
 
                 # 勝率小結

@@ -113,7 +113,7 @@ else:
         }.get(val, "")
 
     st.dataframe(
-        _df.style.applymap(_color_severity, subset=["嚴重度"]),
+        _df.style.map(_color_severity, subset=["嚴重度"]),
         use_container_width=True,
         height=420,
     )
