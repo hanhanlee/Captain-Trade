@@ -1772,19 +1772,20 @@ with tab_manage:
             if st.button("🔄 從永豐查詢並預覽", use_container_width=True, key="sinopac_sync_query"):
                 try:
                     from broker.sinopac_holdings import get_sinopac_positions
-                    _pos = get_sinopac_positions()
-                    st.session_state["sinopac_found"] = list(_pos.keys())
+                    st.session_state["sinopac_positions"] = get_sinopac_positions()
                 except Exception as _e:
-                    st.session_state.pop("sinopac_found", None)
+                    st.session_state.pop("sinopac_positions", None)
                     st.error(f"永豐查詢失敗（帳戶可能尚未開通 API 帳務查詢/認證）：{_e}")
-        _found = st.session_state.get("sinopac_found")
-        if _found is not None:
+        _positions = st.session_state.get("sinopac_positions")
+        if _positions is not None:
             from broker.sinopac_holdings import compute_broker_sync
-            _changed = [p for p in compute_broker_sync(holdings, set(_found)) if p["changed"]]
+            _found = set(_positions.keys())
             st.caption(
-                f"永豐查到 {len(_found)} 檔｜規則：查得到→永豐、查不到且原本有設定→保留、查不到且無設定→待確認"
+                f"永豐查到 {len(_found)} 檔｜標記規則：查得到→永豐、查不到且原本有設定→保留、查不到且無設定→待確認"
             )
+            _changed = [p for p in compute_broker_sync(holdings, _found) if p["changed"]]
             if _changed:
+                st.markdown("**券商標記變更：**")
                 st.dataframe(
                     pd.DataFrame([
                         {"股票": f"{p['stock_id']} {p['stock_name']}", "原標記": p["old"], "新標記": p["new"]}
@@ -1792,21 +1793,46 @@ with tab_manage:
                     ]),
                     use_container_width=True, hide_index=True,
                 )
-                if st.button("✅ 確認套用券商標記", type="primary", key="sinopac_sync_apply"):
-                    try:
-                        from broker.sinopac_holdings import apply_broker_sync
-                        with get_session() as _sess:
-                            _stat = apply_broker_sync(_sess, set(_found))
-                            _sess.commit()
-                        st.session_state.pop("sinopac_found", None)
-                        st.success(
-                            f"已套用：標永豐 {_stat['to_sinopac']}、待確認 {_stat['to_pending']}、保留 {_stat['kept']}"
-                        )
-                        st.rerun()
-                    except Exception as _e:
-                        st.error(f"套用失敗：{_e}")
-            else:
-                st.info("沒有需要變更的標記。")
+            # 股數/均價對照（永豐持股中與手動記錄不一致者）
+            _hmap = {h["stock_id"]: h for h in holdings}
+            _diff_rows = []
+            for _sid, _p in _positions.items():
+                _h = _hmap.get(_sid)
+                if _h is None:
+                    continue
+                _new_sh = int(_p.get("shares") or 0)
+                _new_avg = float(_p.get("avg_price") or 0)
+                if _new_sh != int(_h.get("shares") or 0) or abs(float(_h.get("cost_price") or 0) - _new_avg) > 1e-6:
+                    _diff_rows.append({
+                        "股票": f"{_sid} {_h.get('stock_name', '')}",
+                        "永豐股數": _new_sh, "手動股數": int(_h.get("shares") or 0),
+                        "永豐均價": round(_new_avg, 2), "手動成本": _h.get("cost_price"),
+                    })
+            _overwrite = False
+            if _diff_rows:
+                st.markdown("**股數/均價不一致（永豐 vs 手動）：**")
+                st.dataframe(pd.DataFrame(_diff_rows), use_container_width=True, hide_index=True)
+                _overwrite = st.checkbox(
+                    "☑️ 一併以永豐數值覆蓋上列股數與均價（不勾則只標券商，股數由你自行修改）",
+                    value=False, key="sinopac_overwrite",
+                )
+            if st.button("✅ 確認套用", type="primary", key="sinopac_sync_apply"):
+                try:
+                    from broker.sinopac_holdings import apply_broker_sync
+                    with get_session() as _sess:
+                        _stat = apply_broker_sync(_sess, _positions, overwrite_shares=_overwrite)
+                        _sess.commit()
+                    st.session_state.pop("sinopac_positions", None)
+                    st.session_state.pop("sinopac_overwrite", None)
+                    _msg = (
+                        f"已套用：標永豐 {_stat['to_sinopac']}、待確認 {_stat['to_pending']}、保留 {_stat['kept']}"
+                    )
+                    if _overwrite:
+                        _msg += f"、覆蓋股數/均價 {_stat.get('shares_updated', 0)} 筆"
+                    st.success(_msg)
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"套用失敗：{_e}")
         st.markdown("---")
 
         holdings_df = pd.DataFrame(holdings)[

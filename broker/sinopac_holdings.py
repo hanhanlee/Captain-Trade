@@ -107,30 +107,47 @@ def compute_broker_sync(rows: list, found_ids: set) -> list:
     return result
 
 
-def apply_broker_sync(session, found_ids: set) -> dict:
+def apply_broker_sync(session, positions, overwrite_shares: bool = False) -> dict:
     """
-    對 portfolio 套用券商標記規則並寫入。回傳統計 {'to_sinopac','to_pending','kept'}。
-    使用傳入的 session(呼叫端負責 commit/rollback)。
+    套用券商標記規則並寫入;overwrite_shares=True 時,永豐持股一併以 API 的股數/均價覆蓋。
+
+    positions: {stock_id: {'shares','avg_price'}}(或 set/list 的 stock_ids,只標記)。
+    呼叫端負責 commit/rollback。回傳 {'to_sinopac','to_pending','kept','shares_updated'}。
     """
     from db.models import Portfolio
 
-    found = {str(x) for x in found_ids}
-    stat = {"to_sinopac": 0, "to_pending": 0, "kept": 0}
+    if isinstance(positions, dict):
+        pos_map = {str(k): v for k, v in positions.items()}
+    else:
+        pos_map = {str(x): None for x in positions}
+    found = set(pos_map.keys())
+
+    stat = {"to_sinopac": 0, "to_pending": 0, "kept": 0, "shares_updated": 0}
     for row in session.query(Portfolio).all():
         sid = str(row.stock_id)
         old = (row.broker or "").strip()
         if sid in found:
-            new = BROKER_SINOPAC
-        elif old:
-            new = old
-        else:
-            new = BROKER_PENDING
-        if new != old:
-            row.broker = new
-            if new == BROKER_SINOPAC:
+            if old != BROKER_SINOPAC:
+                row.broker = BROKER_SINOPAC
                 stat["to_sinopac"] += 1
             else:
-                stat["to_pending"] += 1
-        else:
+                stat["kept"] += 1
+            if overwrite_shares and pos_map.get(sid):
+                p = pos_map[sid]
+                new_sh = int(p.get("shares") or 0)
+                new_avg = float(p.get("avg_price") or 0)
+                touched = False
+                if new_sh > 0 and int(row.shares or 0) != new_sh:
+                    row.shares = new_sh
+                    touched = True
+                if new_avg > 0 and abs(float(row.cost_price or 0) - new_avg) > 1e-6:
+                    row.cost_price = new_avg
+                    touched = True
+                if touched:
+                    stat["shares_updated"] += 1
+        elif old:
             stat["kept"] += 1
+        else:
+            row.broker = BROKER_PENDING
+            stat["to_pending"] += 1
     return stat
