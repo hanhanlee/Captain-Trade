@@ -86,6 +86,7 @@ def load_holdings() -> list:
                 "take_profit": r.take_profit,
                 "notes": (r.notes if hasattr(r, "notes") else None) or r.note or "",
                 "intraday_monitor": bool(r.intraday_monitor) if r.intraday_monitor is not None else False,
+                "broker": (getattr(r, "broker", None) or ""),
             }
             for r in rows
         ]
@@ -194,6 +195,8 @@ def update_holdings_bulk(records: list[dict]) -> tuple[bool, str]:
                     r.notes = row["notes"]
                 if hasattr(r, "intraday_monitor"):
                     r.intraday_monitor = bool(row.get("intraday_monitor", False))
+                if hasattr(r, "broker") and "broker" in row:
+                    r.broker = (row.get("broker") or None)
             sess.commit()
         return True, ""
     except Exception as e:
@@ -1762,9 +1765,53 @@ with tab_manage:
     if not holdings:
         st.info("尚無持股紀錄")
     else:
+        # ── 永豐持股同步（唯讀查詢 list_positions；套用券商標記，不下單）──
+        st.markdown("**永豐持股同步**　（只查詢，不下單）")
+        _sync_c1, _sync_c2 = st.columns([2, 5])
+        with _sync_c1:
+            if st.button("🔄 從永豐查詢並預覽", use_container_width=True, key="sinopac_sync_query"):
+                try:
+                    from broker.sinopac_holdings import get_sinopac_positions
+                    _pos = get_sinopac_positions()
+                    st.session_state["sinopac_found"] = list(_pos.keys())
+                except Exception as _e:
+                    st.session_state.pop("sinopac_found", None)
+                    st.error(f"永豐查詢失敗（帳戶可能尚未開通 API 帳務查詢/認證）：{_e}")
+        _found = st.session_state.get("sinopac_found")
+        if _found is not None:
+            from broker.sinopac_holdings import compute_broker_sync
+            _changed = [p for p in compute_broker_sync(holdings, set(_found)) if p["changed"]]
+            st.caption(
+                f"永豐查到 {len(_found)} 檔｜規則：查得到→永豐、查不到且原本有設定→保留、查不到且無設定→待確認"
+            )
+            if _changed:
+                st.dataframe(
+                    pd.DataFrame([
+                        {"股票": f"{p['stock_id']} {p['stock_name']}", "原標記": p["old"], "新標記": p["new"]}
+                        for p in _changed
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+                if st.button("✅ 確認套用券商標記", type="primary", key="sinopac_sync_apply"):
+                    try:
+                        from broker.sinopac_holdings import apply_broker_sync
+                        with get_session() as _sess:
+                            _stat = apply_broker_sync(_sess, set(_found))
+                            _sess.commit()
+                        st.session_state.pop("sinopac_found", None)
+                        st.success(
+                            f"已套用：標永豐 {_stat['to_sinopac']}、待確認 {_stat['to_pending']}、保留 {_stat['kept']}"
+                        )
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(f"套用失敗：{_e}")
+            else:
+                st.info("沒有需要變更的標記。")
+        st.markdown("---")
+
         holdings_df = pd.DataFrame(holdings)[
             ["id", "stock_id", "stock_name", "shares", "cost_price", "stop_loss", "take_profit",
-             "notes", "intraday_monitor"]
+             "notes", "broker", "intraday_monitor"]
         ].copy()
 
         st.caption("可直接修改欄位；🔔 盤中監控：勾選後每分鐘掃描現價，觸及 MA5/10/20 或停損停利時推播 LINE。")
@@ -1784,6 +1831,9 @@ with tab_manage:
                     "stop_loss": st.column_config.NumberColumn("stop_loss", min_value=0.0, step=0.01),
                     "take_profit": st.column_config.NumberColumn("take_profit", min_value=0.0, step=0.01),
                     "notes": st.column_config.TextColumn("notes"),
+                    "broker": st.column_config.SelectboxColumn(
+                        "券商", options=["永豐", "新光", "待確認"], required=False, width="small"
+                    ),
                     "intraday_monitor": st.column_config.CheckboxColumn("🔔盤中監控", default=False),
                 },
             )
@@ -1800,6 +1850,12 @@ with tab_manage:
             edited_df["take_profit"] = pd.to_numeric(edited_df["take_profit"], errors="coerce")
             edited_df["notes"] = edited_df["notes"].fillna("").astype(str)
             edited_df["intraday_monitor"] = edited_df.get("intraday_monitor", False).fillna(False).astype(bool)
+            if "broker" in edited_df.columns:
+                edited_df["broker"] = edited_df["broker"].apply(
+                    lambda v: str(v).strip() if pd.notna(v) and str(v).strip() else None
+                )
+            else:
+                edited_df["broker"] = None
 
             invalid = edited_df[
                 edited_df["shares"].isna()
@@ -1819,6 +1875,7 @@ with tab_manage:
                         "stop_loss": float(row["stop_loss"]) if pd.notna(row["stop_loss"]) and row["stop_loss"] > 0 else None,
                         "take_profit": float(row["take_profit"]) if pd.notna(row["take_profit"]) and row["take_profit"] > 0 else None,
                         "notes": row["notes"],
+                        "broker": row.get("broker"),
                         "intraday_monitor": bool(row.get("intraday_monitor", False)),
                     }
                     for row in edited_df.to_dict("records")

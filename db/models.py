@@ -20,6 +20,7 @@ class Portfolio(Base):
     note = Column(Text)                            # 舊版欄位，保留相容
     notes = Column(Text)                           # 新版標準欄位
     intraday_monitor = Column(Boolean, default=False)  # 是否啟用盤中監控
+    broker = Column(String(20))                        # 券商標記：永豐/新光/待確認（持股同步用，可手動改）
     created_at = Column(DateTime, default=datetime.now)
 
 
