@@ -29,21 +29,26 @@ def add_trade(stock_id: str, stock_name: str, action: str, price: float,
             pnl=pnl,
         )
         sess.add(t)
-        if action == "BUY":
-            _upsert_portfolio_buy(
-                sess,
-                stock_id=stock_id,
-                stock_name=stock_name,
-                shares=int(shares),
-                price=float(price),
-                trade_date=trade_date,
-            )
-        elif action == "SELL":
-            portfolio_sync = _apply_portfolio_sell(
-                sess,
-                stock_id=stock_id,
-                shares=int(shares),
-            )
+        # 永豐標記的持股：股數由永豐 API 同步維護，日誌不自動改持股（仍記錄交易與損益），
+        # 避免與永豐同步重複計算。新光/未標記/尚未持有的股票則維持原本自動併入持股的行為。
+        _existing = sess.query(Portfolio).filter(Portfolio.stock_id == stock_id).first()
+        _is_sinopac = _existing is not None and (_existing.broker or "").strip() == "永豐"
+        if not _is_sinopac:
+            if action == "BUY":
+                _upsert_portfolio_buy(
+                    sess,
+                    stock_id=stock_id,
+                    stock_name=stock_name,
+                    shares=int(shares),
+                    price=float(price),
+                    trade_date=trade_date,
+                )
+            elif action == "SELL":
+                portfolio_sync = _apply_portfolio_sell(
+                    sess,
+                    stock_id=stock_id,
+                    shares=int(shares),
+                )
         sess.commit()
     return portfolio_sync
 
