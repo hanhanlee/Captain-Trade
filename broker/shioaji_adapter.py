@@ -88,7 +88,6 @@ class ShioajiAdapter:
             api.login(
                 api_key=api_key,
                 secret_key=secret_key,
-                contracts_timeout=10000,
                 subscribe_trade=False,
             )
             with self._state_lock:
