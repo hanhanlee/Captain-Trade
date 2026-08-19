@@ -60,9 +60,16 @@ def get_sinopac_positions() -> dict:
             sid = str(getattr(p, "code", "") or "").strip()
             if not sid:
                 continue
+            name = ""
+            try:
+                c = api.Contracts.Stocks[sid]
+                name = getattr(c, "name", "") or ""
+            except Exception:
+                pass
             out[sid] = {
                 "shares": int(getattr(p, "quantity", 0) or 0),
                 "avg_price": float(getattr(p, "price", 0) or 0),
+                "stock_name": name,
             }
         logger.info("永豐 list_positions 取得 %d 檔", len(out))
         return out
@@ -107,12 +114,39 @@ def compute_broker_sync(rows: list, found_ids: set) -> list:
     return result
 
 
-def apply_broker_sync(session, positions, overwrite_shares: bool = False) -> dict:
+def compute_add_remove(holdings: list, positions: dict) -> dict:
     """
-    套用券商標記規則並寫入;overwrite_shares=True 時,永豐持股一併以 API 的股數/均價覆蓋。
+    計算「新增(永豐有、清單沒有)」與「可能已賣出(清單標永豐、但永豐已無庫存)」。
+    回傳 {'to_add':[{stock_id,stock_name,shares,avg_price}], 'to_remove':[{stock_id,stock_name,shares}]}。
+    ※ 只是候選清單供預覽;交易日誌一律由使用者手動記錄。
+    """
+    def _g(r, k, default=None):
+        return r.get(k, default) if isinstance(r, dict) else getattr(r, k, default)
 
-    positions: {stock_id: {'shares','avg_price'}}(或 set/list 的 stock_ids,只標記)。
-    呼叫端負責 commit/rollback。回傳 {'to_sinopac','to_pending','kept','shares_updated'}。
+    pos_ids = {str(k) for k in positions}
+    held_ids = {str(_g(h, "stock_id")) for h in holdings}
+
+    to_add = [
+        {"stock_id": str(sid), "stock_name": p.get("stock_name", ""),
+         "shares": int(p.get("shares") or 0), "avg_price": float(p.get("avg_price") or 0)}
+        for sid, p in positions.items() if str(sid) not in held_ids
+    ]
+    to_remove = [
+        {"stock_id": str(_g(h, "stock_id")), "stock_name": _g(h, "stock_name", "") or "",
+         "shares": int(_g(h, "shares") or 0)}
+        for h in holdings
+        if (_g(h, "broker") or "").strip() == BROKER_SINOPAC and str(_g(h, "stock_id")) not in pos_ids
+    ]
+    return {"to_add": to_add, "to_remove": to_remove}
+
+
+def apply_broker_sync(session, positions, overwrite_shares: bool = False,
+                      add_ids=None, remove_ids=None) -> dict:
+    """
+    套用同步：券商標記規則(必做)+ 可選 覆蓋股數/均價、新增買進、移除已賣出。
+    交易日誌不在此處理(由使用者手動)。呼叫端負責 commit/rollback。
+    positions: {stock_id: {'shares','avg_price','stock_name'}}(或 set/list 只標記)。
+    回傳 {'to_sinopac','to_pending','kept','shares_updated','added','removed'}。
     """
     from db.models import Portfolio
 
@@ -121,10 +155,16 @@ def apply_broker_sync(session, positions, overwrite_shares: bool = False) -> dic
     else:
         pos_map = {str(x): None for x in positions}
     found = set(pos_map.keys())
+    remove_set = {str(x) for x in (remove_ids or [])}
+    add_set = {str(x) for x in (add_ids or [])}
 
-    stat = {"to_sinopac": 0, "to_pending": 0, "kept": 0, "shares_updated": 0}
+    stat = {"to_sinopac": 0, "to_pending": 0, "kept": 0,
+            "shares_updated": 0, "added": 0, "removed": 0}
+
     for row in session.query(Portfolio).all():
         sid = str(row.stock_id)
+        if sid in remove_set:
+            continue  # 待移除的先略過標記處理
         old = (row.broker or "").strip()
         if sid in found:
             if old != BROKER_SINOPAC:
@@ -150,4 +190,28 @@ def apply_broker_sync(session, positions, overwrite_shares: bool = False) -> dic
         else:
             row.broker = BROKER_PENDING
             stat["to_pending"] += 1
+
+    # 移除已賣出(使用者已勾選;日誌需自行記錄)
+    if remove_set:
+        for row in session.query(Portfolio).filter(Portfolio.stock_id.in_(list(remove_set))).all():
+            session.delete(row)
+            stat["removed"] += 1
+
+    # 新增買進(使用者已勾選;日誌需自行記錄)
+    if add_set:
+        existing = {str(sid) for (sid,) in session.query(Portfolio.stock_id).all()}
+        for sid in add_set:
+            if sid in existing:
+                continue
+            p = pos_map.get(sid, {}) or {}
+            session.add(Portfolio(
+                stock_id=sid,
+                stock_name=(p.get("stock_name") or ""),
+                shares=int(p.get("shares") or 0),
+                cost_price=float(p.get("avg_price") or 0),
+                broker=BROKER_SINOPAC,
+                notes="永豐同步新增",
+            ))
+            stat["added"] += 1
+
     return stat

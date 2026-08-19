@@ -1816,20 +1816,60 @@ with tab_manage:
                     "☑️ 一併以永豐數值覆蓋上列股數與均價（不勾則只標券商，股數由你自行修改）",
                     value=False, key="sinopac_overwrite",
                 )
+            # 新增(買進)/ 移除(賣出)候選；交易日誌一律自行記錄
+            from broker.sinopac_holdings import compute_add_remove
+            _ar = compute_add_remove(holdings, _positions)
+            _do_add = False
+            _do_remove = False
+            if _ar["to_add"]:
+                st.markdown("**永豐有、清單沒有（可能是買進）：**")
+                st.dataframe(
+                    pd.DataFrame([
+                        {"股票": f"{a['stock_id']} {a['stock_name']}", "股數": a["shares"],
+                         "均價": round(a["avg_price"], 2)}
+                        for a in _ar["to_add"]
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("⚠️ 新增後記得到「交易日誌」補一筆買進（含理由）。")
+                _do_add = st.checkbox("➕ 新增上列永豐持股到清單", value=False, key="sinopac_add")
+            if _ar["to_remove"]:
+                st.markdown("**已標永豐、但永豐已無庫存（可能已賣出）：**")
+                st.dataframe(
+                    pd.DataFrame([
+                        {"股票": f"{r['stock_id']} {r['stock_name']}", "原股數": r["shares"]}
+                        for r in _ar["to_remove"]
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("⚠️ 移除前請先到「交易日誌」記錄賣出（賣價/損益），否則已實現損益會少算。")
+                _do_remove = st.checkbox(
+                    "🗑️ 移除上列已賣出持股（我已在交易日誌記錄）", value=False, key="sinopac_remove"
+                )
+
             if st.button("✅ 確認套用", type="primary", key="sinopac_sync_apply"):
                 try:
                     from broker.sinopac_holdings import apply_broker_sync
+                    _add_ids = [a["stock_id"] for a in _ar["to_add"]] if _do_add else None
+                    _rm_ids = [r["stock_id"] for r in _ar["to_remove"]] if _do_remove else None
                     with get_session() as _sess:
-                        _stat = apply_broker_sync(_sess, _positions, overwrite_shares=_overwrite)
+                        _stat = apply_broker_sync(
+                            _sess, _positions, overwrite_shares=_overwrite,
+                            add_ids=_add_ids, remove_ids=_rm_ids,
+                        )
                         _sess.commit()
-                    st.session_state.pop("sinopac_positions", None)
-                    st.session_state.pop("sinopac_overwrite", None)
-                    _msg = (
-                        f"已套用：標永豐 {_stat['to_sinopac']}、待確認 {_stat['to_pending']}、保留 {_stat['kept']}"
-                    )
+                    for _k in ("sinopac_positions", "sinopac_overwrite", "sinopac_add", "sinopac_remove"):
+                        st.session_state.pop(_k, None)
+                    _msg = f"已套用：標永豐 {_stat['to_sinopac']}、待確認 {_stat['to_pending']}、保留 {_stat['kept']}"
                     if _overwrite:
-                        _msg += f"、覆蓋股數/均價 {_stat.get('shares_updated', 0)} 筆"
+                        _msg += f"、覆蓋 {_stat.get('shares_updated', 0)}"
+                    if _stat.get("added"):
+                        _msg += f"、新增 {_stat['added']}"
+                    if _stat.get("removed"):
+                        _msg += f"、移除 {_stat['removed']}"
                     st.success(_msg)
+                    if _do_add or _do_remove:
+                        st.warning("提醒：新增/移除的交易,別忘了到「交易日誌」手動補買進/賣出紀錄(賣出含損益)。")
                     st.rerun()
                 except Exception as _e:
                     st.error(f"套用失敗：{_e}")
