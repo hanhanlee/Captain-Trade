@@ -1831,7 +1831,7 @@ with tab_manage:
                     ]),
                     use_container_width=True, hide_index=True,
                 )
-                st.caption("⚠️ 新增後記得到「交易日誌」補一筆買進（含理由）。")
+                st.caption("勾下方「自動建立日誌骨架」即會自動記一筆買進（均價已帶入,理由待補）。")
                 _do_add = st.checkbox("➕ 新增上列永豐持股到清單", value=False, key="sinopac_add")
             if _ar["to_remove"]:
                 st.markdown("**已標永豐、但永豐已無庫存（可能已賣出）：**")
@@ -1842,9 +1842,17 @@ with tab_manage:
                     ]),
                     use_container_width=True, hide_index=True,
                 )
-                st.caption("⚠️ 移除前請先到「交易日誌」記錄賣出（賣價/損益），否則已實現損益會少算。")
+                st.caption("勾下方「自動建立日誌骨架」會自動記一筆賣出（賣價/損益待補,補上才會算進已實現損益）。")
                 _do_remove = st.checkbox(
-                    "🗑️ 移除上列已賣出持股（我已在交易日誌記錄）", value=False, key="sinopac_remove"
+                    "🗑️ 移除上列已賣出持股", value=False, key="sinopac_remove"
+                )
+
+            # 自動建立日誌骨架（新增→BUY、移除→SELL；已知帶入、未知留空）
+            _do_journal = True
+            if _ar["to_add"] or _ar["to_remove"]:
+                _do_journal = st.checkbox(
+                    "📝 同步時自動建立交易日誌骨架（新增→買進含均價、移除→賣出;賣價/理由待補）",
+                    value=True, key="sinopac_journal",
                 )
 
             if st.button("✅ 確認套用", type="primary", key="sinopac_sync_apply"):
@@ -1856,9 +1864,10 @@ with tab_manage:
                         _stat = apply_broker_sync(
                             _sess, _positions, overwrite_shares=_overwrite,
                             add_ids=_add_ids, remove_ids=_rm_ids,
+                            create_journal=_do_journal,
                         )
                         _sess.commit()
-                    for _k in ("sinopac_positions", "sinopac_overwrite", "sinopac_add", "sinopac_remove"):
+                    for _k in ("sinopac_positions", "sinopac_overwrite", "sinopac_add", "sinopac_remove", "sinopac_journal"):
                         st.session_state.pop(_k, None)
                     _msg = f"已套用：標永豐 {_stat['to_sinopac']}、待確認 {_stat['to_pending']}、保留 {_stat['kept']}"
                     if _overwrite:
@@ -1867,9 +1876,13 @@ with tab_manage:
                         _msg += f"、新增 {_stat['added']}"
                     if _stat.get("removed"):
                         _msg += f"、移除 {_stat['removed']}"
+                    if _stat.get("journaled"):
+                        _msg += f"、自動建立日誌 {_stat['journaled']} 筆"
                     st.success(_msg)
-                    if _do_add or _do_remove:
-                        st.warning("提醒：新增/移除的交易,別忘了到「交易日誌」手動補買進/賣出紀錄(賣出含損益)。")
+                    if _stat.get("journaled"):
+                        st.info("📝 已自動建立日誌骨架,請到「交易日誌」補上賣出的賣價/損益與進出理由。")
+                    elif _do_add or _do_remove:
+                        st.warning("提醒：新增/移除的交易記得到「交易日誌」補紀錄。")
                     st.rerun()
                 except Exception as _e:
                     st.error(f"套用失敗：{_e}")

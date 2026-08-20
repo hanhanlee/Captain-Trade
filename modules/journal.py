@@ -53,6 +53,56 @@ def add_trade(stock_id: str, stock_name: str, action: str, price: float,
     return portfolio_sync
 
 
+def build_sync_journal_entry(sess, stock_id: str, stock_name: str, action: str,
+                             price, shares: int, trade_date: date,
+                             skip_if_exists: bool = True):
+    """永豐同步偵測到的交易 → 在傳入的 session 內建一筆「日誌骨架」。
+
+    設計原則（依使用者要求）：已知資料帶入、未知留空。
+      - 買進 BUY：price = 永豐均價（已知）。
+      - 賣出 SELL：賣價 API 查不到 → price = 0（欄位不可為 NULL，用 0 代表待補）、pnl 留空。
+      - reason / emotion 一律留空，由使用者事後補。
+    **不觸碰持股**（永豐持股股數由同步快照維護；避免與同步重複計股）。
+    不 commit，由呼叫端（apply_broker_sync 的 session）一起 commit。
+
+    skip_if_exists：同 (stock_id, action, trade_date, shares) 已存在則跳過，避免重複同步時建重複骨架。
+    回傳建立的 TradeJournal，或已存在時回傳 None。
+    """
+    stock_id = (stock_id or "").strip()
+    action = (action or "").upper()
+    shares = int(shares or 0)
+    if not stock_id or shares <= 0 or action not in ("BUY", "SELL"):
+        return None
+
+    if skip_if_exists:
+        dup = (
+            sess.query(TradeJournal)
+            .filter(
+                TradeJournal.stock_id == stock_id,
+                TradeJournal.action == action,
+                TradeJournal.trade_date == trade_date,
+                TradeJournal.shares == shares,
+            )
+            .first()
+        )
+        if dup:
+            return None
+
+    t = TradeJournal(
+        stock_id=stock_id,
+        stock_name=(stock_name or "").strip(),
+        action=action,
+        price=float(price or 0),   # SELL 未知賣價 → 0（待補）
+        shares=shares,
+        trade_date=trade_date,
+        reason="",                 # 未知留空
+        emotion="",                # 未知留空
+        pnl=None,                  # 未知留空
+    )
+    sess.add(t)
+    return t
+
+
 def _upsert_portfolio_buy(sess, stock_id: str, stock_name: str, shares: int,
                           price: float, trade_date: date | None = None):
     """將買進交易併入持股監控；已持有時用加權平均成本。"""

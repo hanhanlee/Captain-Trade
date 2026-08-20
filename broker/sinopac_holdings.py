@@ -141,14 +141,26 @@ def compute_add_remove(holdings: list, positions: dict) -> dict:
 
 
 def apply_broker_sync(session, positions, overwrite_shares: bool = False,
-                      add_ids=None, remove_ids=None) -> dict:
+                      add_ids=None, remove_ids=None,
+                      create_journal: bool = True, trade_date=None) -> dict:
     """
     套用同步：券商標記規則(必做)+ 可選 覆蓋股數/均價、新增買進、移除已賣出。
-    交易日誌不在此處理(由使用者手動)。呼叫端負責 commit/rollback。
+    呼叫端負責 commit/rollback。
     positions: {stock_id: {'shares','avg_price','stock_name'}}(或 set/list 只標記)。
-    回傳 {'to_sinopac','to_pending','kept','shares_updated','added','removed'}。
+
+    create_journal=True 時，會為「明確的交易」自動建一筆交易日誌骨架(不改持股)：
+      - 新增(add) → BUY，price = 永豐均價。
+      - 移除(remove) → SELL，price = 0(賣價待補)、pnl 留空。
+      ※ 只處理「新部位/整個出清」這類明確交易；既有持股的部分加減碼(overwrite 股數變動)
+        因難以區分「真交易」與「單純校正數字」,v1 不自動建日誌,由使用者手動記。
+
+    回傳 {'to_sinopac','to_pending','kept','shares_updated','added','removed','journaled'}。
     """
+    from datetime import date as _date
     from db.models import Portfolio
+    from modules.journal import build_sync_journal_entry
+
+    td = trade_date or _date.today()
 
     if isinstance(positions, dict):
         pos_map = {str(k): v for k, v in positions.items()}
@@ -159,7 +171,7 @@ def apply_broker_sync(session, positions, overwrite_shares: bool = False,
     add_set = {str(x) for x in (add_ids or [])}
 
     stat = {"to_sinopac": 0, "to_pending": 0, "kept": 0,
-            "shares_updated": 0, "added": 0, "removed": 0}
+            "shares_updated": 0, "added": 0, "removed": 0, "journaled": 0}
 
     for row in session.query(Portfolio).all():
         sid = str(row.stock_id)
@@ -191,13 +203,20 @@ def apply_broker_sync(session, positions, overwrite_shares: bool = False,
             row.broker = BROKER_PENDING
             stat["to_pending"] += 1
 
-    # 移除已賣出(使用者已勾選;日誌需自行記錄)
+    # 移除已賣出(使用者已勾選) → SELL 日誌骨架(賣價待補)
     if remove_set:
         for row in session.query(Portfolio).filter(Portfolio.stock_id.in_(list(remove_set))).all():
+            if create_journal:
+                made = build_sync_journal_entry(
+                    session, stock_id=str(row.stock_id), stock_name=row.stock_name or "",
+                    action="SELL", price=0, shares=int(row.shares or 0), trade_date=td,
+                )
+                if made is not None:
+                    stat["journaled"] += 1
             session.delete(row)
             stat["removed"] += 1
 
-    # 新增買進(使用者已勾選;日誌需自行記錄)
+    # 新增買進(使用者已勾選) → BUY 日誌骨架(price = 永豐均價)
     if add_set:
         existing = {str(sid) for (sid,) in session.query(Portfolio.stock_id).all()}
         for sid in add_set:
@@ -213,5 +232,13 @@ def apply_broker_sync(session, positions, overwrite_shares: bool = False,
                 notes="永豐同步新增",
             ))
             stat["added"] += 1
+            if create_journal:
+                made = build_sync_journal_entry(
+                    session, stock_id=sid, stock_name=(p.get("stock_name") or ""),
+                    action="BUY", price=float(p.get("avg_price") or 0),
+                    shares=int(p.get("shares") or 0), trade_date=td,
+                )
+                if made is not None:
+                    stat["journaled"] += 1
 
     return stat
