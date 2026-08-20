@@ -46,15 +46,19 @@ BASE_DIR      = Path(__file__).resolve().parent.parent
 DB_PATH       = BASE_DIR / "srock.db"
 TEMP_DB       = BASE_DIR / "temp_backup.db"
 TEMP_GZ       = BASE_DIR / "temp_backup.db.gz"
-RCLONE_REMOTE = "gdrive:"
+RCLONE_REMOTE = "gdrive:Srock DB BackUp/"   # 與歷史備份同一資料夾（勿改回根目錄，否則備份會散落兩處）
 RETENTION_DAYS = 30
 
 # VACUUM INTO 等待鎖的最長時間（ms）
 # 背景 Worker 瘋狂寫入時，SQLite 最多等這麼久才放棄
 _BUSY_TIMEOUT_MS = 120_000   # 2 分鐘
 
-# Rclone 子程序預設逾時（秒）。preflight/ls/delete 走較短逾時，upload 不限。
+# Rclone 子程序預設逾時（秒）。preflight/ls 走較短逾時，upload 不限。
 _RCLONE_QUICK_TIMEOUT = 30
+
+# 刪除舊備份（>30天）用較長逾時，且此步驟「非致命」：上傳+驗證已成功，
+# 清理只是整潔問題，逾時/失敗不應讓整個備份被判定失敗。
+_RCLONE_DELETE_TIMEOUT = 90
 
 # preflight 專用：shared client_id 偶爾被 Google 限流，lsd 會突然變慢
 # （平常約 7 秒，限流時可能 >30 秒）。用較長逾時 + 重試，避免 06:50 備份
@@ -248,20 +252,30 @@ def step_verify_upload() -> None:
 
 
 def step_delete_old_backups() -> None:
-    """刪除雲端超過 N 天的舊備份（限定 pattern，不誤刪其他檔案）"""
+    """刪除雲端超過 N 天的舊備份（限定 pattern，不誤刪其他檔案）。
+
+    非致命：上傳+驗證已成功，這步只是清理。逾時或失敗都只記 WARNING、
+    不 raise，避免像 2026-08-20 那樣因 rclone delete 卡頓就把成功的備份判為失敗。
+    """
     rclone = _rclone_path()
     min_age = f"{RETENTION_DAYS}d"
     cmd = [rclone, "delete", RCLONE_REMOTE,
            "--min-age", min_age, "--include", "srock_backup_*.db.gz"]
-    result = subprocess.run(
-        cmd, capture_output=True,
-        encoding="utf-8", errors="replace", timeout=_RCLONE_QUICK_TIMEOUT
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"rclone delete 舊備份失敗 (exit {result.returncode}):\n{result.stderr.strip()}"
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=_RCLONE_DELETE_TIMEOUT
         )
-    logger.info("已清除 gdrive: 中超過 %s 的舊備份", min_age)
+    except subprocess.TimeoutExpired:
+        logger.warning("清除舊備份逾時（%ss），略過（不影響本次備份結果）", _RCLONE_DELETE_TIMEOUT)
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "清除舊備份失敗 (exit %s)，略過（不影響本次備份結果）：%s",
+            result.returncode, result.stderr.strip()
+        )
+        return
+    logger.info("已清除 %s 中超過 %s 的舊備份", RCLONE_REMOTE, min_age)
 
 
 def list_remote_backups() -> list[str]:
@@ -313,7 +327,7 @@ def run_backup() -> None:
         elapsed_sec = int((datetime.now() - started_at).total_seconds())
         msg_lines = [
             f"[srock 備份成功] {datetime.now():%Y-%m-%d %H:%M}",
-            f"srock_backup_{datetime.now():%Y%m%d}.db.gz 已上傳至 gdrive:",
+            f"srock_backup_{datetime.now():%Y%m%d}.db.gz 已上傳至 {RCLONE_REMOTE}",
             "",
             f"原始 DB：{src_size_mb:.1f} MB",
             f"VACUUM 後：{vacuum_size_mb:.1f} MB",
