@@ -1796,13 +1796,17 @@ with tab_manage:
             # 股數/均價對照（永豐持股中與手動記錄不一致者）
             _hmap = {h["stock_id"]: h for h in holdings}
             _diff_rows = []
+            _has_share_change = False
             for _sid, _p in _positions.items():
                 _h = _hmap.get(_sid)
                 if _h is None:
                     continue
                 _new_sh = int(_p.get("shares") or 0)
                 _new_avg = float(_p.get("avg_price") or 0)
-                if _new_sh != int(_h.get("shares") or 0) or abs(float(_h.get("cost_price") or 0) - _new_avg) > 1e-6:
+                _sh_changed = _new_sh != int(_h.get("shares") or 0)
+                if _sh_changed or abs(float(_h.get("cost_price") or 0) - _new_avg) > 1e-6:
+                    if _sh_changed:
+                        _has_share_change = True
                     _diff_rows.append({
                         "股票": f"{_sid} {_h.get('stock_name', '')}",
                         "永豐股數": _new_sh, "手動股數": int(_h.get("shares") or 0),
@@ -1816,6 +1820,8 @@ with tab_manage:
                     "☑️ 一併以永豐數值覆蓋上列股數與均價（不勾則只標券商，股數由你自行修改）",
                     value=False, key="sinopac_overwrite",
                 )
+                if _has_share_change:
+                    st.caption("勾覆蓋 + 下方「自動建立日誌骨架」時,股數的增減會各記一筆加碼(BUY)/減碼(SELL)。")
             # 新增(買進)/ 移除(賣出)候選；交易日誌一律自行記錄
             from broker.sinopac_holdings import compute_add_remove
             _ar = compute_add_remove(holdings, _positions)
@@ -1847,11 +1853,11 @@ with tab_manage:
                     "🗑️ 移除上列已賣出持股", value=False, key="sinopac_remove"
                 )
 
-            # 自動建立日誌骨架（新增→BUY、移除→SELL；已知帶入、未知留空）
+            # 自動建立日誌骨架（新增→BUY、移除→SELL、加減碼→BUY/SELL 差額；已知帶入、未知留空）
             _do_journal = True
-            if _ar["to_add"] or _ar["to_remove"]:
+            if _ar["to_add"] or _ar["to_remove"] or _has_share_change:
                 _do_journal = st.checkbox(
-                    "📝 同步時自動建立交易日誌骨架（新增→買進含均價、移除→賣出;賣價/理由待補）",
+                    "📝 同步時自動建立交易日誌骨架（新增/加碼→買進含均價、移除/減碼→賣出;賣價/理由待補）",
                     value=True, key="sinopac_journal",
                 )
 

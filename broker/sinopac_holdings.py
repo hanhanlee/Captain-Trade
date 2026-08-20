@@ -188,8 +188,9 @@ def apply_broker_sync(session, positions, overwrite_shares: bool = False,
                 p = pos_map[sid]
                 new_sh = int(p.get("shares") or 0)
                 new_avg = float(p.get("avg_price") or 0)
+                old_sh = int(row.shares or 0)
                 touched = False
-                if new_sh > 0 and int(row.shares or 0) != new_sh:
+                if new_sh > 0 and old_sh != new_sh:
                     row.shares = new_sh
                     touched = True
                 if new_avg > 0 and abs(float(row.cost_price or 0) - new_avg) > 1e-6:
@@ -197,6 +198,21 @@ def apply_broker_sync(session, positions, overwrite_shares: bool = False,
                     touched = True
                 if touched:
                     stat["shares_updated"] += 1
+                # 股數有增減 → 建差額交易日誌骨架(加碼→BUY、減碼→SELL)。
+                # 只在股數真的變動時建;純均價校正(股數不變)不算交易,不建。
+                if create_journal and new_sh > 0 and new_sh != old_sh and old_sh >= 0:
+                    _delta = new_sh - old_sh
+                    made = build_sync_journal_entry(
+                        session,
+                        stock_id=sid,
+                        stock_name=(p.get("stock_name") or row.stock_name or ""),
+                        action=("BUY" if _delta > 0 else "SELL"),
+                        price=(new_avg if _delta > 0 else 0),  # 加碼用均價;減碼賣價待補
+                        shares=abs(_delta),
+                        trade_date=td,
+                    )
+                    if made is not None:
+                        stat["journaled"] += 1
         elif old:
             stat["kept"] += 1
         else:
