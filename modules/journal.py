@@ -55,12 +55,13 @@ def add_trade(stock_id: str, stock_name: str, action: str, price: float,
 
 def build_sync_journal_entry(sess, stock_id: str, stock_name: str, action: str,
                              price, shares: int, trade_date: date,
-                             skip_if_exists: bool = True):
+                             skip_if_exists: bool = True, pnl=None):
     """永豐同步偵測到的交易 → 在傳入的 session 內建一筆「日誌骨架」。
 
     設計原則（依使用者要求）：已知資料帶入、未知留空。
       - 買進 BUY：price = 永豐均價（已知）。
-      - 賣出 SELL：賣價 API 查不到 → price = 0（欄位不可為 NULL，用 0 代表待補）、pnl 留空。
+      - 賣出 SELL：賣價/損益若能從永豐已實現損益查到 → 帶入 price 與 pnl；
+        查不到 → price = 0（欄位不可為 NULL，用 0 代表待補）、pnl 留空。
       - reason / emotion 一律留空，由使用者事後補。
     **不觸碰持股**（永豐持股股數由同步快照維護；避免與同步重複計股）。
     不 commit，由呼叫端（apply_broker_sync 的 session）一起 commit。
@@ -88,6 +89,14 @@ def build_sync_journal_entry(sess, stock_id: str, stock_name: str, action: str,
         if dup:
             return None
 
+    # pnl 只在 SELL 有意義；BUY 一律留空
+    _pnl = None
+    if action == "SELL" and pnl is not None:
+        try:
+            _pnl = float(pnl)
+        except (TypeError, ValueError):
+            _pnl = None
+
     t = TradeJournal(
         stock_id=stock_id,
         stock_name=(stock_name or "").strip(),
@@ -97,7 +106,7 @@ def build_sync_journal_entry(sess, stock_id: str, stock_name: str, action: str,
         trade_date=trade_date,
         reason="",                 # 未知留空
         emotion="",                # 未知留空
-        pnl=None,                  # 未知留空
+        pnl=_pnl,                  # 永豐已實現損益查到就帶入，否則留空
     )
     sess.add(t)
     return t

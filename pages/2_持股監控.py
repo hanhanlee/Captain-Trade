@@ -1866,11 +1866,27 @@ with tab_manage:
                     from broker.sinopac_holdings import apply_broker_sync
                     _add_ids = [a["stock_id"] for a in _ar["to_add"]] if _do_add else None
                     _rm_ids = [r["stock_id"] for r in _ar["to_remove"]] if _do_remove else None
+
+                    # 建立 SELL 骨架時，嘗試從永豐已實現損益回填賣價/損益（唯讀查詢，
+                    # 失敗不影響同步主流程，退回原本「賣價待補=0」行為）。
+                    _realized = None
+                    if _do_journal and (_do_remove or _has_share_change):
+                        try:
+                            from datetime import timedelta as _td
+                            from broker.sinopac_holdings import get_sinopac_realized_pnl
+                            _begin = (date_type.today() - _td(days=10)).isoformat()
+                            _end = date_type.today().isoformat()
+                            _realized = get_sinopac_realized_pnl(_begin, _end)
+                        except Exception as _re:
+                            _realized = None
+                            st.caption(f"（已實現損益查詢略過：{_re}）")
+
                     with get_session() as _sess:
                         _stat = apply_broker_sync(
                             _sess, _positions, overwrite_shares=_overwrite,
                             add_ids=_add_ids, remove_ids=_rm_ids,
                             create_journal=_do_journal,
+                            realized_records=_realized,
                         )
                         _sess.commit()
                     for _k in ("sinopac_positions", "sinopac_overwrite", "sinopac_add", "sinopac_remove", "sinopac_journal"):
@@ -1884,9 +1900,18 @@ with tab_manage:
                         _msg += f"、移除 {_stat['removed']}"
                     if _stat.get("journaled"):
                         _msg += f"、自動建立日誌 {_stat['journaled']} 筆"
+                    _filled = _stat.get("journaled_pnl_filled", 0)
+                    if _filled:
+                        _msg += f"（其中 {_filled} 筆已回填永豐賣價/損益）"
                     st.success(_msg)
                     if _stat.get("journaled"):
-                        st.info("📝 已自動建立日誌骨架,請到「交易日誌」補上賣出的賣價/損益與進出理由。")
+                        if _filled:
+                            st.info(
+                                f"📝 已自動建立日誌骨架，其中 {_filled} 筆已從永豐已實現損益回填賣價/損益；"
+                                "仍請到「交易日誌」核對並補上進出理由。其餘賣出（如非永豐帳戶）賣價/損益待補。"
+                            )
+                        else:
+                            st.info("📝 已自動建立日誌骨架,請到「交易日誌」補上賣出的賣價/損益與進出理由。")
                     elif _do_add or _do_remove:
                         st.warning("提醒：新增/移除的交易記得到「交易日誌」補紀錄。")
                     st.rerun()

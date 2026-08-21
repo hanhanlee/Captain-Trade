@@ -174,10 +174,14 @@ with tab_log:
                                                   index=ACTIONS.index(rec["action"]) if rec["action"] in ACTIONS else 0)
                         e_date     = st.date_input("交易日期 *", value=rec["trade_date"])
                     with er1c3:
-                        e_price    = st.number_input("價格 *", min_value=0.01,
-                                                     value=rec["price"], step=0.1)
+                        # 永豐同步建立的 SELL 骨架賣價為 0（待補），min_value 需容許 0
+                        # 才能載入編輯；否則 st.number_input(value=0.0, min_value=0.01) 會拋
+                        # StreamlitValueBelowMinError。
+                        e_price    = st.number_input("價格 *（永豐同步骨架賣價為 0，請補上實際成交價）",
+                                                     min_value=0.0,
+                                                     value=float(rec["price"] or 0.0), step=0.1)
                         e_shares   = st.number_input("股數 *", min_value=1,
-                                                     value=rec["shares"], step=1)
+                                                     value=max(int(rec["shares"] or 1), 1), step=1)
 
                     er2c1, er2c2 = st.columns(2)
                     with er2c1:
