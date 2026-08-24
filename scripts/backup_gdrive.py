@@ -46,6 +46,8 @@ BASE_DIR      = Path(__file__).resolve().parent.parent
 DB_PATH       = BASE_DIR / "srock.db"
 TEMP_DB       = BASE_DIR / "temp_backup.db"
 TEMP_GZ       = BASE_DIR / "temp_backup.db.gz"
+# 「今日已備份」標記；供 AutoSleep 睡前判斷是否需要先備份（一天一次，與 06:50 排程共用）
+BACKUP_MARKER = BASE_DIR / "runtime" / "last_backup_date.txt"
 RCLONE_REMOTE = "gdrive:Srock DB BackUp/"   # 與歷史備份同一資料夾（勿改回根目錄，否則備份會散落兩處）
 RETENTION_DAYS = 30
 
@@ -278,6 +280,15 @@ def step_delete_old_backups() -> None:
     logger.info("已清除 %s 中超過 %s 的舊備份", RCLONE_REMOTE, min_age)
 
 
+def _write_backup_marker() -> None:
+    """上傳驗證通過後，寫今日日期到標記檔，供 AutoSleep 睡前判斷『今天是否已備份』。"""
+    try:
+        BACKUP_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        BACKUP_MARKER.write_text(datetime.now().strftime("%Y-%m-%d"), encoding="ascii")
+    except Exception as e:
+        logger.warning("寫入備份標記失敗（不影響備份）：%s", e)
+
+
 def list_remote_backups() -> list[str]:
     """列出雲端目前所有 srock_backup_*.db.gz；只用於成功訊息回報。"""
     rclone = _rclone_path()
@@ -321,6 +332,7 @@ def run_backup() -> None:
         step_upload()
         step_verify_upload()
         _cleanup(TEMP_GZ)           # 上傳驗證通過後刪除壓縮暫存
+        _write_backup_marker()      # 記「今天已備份」供睡前備份判斷（一天一次）
         step_delete_old_backups()
         remote_files = list_remote_backups()
 
