@@ -1204,16 +1204,36 @@ def render_scorecard_v5(
             prior_low  = float(df[low_col].iloc[-(n_recent + n_prior):-n_recent].min()) if low_col else float("nan")
             recent_high = float(df[high_col].iloc[-n_rh:].max()) if high_col else float("nan")
             compare_high = float(df[high_col].iloc[-n_ch:].max()) if high_col else float("nan")
+
+            # 共同 gate 未過時 evaluate_v5 會早退（見 v5_sniper.evaluate_v5），
+            # r.pattern_b_* 維持預設 False，會與下方「實際幾何成立」的數值字串矛盾
+            # （例：底底高 766 > 541 卻打 ❌）。這裡就地以相同視窗重算三個子條件，
+            # 讓 ✓/❌ 與顯示數值一致（純幾何判斷，與 gate 是否通過無關）。
+            _hl_ok = (
+                not pd.isna(recent_low) and not pd.isna(prior_low)
+                and recent_low > prior_low
+            )
+            _con_ok = (
+                not pd.isna(recent_high) and not pd.isna(compare_high)
+                and recent_high < compare_high
+            )
+            _ma_ok = False
+            if "close" in df.columns and "ma20" in df.columns and len(df) >= n_above:
+                _c = df["close"].iloc[-n_above:]
+                _m = df["ma20"].iloc[-n_above:]
+                if not _c.isna().any() and not _m.isna().any():
+                    _ma_ok = bool((_c.values > _m.values).all())
+
             st.caption(
-                f"　{_badge(r.pattern_b_higher_low)} 底底高："
+                f"　{_badge(_hl_ok)} 底底高："
                 f"近 {n_recent} 日 Low **{recent_low:.2f}** > 前 {n_prior} 日 Low **{prior_low:.2f}**"
                 if not pd.isna(recent_low) and not pd.isna(prior_low) else "　底底高資料不足"
             )
             st.caption(
-                f"　{_badge(r.pattern_b_above_ma20)} 守月線：過去 {n_above} 日 Close 每天都 > MA20"
+                f"　{_badge(_ma_ok)} 守月線：過去 {n_above} 日 Close 每天都 > MA20"
             )
             st.caption(
-                f"　{_badge(r.pattern_b_consolidating)} 真有回檔："
+                f"　{_badge(_con_ok)} 真有回檔："
                 f"近 {n_rh} 日 High **{recent_high:.2f}** < 近 {n_ch} 日 High **{compare_high:.2f}**"
                 if not pd.isna(recent_high) and not pd.isna(compare_high) else "　回檔資料不足"
             )
@@ -2065,6 +2085,16 @@ if analyze_btn:
     st.session_state["analysis_strategy"] = strategy_version
     st.session_state["analysis_v5_params"] = v5_params
     st.session_state.pop("analysis_df", None)
+
+# 輸入框已改成新代號、但尚未按「開始分析」→ 不要沿用上一檔的結果，
+# 否則標題/內容會顯示前一檔（例：輸入 3189 卻顯示 6213）。提示按鈕後停止。
+_last_analyzed = st.session_state.get("analysis_stock")
+if not analyze_btn and stock_input and _last_analyzed and stock_input != _last_analyzed:
+    st.info(
+        f"你已輸入 **{stock_input}**，但目前顯示的仍是上一檔（**{_last_analyzed}**）的分析結果。"
+        "請按左側「🔎 開始分析」更新。"
+    )
+    st.stop()
 
 target_id         = st.session_state.get("analysis_stock", stock_input)
 _active_date      = st.session_state.get("analysis_date", _date_cls.today())
