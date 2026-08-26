@@ -87,6 +87,45 @@ def _rclone_path() -> str:
     )
 
 
+def _rclone_config_path() -> str | None:
+    """明確解析 rclone 設定檔路徑。
+
+    排程／睡前備份情境下（AutoSleep 觸發），行程環境的 %APPDATA% 有時沒展開，
+    rclone 會找不到預設設定檔而報「Config file not found - using defaults」→
+    `gdrive` 遠端不存在 → 備份失敗（2026-08-25 / 08-26 的失敗即此因）。
+    這裡明確算出設定檔位置，讓 rclone 帶 --config，不依賴呼叫情境的 %APPDATA%。
+    優先序：RCLONE_CONFIG → %APPDATA%\\rclone\\rclone.conf → %USERPROFILE%\\AppData\\Roaming\\...
+    回傳第一個實際存在的檔；都找不到回 None（退回 rclone 預設行為）。
+    """
+    candidates = []
+    env_cfg = os.environ.get("RCLONE_CONFIG", "").strip()
+    if env_cfg:
+        candidates.append(Path(env_cfg))
+    appdata = os.environ.get("APPDATA", "").strip()
+    if appdata:
+        candidates.append(Path(appdata) / "rclone" / "rclone.conf")
+    userprofile = os.environ.get("USERPROFILE", "").strip()
+    if userprofile:
+        candidates.append(Path(userprofile) / "AppData" / "Roaming" / "rclone" / "rclone.conf")
+    for c in candidates:
+        try:
+            if c.is_file():
+                return str(c)
+        except OSError:
+            continue
+    return None
+
+
+def _rclone_cmd(*args: str) -> list[str]:
+    """組 rclone 命令：能解析到設定檔就明確帶 --config，使備份不依賴呼叫情境的 %APPDATA%。"""
+    cmd = [_rclone_path()]
+    cfg = _rclone_config_path()
+    if cfg:
+        cmd += ["--config", cfg]
+    cmd += list(args)
+    return cmd
+
+
 # ── Telegram 推播 ──────────────────────────────────────────────────
 
 def _notify(msg: str) -> None:
@@ -154,8 +193,7 @@ def step_preflight_remote() -> None:
     不做這個檢查的話，OAuth token 過期或網路斷線時會走完 1–3 分鐘 VACUUM、
     再 gzip 250MB，最後才在 upload 階段炸掉，工作 4 分鐘等於白做。
     """
-    rclone = _rclone_path()
-    cmd = [rclone, "lsd", RCLONE_REMOTE, "--max-depth", "1"]
+    cmd = _rclone_cmd("lsd", RCLONE_REMOTE, "--max-depth", "1")
     last_err = ""
     for attempt in range(1, _PREFLIGHT_RETRIES + 1):
         try:
@@ -224,11 +262,10 @@ def step_compress() -> None:
 
 def step_upload() -> None:
     """透過 rclone copyto 上傳至 gdrive:（list 格式，路徑含空格安全）"""
-    rclone   = _rclone_path()
     today    = datetime.now().strftime("%Y%m%d")
     remote   = f"{RCLONE_REMOTE}srock_backup_{today}.db.gz"
 
-    cmd = [rclone, "copyto", str(TEMP_GZ), remote, "--stats", "10s"]
+    cmd = _rclone_cmd("copyto", str(TEMP_GZ), remote, "--stats", "10s")
     logger.info("上傳指令: %s", cmd)
     result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
@@ -240,11 +277,10 @@ def step_upload() -> None:
 
 def step_verify_upload() -> None:
     """確認雲端確實存在剛上傳的檔案"""
-    rclone = _rclone_path()
     today  = datetime.now().strftime("%Y%m%d")
     target = f"srock_backup_{today}.db.gz"
 
-    cmd    = [rclone, "ls", RCLONE_REMOTE, "--include", target]
+    cmd    = _rclone_cmd("ls", RCLONE_REMOTE, "--include", target)
     result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
     if result.returncode != 0 or target not in result.stdout:
         raise RuntimeError(
@@ -259,10 +295,9 @@ def step_delete_old_backups() -> None:
     非致命：上傳+驗證已成功，這步只是清理。逾時或失敗都只記 WARNING、
     不 raise，避免像 2026-08-20 那樣因 rclone delete 卡頓就把成功的備份判為失敗。
     """
-    rclone = _rclone_path()
     min_age = f"{RETENTION_DAYS}d"
-    cmd = [rclone, "delete", RCLONE_REMOTE,
-           "--min-age", min_age, "--include", "srock_backup_*.db.gz"]
+    cmd = _rclone_cmd("delete", RCLONE_REMOTE,
+                      "--min-age", min_age, "--include", "srock_backup_*.db.gz")
     try:
         result = subprocess.run(
             cmd, capture_output=True,
@@ -291,8 +326,7 @@ def _write_backup_marker() -> None:
 
 def list_remote_backups() -> list[str]:
     """列出雲端目前所有 srock_backup_*.db.gz；只用於成功訊息回報。"""
-    rclone = _rclone_path()
-    cmd = [rclone, "lsf", RCLONE_REMOTE, "--include", "srock_backup_*.db.gz"]
+    cmd = _rclone_cmd("lsf", RCLONE_REMOTE, "--include", "srock_backup_*.db.gz")
     try:
         result = subprocess.run(
             cmd, capture_output=True,
