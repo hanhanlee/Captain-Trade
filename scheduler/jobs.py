@@ -1100,16 +1100,17 @@ def run_scheduler():
         coalesce=True,
     )
 
-    # DB 備份至 Google Drive：週一到週五 06:50
-    # 機器約 06:30 開機，6:50 開始備份 → 約 06:54 結束 → 09:00 開盤前完成。
-    # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響），
-    # 此時段非交易時間，影響最小。
-    # misfire_grace_time=600：剛開機系統忙時 cron tick 可能延遲 1-2 秒被預設 1s 拒掉，給 10 分鐘容錯。
+    # DB 備份至 Google Drive：週一到週五 14:00（盤後）
+    # 2026-08-26 從 06:50 改為 14:00：原本 06:50 依賴「早上定時喚醒」才有服務可跑，
+    # 但喚醒不穩(見 _ops/AUTOMATION.md 的 PIN/喚醒段)導致 06:50 常常沒服務、跑不成。
+    # 改到盤後 14:00 —— 開盤期間機器一定醒著、服務一定在，備份最穩且時間固定。
+    # 收盤(13:30)+ 收盤補正(13:35)後才備份，不影響盤中；睡前備份仍是雙保險。
+    # 備份期間 srock.db 寫入會被 VACUUM INTO 鎖住約 1–3 分鐘（讀取不受影響）。
     scheduler.add_job(
         job_db_backup,
-        CronTrigger(day_of_week="mon-fri", hour=6, minute=50, timezone="Asia/Taipei"),
+        CronTrigger(day_of_week="mon-fri", hour=14, minute=0, timezone="Asia/Taipei"),
         id="db_backup",
-        name="DB 備份 Google Drive 06:50",
+        name="DB 備份 Google Drive 14:00（盤後）",
         misfire_grace_time=600,
         coalesce=True,
     )
