@@ -315,6 +315,28 @@ def job_shioaji_close_correction():
         logger.error("Shioaji 收盤補正失敗：%s", e, exc_info=True)
 
 
+def job_shioaji_ensure_login():
+    """確保 Shioaji 已登入 —— 讓即時報價不必等使用者開網頁才連線。
+
+    呼叫時機：
+      1. 排程服務啟動時（= Windows 登入後 AutoStart 跑 `srock up` 拉起 scheduler）
+         → 等同「Windows 一登入就自動登入 Shioaji」。
+      2. 每個交易日 08:45（盤前，早於 09:00 開盤）再確保一次，避免隔夜 token 失效。
+    已登入則跳過；金鑰未設定或登入失敗只記 log，不中斷排程（盤中仍會退回
+    FinMind/Yahoo 後援，且 adapter 收 401 會自動重登）。
+    """
+    try:
+        from broker.shioaji_adapter import get_adapter
+        adapter = get_adapter()
+        if adapter.is_logged_in():
+            logger.info("Shioaji 已登入，略過預登入")
+            return
+        ok = adapter.login()
+        logger.info("Shioaji 預登入（啟動/盤前）：%s", "成功" if ok else "失敗")
+    except Exception as e:
+        logger.error("Shioaji 預登入失敗：%s", e, exc_info=True)
+
+
 @skip_if_not_trading_day
 def job_intraday_monitor():
     """
@@ -884,6 +906,18 @@ def run_scheduler():
         id="heartbeat",
         name="heartbeat（自癒偵測用）",
         misfire_grace_time=30,
+        coalesce=True,
+    )
+
+    # Shioaji 啟動即登入（= Windows 登入後 srock up 拉起 scheduler）→ 報價不必等開網頁
+    job_shioaji_ensure_login()
+    # 盤前 08:45 再確保一次（早於 09:00 開盤，避免隔夜 token 失效）
+    scheduler.add_job(
+        job_shioaji_ensure_login,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=45, timezone="Asia/Taipei"),
+        id="shioaji_premarket_login",
+        name="Shioaji 盤前預登入",
+        misfire_grace_time=1800,
         coalesce=True,
     )
 
