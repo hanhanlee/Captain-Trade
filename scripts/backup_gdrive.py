@@ -107,6 +107,11 @@ def _rclone_config_path() -> str | None:
     userprofile = os.environ.get("USERPROFILE", "").strip()
     if userprofile:
         candidates.append(Path(userprofile) / "AppData" / "Roaming" / "rclone" / "rclone.conf")
+    # 最終硬退路：AutoSleep 睡前備份的行程環境常常連 %APPDATA%/%USERPROFILE% 都沒有
+    # （2026-08-27/28 睡前備份就是這樣失敗——上面的 candidates 全空 → 回 None → 沒帶
+    #  --config → rclone 預設探索也找不到）。用絕對路徑保底，is_file() 只看實體檔案、
+    #  不靠環境變數,所以任何情境都能定位到設定檔。
+    candidates.append(Path(r"C:\Users\sb_bo\AppData\Roaming\rclone\rclone.conf"))
     for c in candidates:
         try:
             if c.is_file():
