@@ -2233,6 +2233,33 @@ if "Trading_Volume" in df.columns:
 m4.metric("MA20 乖離", f"{latest.get('ma20_bias_ratio', 0):.2f}%")
 m5.metric("RSI(14)", f"{latest.get('rsi14', 0):.1f}")
 
+# ── 搶 V 反轉偵測（急跌→低檔爆量→止跌K→過高確認 + KD 低檔）─────────────
+with st.expander("⚡ 搶 V 型反轉偵測", expanded=False):
+    try:
+        from modules.v_reversal_detector import find_v_reversal
+        _vr = find_v_reversal(df)
+    except Exception as _vr_e:
+        _vr = None
+        st.caption(f"偵測失敗：{_vr_e}")
+    if _vr is None:
+        st.info("目前未形成搶 V 反轉型態（①急跌 ②低檔爆量 ③止跌K + KD 低檔 未同時成立）。")
+    else:
+        def _b(v):
+            return "✅" if v else "❌"
+        _sharp = []
+        if _vr.drop_pct is not None:
+            _sharp.append(f"從高點 {_vr.drop_pct:.1f}%")
+        if _vr.sharp_by_days:
+            _sharp.append(f"近10日跌 {_vr.down_days} 天")
+        st.markdown(f"**觸發價（止跌K高）= {_vr.trigger_price:.2f}**　現價距觸發 {_vr.distance_to_trigger_pct:+.2f}%"
+                    + ("　（已突破）" if _vr.already_broken else "　（等突破）"))
+        st.caption(f"　{_b(_vr.sharp_by_drop or _vr.sharp_by_days)} ① 急跌：{'、'.join(_sharp) or '—'}")
+        st.caption(f"　{_b(True)} ② 低檔爆量：{_vr.spike_vol_ratio:.1f}× 前5日均量（{str(_vr.spike_date)[:10]}）")
+        _stab = "紅K" if _vr.stabilize_is_red else ("十字" if _vr.stabilize_is_doji else "?")
+        st.caption(f"　{_b(True)} ③ 止跌K：{_stab}（{str(_vr.stabilize_date)[:10]}）→ 觸發價 {_vr.trigger_price:.2f}")
+        st.caption(f"　{_b(_vr.kd_low)} KD 低檔：K={_vr.kd_k} D={_vr.kd_d}（門檻 K<30）　金叉：{_b(_vr.kd_golden_cross)}")
+        st.caption("　④ 過高確認（進場點）：等紅K收盤/現價突破止跌K高 → 盤中/收盤推播。⚠ 逆勢抄底、僅供觀察。")
+
 rank, total_ranked, _rank_vol = _volume_rank
 v1, v2 = st.columns(2)
 v1.metric(
