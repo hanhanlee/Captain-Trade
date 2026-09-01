@@ -497,3 +497,76 @@ class V5SniperWatchlist(Base):
     alerted_today   = Column(Boolean, default=False)
     entry_path      = Column(String(10), default="morning")  # "morning"=08:50 builder / "late"=盤中補抓
     created_at      = Column(DateTime, default=datetime.now)
+
+
+class VReversalWatchlist(Base):
+    """
+    搶 V 型反轉候選清單（每日 08:50 重建）
+
+    builder 盤後找出「①急跌 ②低檔爆量 ③止跌K」已成形、KD 低檔、且尚未突破止跌K高
+    的股票，寫入本表。盤中 intraday_v_reversal 比對即時報價：
+      - 現價 > trigger_price（突破止跌K最高點 = 過高進場確認）
+      - 現價 > 今開（紅K）
+      - KD 低檔金叉（用現價重算當日 KD：K<30 且 K>D）
+      - 流動性 gate：vol_ma5 ≥ 5000 張
+    → 推「盤中預警」；13:15 併入統整（當下重驗仍成立才列）；收盤以定案價再發「收盤確認」。
+    """
+    __tablename__ = "v_reversal_watchlist"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "scan_date", name="uq_v_reversal_stock_date"),
+        Index("idx_v_reversal_scan_date", "scan_date"),
+    )
+
+    id                      = Column(Integer, primary_key=True)
+    scan_date               = Column(Date, nullable=False)
+    stock_id                = Column(String(10), nullable=False)
+    stock_name              = Column(String(50))
+    industry                = Column(String(50))
+    # ① 急跌
+    drop_pct                = Column(Float)            # 從近60日收盤高回落 %（負值）
+    down_days               = Column(Integer)          # 近10日下跌天數
+    sharp_by_drop           = Column(Boolean)          # 因跌深成立
+    sharp_by_days           = Column(Boolean)          # 因連跌成立
+    # ② 低檔爆量
+    spike_date              = Column(Date)             # 爆量日
+    spike_vol_ratio         = Column(Float)            # 爆量日 量/前5日均量
+    # ③ 止跌K
+    stabilize_date          = Column(Date, nullable=False)  # 止跌K日（結構識別鍵）
+    stabilize_is_doji       = Column(Boolean)
+    stabilize_is_red        = Column(Boolean)
+    trigger_price           = Column(Float, nullable=False)  # 止跌K最高點＝進場觸發價
+    # KD（止跌K當日）
+    kd_k                    = Column(Float)
+    kd_d                    = Column(Float)
+    kd_low                  = Column(Boolean)          # K < 門檻（低檔）
+    kd_golden_cross         = Column(Boolean)          # 止跌K當日是否已金叉
+    # 流動性 / 現況
+    vol_ma5                 = Column(Float)            # 前5日均量（張）；盤中流動性 gate 用
+    last_close              = Column(Float)            # 建表當下最新收盤
+    distance_to_trigger_pct = Column(Float)           # 現價距觸發價 %（負值=已突破）
+    alerted_today           = Column(Boolean, default=False)   # 盤中預警是否已推
+    confirmed_today         = Column(Boolean, default=False)   # 收盤確認是否已推
+    entry_path              = Column(String(10), default="morning")  # morning / late
+    created_at              = Column(DateTime, default=datetime.now)
+
+
+class VReversalAlertHistory(Base):
+    """
+    搶 V 反推播歷史 —— 跨日去重。
+
+    唯一鍵：stock_id + stabilize_date（止跌K日代表同一組止跌結構）。
+    同一組止跌結構只推一次盤中預警，避免同檔在觸發價附近反覆進出重複騷擾。
+    purge 建議保留 30 天（大於 builder 回看與止跌K可能停留的天數）。
+    """
+    __tablename__ = "v_reversal_alert_history"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "stabilize_date", name="uq_v_reversal_alert_struct"),
+        Index("idx_v_reversal_alert_stock", "stock_id"),
+    )
+
+    id             = Column(Integer, primary_key=True)
+    stock_id       = Column(String(10), nullable=False)
+    stabilize_date = Column(Date, nullable=False)   # 止跌K日（結構識別鍵）
+    trigger_price  = Column(Float)
+    spike_date     = Column(Date)
+    alerted_at     = Column(DateTime, default=datetime.now)
