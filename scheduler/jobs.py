@@ -383,6 +383,41 @@ def job_intraday_monitor():
     except Exception as e:
         logger.error(f"盤中 v5 狙擊手版突破檢查失敗：{e}")
 
+    try:
+        from modules.intraday_v_reversal import run_v_reversal_check
+        vr_sent = run_v_reversal_check()
+        if vr_sent:
+            logger.info(f"盤中搶V反轉預警：推播 {vr_sent} 則")
+    except Exception as e:
+        logger.error(f"盤中搶V反轉檢查失敗：{e}")
+
+
+def job_v_reversal_watchlist_build():
+    """每日 08:50 重建搶 V 反轉候選清單（寫 db.v_reversal_watchlist）。"""
+    logger.info("開始建立搶V反轉候選清單...")
+    try:
+        from modules.v_reversal_watchlist_builder import build_watchlist
+        stats = build_watchlist()
+        logger.info("搶V反轉候選建立完成：%s", stats)
+        log_event(
+            "v_reversal_watchlist_built", module="scheduler", severity="info",
+            summary=f"搶V反轉候選：掃描 {stats.get('scanned',0)} 命中 {stats.get('hits',0)} 收錄 {stats.get('written',0)}",
+            payload=stats,
+        )
+    except Exception as e:
+        logger.error("搶V反轉候選建立失敗：%s", e, exc_info=True)
+
+
+def job_v_reversal_close_confirm():
+    """13:40（收盤補正後）用定案收盤發搶V反轉『收盤確認』。"""
+    try:
+        from modules.intraday_v_reversal import run_v_reversal_close_confirm
+        sent = run_v_reversal_close_confirm()
+        if sent:
+            logger.info("搶V反轉收盤確認：推播 %d 則", sent)
+    except Exception as e:
+        logger.error("搶V反轉收盤確認失敗：%s", e, exc_info=True)
+
 
 def job_weekly_holding_shares():
     """
@@ -1054,6 +1089,27 @@ def run_scheduler():
         id="v5_sniper_watchlist",
         name="盤中 v5 狙擊手版候選清單建構",
         misfire_grace_time=1800,
+        coalesce=True,
+    )
+
+    # 搶 V 反轉候選清單建構：週一到週五 08:40（全市場掃描，較重，排在 V3/v5 之前）
+    # misfire_grace_time=1800：晚開機 / 08:45 喚醒後補做；過了就放生（盤中 today_active 自會等名單就緒）。
+    scheduler.add_job(
+        job_v_reversal_watchlist_build,
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=40, timezone="Asia/Taipei"),
+        id="v_reversal_watchlist",
+        name="搶V反轉候選清單建構",
+        misfire_grace_time=1800,
+        coalesce=True,
+    )
+
+    # 搶 V 反轉收盤確認：週一到週五 13:40（排在 13:35 Shioaji 收盤補正之後，用定案收盤）
+    scheduler.add_job(
+        job_v_reversal_close_confirm,
+        CronTrigger(day_of_week="mon-fri", hour=13, minute=40, timezone="Asia/Taipei"),
+        id="v_reversal_close_confirm",
+        name="搶V反轉收盤確認 13:40",
+        misfire_grace_time=600,
         coalesce=True,
     )
 

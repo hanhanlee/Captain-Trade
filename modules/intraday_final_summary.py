@@ -322,9 +322,11 @@ def _format_summary(
     v5_main_hits: list[dict],
     v5_late_hits: list[dict],
     n_hits: list[dict],
+    vr_hits: list[dict] | None = None,
     now_str: str,
 ) -> str | None:
-    total = len(v3_hits) + len(v5_main_hits) + len(v5_late_hits) + len(n_hits)
+    vr_hits = vr_hits or []
+    total = len(v3_hits) + len(v5_main_hits) + len(v5_late_hits) + len(n_hits) + len(vr_hits)
     if total == 0:
         return None
 
@@ -366,10 +368,17 @@ def _format_summary(
             f"est {_format_kilo(h['estimated_volume'])}張"
         )
 
+    def fmt_vr(h):
+        return (
+            f"{h['stock_id']} {h['stock_name']} "
+            f"{h['price']:.2f} 過止跌K高+{h['breakout_pct']:.2f}%（KD低檔金叉）"
+        )
+
     section("V5 主 checker", v5_main_hits, fmt_v5)
     section("V5 補抓 (late)", v5_late_hits, fmt_v5)
     section("V3 三線齊穿", v3_hits, fmt_v3)
     section("N 字底", n_hits, fmt_n)
+    section("搶V反轉（逆勢）", vr_hits, fmt_vr)
 
     lines.append("⚠ 條件：>5000 張 + 過突破點 ≤ 3%")
     lines.append("📊 報價來源：Shioaji")
@@ -385,6 +394,7 @@ def run_final_summary_check() -> int:
         n_pattern_watchlist as n_wl,
         v3_breakout_watchlist as v3_wl,
         v5_sniper_watchlist as v5_wl,
+        v_reversal_watchlist as vr_wl,
     )
     from db.event_log import log_event
     from notifications.telegram_notify import send_stock_alert
@@ -399,10 +409,12 @@ def run_final_summary_check() -> int:
     v3_items = list(v3_wl.today_all())
     v5_items = list(v5_wl.today_all())
     n_items = list(n_wl.today_all())
+    vr_items = list(vr_wl.today_all())
 
     all_sids = {str(it["stock_id"]) for it in v3_items}
     all_sids |= {str(it["stock_id"]) for it in v5_items}
     all_sids |= {str(it["stock_id"]) for it in n_items}
+    all_sids |= {str(it["stock_id"]) for it in vr_items}
     if not all_sids:
         logger.info("13:15 彙整：四軌 watchlist 都空，略過")
         return 0
@@ -453,13 +465,34 @@ def run_final_summary_check() -> int:
         if hit:
             n_hits.append(hit)
 
+    # 搶 V 反轉：13:15 當下重驗（過止跌K高 + 紅K + KD低檔金叉 + 流動性），
+    # 不成立的不列（沿用 intraday_v_reversal 的 _passes_intraday 判定）
+    vr_hits: list[dict] = []
+    try:
+        from modules.intraday_v_reversal import _passes_intraday as _vr_pass
+        for it in vr_items:
+            snap = snapshots.get(str(it["stock_id"]))
+            if not snap:
+                continue
+            ok, info = _vr_pass(it, snap)
+            if ok:
+                vr_hits.append({
+                    "stock_id": it["stock_id"],
+                    "stock_name": it.get("stock_name") or "",
+                    "price": info["price"],
+                    "breakout_pct": (info["price"] - info["trigger"]) / info["trigger"] * 100
+                    if info["trigger"] else 0.0,
+                })
+    except Exception as exc:
+        logger.warning("13:15 彙整 V 反重驗失敗：%s", exc)
+
     msg = _format_summary(
         v3_hits=v3_hits, v5_main_hits=v5_main_hits,
-        v5_late_hits=v5_late_hits, n_hits=n_hits,
+        v5_late_hits=v5_late_hits, n_hits=n_hits, vr_hits=vr_hits,
         now_str=now.strftime("%H:%M"),
     )
 
-    total = len(v3_hits) + len(v5_main_hits) + len(v5_late_hits) + len(n_hits)
+    total = len(v3_hits) + len(v5_main_hits) + len(v5_late_hits) + len(n_hits) + len(vr_hits)
 
     # 即使 total=0 仍寫 event_log heartbeat（讓 _already_sent_today 擋住補觸發）
     if msg is None:
@@ -486,7 +519,7 @@ def run_final_summary_check() -> int:
         summary=(
             f"13:15 彙整推播：共 {total} 檔"
             f"（V5主 {len(v5_main_hits)} / V5late {len(v5_late_hits)} / "
-            f"V3 {len(v3_hits)} / N {len(n_hits)}，{'成功' if ok else '失敗'}）"
+            f"V3 {len(v3_hits)} / N {len(n_hits)} / V反 {len(vr_hits)}，{'成功' if ok else '失敗'}）"
         ),
         payload={
             "total": total,
@@ -494,6 +527,7 @@ def run_final_summary_check() -> int:
             "v5_late": [h["stock_id"] for h in v5_late_hits],
             "v3": [h["stock_id"] for h in v3_hits],
             "n": [h["stock_id"] for h in n_hits],
+            "v_reversal": [h["stock_id"] for h in vr_hits],
             "min_lots": MIN_LOTS,
             "breakout_buffer_pct": BREAKOUT_BUFFER_PCT,
         },
