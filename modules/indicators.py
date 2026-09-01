@@ -64,6 +64,52 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(com=period - 1, min_periods=period).mean()
 
 
+def kdj(df: pd.DataFrame, n: int = 9, m1: int = 3, m2: int = 3):
+    """
+    台股慣用 KD / KDJ（預設 9,3,3）。回傳 (K, D, J) 三個 Series（與 df 同 index）。
+
+        RSV = (C − Ln) / (Hn − Ln) × 100        （n 日最低/最高）
+        K   = (1 − 1/m1)·K_prev + (1/m1)·RSV    （初值 50）
+        D   = (1 − 1/m2)·D_prev + (1/m2)·K       （初值 50）
+        J   = 3K − 2D
+
+    需要 high/low/close（容錯 FinMind 的 max/min 命名）。前 n−1 根、
+    或 high==low（振幅 0）時對應位置為 NaN，遞迴平滑遇 NaN 時沿用前值不推進。
+    """
+    high_col = "high" if "high" in df.columns else ("max" if "max" in df.columns else None)
+    low_col  = "low"  if "low"  in df.columns else ("min" if "min" in df.columns else None)
+    if high_col is None or low_col is None or "close" not in df.columns:
+        nan = pd.Series([float("nan")] * len(df), index=df.index)
+        return nan.copy(), nan.copy(), nan.copy()
+
+    high  = df[high_col].astype(float)
+    low   = df[low_col].astype(float)
+    close = df["close"].astype(float)
+
+    lowest  = low.rolling(window=n, min_periods=n).min()
+    highest = high.rolling(window=n, min_periods=n).max()
+    span    = highest - lowest
+    rsv     = ((close - lowest) / span * 100).where(span > 0)
+
+    a1, a2 = 1.0 / m1, 1.0 / m2
+    k_prev, d_prev = 50.0, 50.0
+    k_vals, d_vals = [], []
+    for r in rsv:
+        if pd.isna(r):
+            k_vals.append(float("nan"))
+            d_vals.append(float("nan"))
+            continue
+        k_prev = (1 - a1) * k_prev + a1 * float(r)
+        d_prev = (1 - a2) * d_prev + a2 * k_prev
+        k_vals.append(k_prev)
+        d_vals.append(d_prev)
+
+    k = pd.Series(k_vals, index=df.index)
+    d = pd.Series(d_vals, index=df.index)
+    j = 3 * k - 2 * d
+    return k, d, j
+
+
 # ── 週線指標 ──────────────────────────────────────────────────
 
 def to_weekly(df: pd.DataFrame) -> pd.DataFrame:

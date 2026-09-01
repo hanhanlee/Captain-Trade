@@ -31,7 +31,7 @@
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
-from .indicators import sma, rsi, macd, bollinger_bands, weekly_ma_trend, relative_strength_score, atr
+from .indicators import sma, rsi, macd, bollinger_bands, weekly_ma_trend, relative_strength_score, atr, kdj
 
 
 @dataclass
@@ -232,6 +232,12 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     if vol_col:
         df["vol_ma5"] = df[vol_col].rolling(5).mean()
+
+    # KD(9,3,3)：v5 kd_bull 與 V 反 KD 低檔金叉共用（2026-08-27 補上 kdj）
+    k_val, d_val, j_val = kdj(df, 9, 3, 3)
+    df["k_value"] = k_val
+    df["d_value"] = d_val
+    df["j_value"] = j_val
 
     # ATR14：供過熱防護使用（需要 high/low 欄位，若無則跳過）
     high_col = "max" if "max" in df.columns else ("high" if "high" in df.columns else None)
