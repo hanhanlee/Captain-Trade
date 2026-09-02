@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Iterable
 
@@ -95,24 +96,43 @@ def _already_sent_today() -> bool:
         return False
 
 
+_SNAPSHOT_RETRIES = 3        # 13:15 一天一次的關鍵推播，回空時重試幾次
+_SNAPSHOT_BACKOFF_SEC = 3    # 每次重試前等待秒數（給斷線的 session 時間重連）
+
+
 def _get_shioaji_snapshots(stock_ids: list[str]) -> dict[str, dict]:
+    """抓 Shioaji 批次報價；回空時重登重建連線後重試，最多 _SNAPSHOT_RETRIES 次。
+
+    2026-09-02 13:15 曾發生：is_logged_in() 為 True 但底層 socket 斷線（當天 Shioaji
+    連線抖動 24 次重連），snapshots() 靜默回空 → 整份收盤前彙整被略過。空回傳往往代表
+    「死連線」而非「真的沒資料」，故重試前先強制 login() 重建 session（比照當天 13:16
+    自動重登後即恢復）。連 3 次都失敗才放棄。
+    """
     if not stock_ids:
         return {}
-    try:
-        from broker.shioaji_adapter import get_adapter
-        adapter = get_adapter()
-        if not adapter.is_logged_in():
-            try:
+    from broker.shioaji_adapter import get_adapter
+    adapter = get_adapter()
+    for attempt in range(1, _SNAPSHOT_RETRIES + 1):
+        try:
+            if not adapter.is_logged_in():
                 adapter.login()
-            except Exception as exc:
-                logger.debug("Shioaji 自動登入失敗：%s", exc)
-        if not adapter.is_logged_in():
-            logger.info("Shioaji 未登入，13:15 彙整推播本輪略過")
-            return {}
-        return adapter.get_snapshots(stock_ids) or {}
-    except Exception as exc:
-        logger.warning("Shioaji 批次報價失敗（final summary）：%s", exc)
-        return {}
+            if adapter.is_logged_in():
+                snaps = adapter.get_snapshots(stock_ids) or {}
+                if snaps:
+                    if attempt > 1:
+                        logger.info("Shioaji 13:15 彙整報價第 %d 次嘗試成功", attempt)
+                    return snaps
+        except Exception as exc:
+            logger.warning("Shioaji 13:15 彙整報價第 %d/%d 次失敗：%s",
+                           attempt, _SNAPSHOT_RETRIES, exc)
+        if attempt < _SNAPSHOT_RETRIES:
+            try:
+                adapter.login()   # 回空多為死連線 → 強制重建 session 再試
+            except Exception:
+                pass
+            time.sleep(_SNAPSHOT_BACKOFF_SEC)
+    logger.warning("Shioaji 連 %d 次取不到報價，13:15 彙整放棄", _SNAPSHOT_RETRIES)
+    return {}
 
 
 def _alert_shioaji_unavailable(context: str) -> None:

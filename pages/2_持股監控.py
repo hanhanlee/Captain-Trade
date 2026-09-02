@@ -955,6 +955,7 @@ with tab_monitor:
                 _today_str = _now.strftime("%Y-%m-%d")
 
                 new_df_map: dict[str, pd.DataFrame] = {}
+                _td_failed_ids: list[str] = []   # 盤中兩來源都取不到現價 → 誠實排除，不用昨收冒充
                 dsm_today = None if market_closed_mode else DataSourceManager()
                 td_prog = st.progress(0)
                 for i, h in enumerate(holdings):
@@ -965,6 +966,7 @@ with tab_monitor:
                         else:
                             df_p = dsm_today.get_price(h["stock_id"], required_days=10)
                         if df_p is not None and not df_p.empty and "close" in df_p.columns:
+                            _add_to_map = True
                             if _intraday:
                                 # 盤中：補抓今日現價插入最後一列，讓 iloc[-1]=現價、iloc[-2]=昨收
                                 # 優先 Shioaji snapshot（tick 級），斷線時 fallback Yahoo（約 15 分鐘延遲）
@@ -986,17 +988,34 @@ with tab_monitor:
                                         "close": _cur, "Trading_Volume": 0,
                                     }])
                                     df_p = pd.concat([df_p, _today_row], ignore_index=True)
-                            new_df_map[h["stock_id"]] = df_p
+                                else:
+                                    # 盤中且 Shioaji + Yahoo 都取不到現價 → 不用昨收冒充現價，
+                                    # 排除本檔並誠實回報（避免把昨天的收盤當今日現價算損益）
+                                    _td_failed_ids.append(str(h["stock_id"]))
+                                    _add_to_map = False
+                            if _add_to_map:
+                                new_df_map[h["stock_id"]] = df_p
                         if not market_closed_mode:
                             time.sleep(0.05)
                     except Exception:
                         pass
                 td_prog.empty()
                 st.session_state["today_pnl_df_map"] = new_df_map
+                st.session_state["today_pnl_failed_ids"] = _td_failed_ids
                 st.session_state["today_pnl_updated_at"] = (
                     time.strftime("%Y-%m-%d %H:%M:%S")
                 )
                 st.rerun()
+
+            _td_failed = st.session_state.get("today_pnl_failed_ids", [])
+            if _td_failed:
+                st.warning(
+                    "⚠️ 以下持股**盤中無法取得現價**（Shioaji 與 Yahoo 皆失敗），"
+                    "已**排除**於本日損益，不以昨日收盤冒充現價："
+                    + "、".join(_td_failed[:15])
+                    + (" …" if len(_td_failed) > 15 else "")
+                    + "。請稍後再按「更新現價」重試。"
+                )
 
             today_df_map = st.session_state.get("today_pnl_df_map", {})
             if today_df_map:
