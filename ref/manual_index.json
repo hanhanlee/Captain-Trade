@@ -1,11 +1,11 @@
 {
   "document": {
     "title": "台股交易輔助工具 — 完整使用說明手冊",
-    "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-    "version": "3.1",
-    "last_updated": "2026-05-01",
-    "total_lines": 3182,
-    "chapter_count": 24
+    "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+    "version": "3.2",
+    "last_updated": "2026-05-11",
+    "total_lines": 3622,
+    "chapter_count": 27
   },
   "usage_hint": [
     "先讀這份 index，確認要看的章節標題與行號。",
@@ -19,2083 +19,2436 @@
       "anchor": "台股交易輔助工具-—-完整使用說明手冊",
       "start_line": 1,
       "end_line": 9,
-      "preview": "**版本：** 3.1　　**最後更新：** 2026-05-01",
+      "preview": "**版本：** 3.2　　**最後更新：** 2026-05-11",
       "line_span": 9,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "目錄",
       "anchor": "目錄",
       "start_line": 10,
-      "end_line": 50,
+      "end_line": 53,
       "preview": "**第一部分：認識這套工具**",
-      "line_span": 41,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "line_span": 44,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "第一部分：認識這套工具",
       "anchor": "第一部分認識這套工具",
-      "start_line": 51,
-      "end_line": 239,
+      "start_line": 54,
+      "end_line": 242,
       "preview": "**這套工具是「輔助決策系統」，不是自動下單機器人。**",
       "line_span": 189,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第一章：這套工具能幫你做什麼",
       "anchor": "第一章這套工具能幫你做什麼",
-      "start_line": 55,
-      "end_line": 74,
+      "start_line": 58,
+      "end_line": 77,
       "preview": "**這套工具是「輔助決策系統」，不是自動下單機器人。**",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\01_第一章這套工具能幫你做什麼.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\01_第一章這套工具能幫你做什麼.md"
     },
     {
       "level": 3,
       "title": "工具定位",
       "anchor": "工具定位",
-      "start_line": 57,
-      "end_line": 62,
+      "start_line": 60,
+      "end_line": 65,
       "preview": "**這套工具是「輔助決策系統」，不是自動下單機器人。**",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "五大核心問題，工具給你答案",
       "anchor": "五大核心問題工具給你答案",
-      "start_line": 63,
-      "end_line": 74,
+      "start_line": 66,
+      "end_line": 77,
       "preview": "| 你的問題 | 工具的回答 | 對應功能 |",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第二章：設計哲學與核心理念",
       "anchor": "第二章設計哲學與核心理念",
-      "start_line": 75,
-      "end_line": 108,
+      "start_line": 78,
+      "end_line": 111,
       "preview": "本工具的設計原則借鑒了以下幾位市場傳奇人物的核心思想：",
       "line_span": 34,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\02_第二章設計哲學與核心理念.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\02_第二章設計哲學與核心理念.md"
     },
     {
       "level": 3,
       "title": "以傳奇操盤手的眼界設計",
       "anchor": "以傳奇操盤手的眼界設計",
-      "start_line": 77,
-      "end_line": 96,
+      "start_line": 80,
+      "end_line": 99,
       "preview": "本工具的設計原則借鑒了以下幾位市場傳奇人物的核心思想：",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "核心設計原則",
       "anchor": "核心設計原則",
-      "start_line": 97,
-      "end_line": 108,
+      "start_line": 100,
+      "end_line": 111,
       "preview": "```",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第三章：系統架構一覽",
       "anchor": "第三章系統架構一覽",
-      "start_line": 109,
-      "end_line": 144,
+      "start_line": 112,
+      "end_line": 147,
       "preview": "```",
       "line_span": 36,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\03_第三章系統架構一覽.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\03_第三章系統架構一覽.md"
     },
     {
       "level": 3,
       "title": "五個模組的關係",
       "anchor": "五個模組的關係",
-      "start_line": 111,
-      "end_line": 128,
+      "start_line": 114,
+      "end_line": 131,
       "preview": "```",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "技術架構（給想了解細節的人）",
       "anchor": "技術架構給想了解細節的人",
-      "start_line": 129,
-      "end_line": 144,
+      "start_line": 132,
+      "end_line": 147,
       "preview": "| 元件 | 技術 | 說明 |",
       "line_span": 16,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第四章：如何啟動工具",
       "anchor": "第四章如何啟動工具",
-      "start_line": 145,
-      "end_line": 239,
+      "start_line": 148,
+      "end_line": 242,
       "preview": "新版提供 `srock` 命令列管理工具，用來統一啟動本機 Dashboard、Basic Auth 反向代理與 Tailscale Funnel。第一次使用若系統還找不到 `srock` 指令，請先在專案資料夾執行一次：",
       "line_span": 95,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\04_第四章如何啟動工具.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\04_第四章如何啟動工具.md"
     },
     {
       "level": 3,
       "title": "建議啟動方式：Srock CLI",
       "anchor": "建議啟動方式srock-cli",
-      "start_line": 147,
-      "end_line": 172,
+      "start_line": 150,
+      "end_line": 175,
       "preview": "新版提供 `srock` 命令列管理工具，用來統一啟動本機 Dashboard、Basic Auth 反向代理與 Tailscale Funnel。第一次使用若系統還找不到 `srock` 指令，請先在專案資料夾執行一次：",
       "line_span": 26,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "服務啟動完成通知",
       "anchor": "服務啟動完成通知",
-      "start_line": 173,
-      "end_line": 182,
+      "start_line": 176,
+      "end_line": 185,
       "preview": "使用 `srock up` 或 `srock restart` 啟動服務時，系統會等 Streamlit、Auth Proxy 與 Cloudflare Tunnel 依照 profile 啟動完成後，推播一則 LINE 訊息給所有啟用中的",
       "line_span": 10,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Basic Auth 帳號管理",
       "anchor": "basic-auth-帳號管理",
-      "start_line": 183,
-      "end_line": 202,
+      "start_line": 186,
+      "end_line": 205,
       "preview": "若要開啟受保護入口，請先建立至少一組帳密：",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "傳統啟動 Dashboard（仍可使用）",
       "anchor": "傳統啟動-dashboard仍可使用",
-      "start_line": 203,
-      "end_line": 215,
+      "start_line": 206,
+      "end_line": 218,
       "preview": "打開黑色視窗（搜尋「命令提示字元」或「PowerShell」）",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "啟動 LINE 自動推播（盤後任務）",
       "anchor": "啟動-line-自動推播盤後任務",
-      "start_line": 216,
-      "end_line": 227,
+      "start_line": 219,
+      "end_line": 230,
       "preview": "另開一個黑色視窗，輸入：",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "自動推播時間表",
       "anchor": "自動推播時間表",
-      "start_line": 228,
-      "end_line": 239,
+      "start_line": 231,
+      "end_line": 242,
       "preview": "| 時間 | 推播內容 |",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "第二部分：技術分析理論基礎",
       "anchor": "第二部分技術分析理論基礎",
-      "start_line": 240,
-      "end_line": 536,
+      "start_line": 243,
+      "end_line": 539,
       "preview": "技術分析是一種透過**研究過去的價格和成交量**，來預測未來價格走勢的方法。",
       "line_span": 297,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第五章：什麼是技術分析",
       "anchor": "第五章什麼是技術分析",
-      "start_line": 244,
-      "end_line": 274,
+      "start_line": 247,
+      "end_line": 277,
       "preview": "技術分析是一種透過**研究過去的價格和成交量**，來預測未來價格走勢的方法。",
       "line_span": 31,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\05_第五章什麼是技術分析.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\05_第五章什麼是技術分析.md"
     },
     {
       "level": 3,
       "title": "基本定義",
       "anchor": "基本定義",
-      "start_line": 246,
-      "end_line": 260,
+      "start_line": 249,
+      "end_line": 263,
       "preview": "技術分析是一種透過**研究過去的價格和成交量**，來預測未來價格走勢的方法。",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "技術分析 vs. 基本分析",
       "anchor": "技術分析-vs-基本分析",
-      "start_line": 261,
-      "end_line": 274,
+      "start_line": 264,
+      "end_line": 277,
       "preview": "| 面向 | 技術分析 | 基本分析 |",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第六章：各指標的學術根據與可靠性",
       "anchor": "第六章各指標的學術根據與可靠性",
-      "start_line": 275,
-      "end_line": 462,
+      "start_line": 278,
+      "end_line": 465,
       "preview": "以下逐一說明本工具使用的每個指標，包含它的理論來源和實際可靠程度。",
       "line_span": 188,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\06_第六章各指標的學術根據與可靠性.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\06_第六章各指標的學術根據與可靠性.md"
     },
     {
       "level": 3,
       "title": "指標一：移動平均線（Moving Average，MA）",
       "anchor": "指標一移動平均線moving-averagema",
-      "start_line": 281,
-      "end_line": 307,
+      "start_line": 284,
+      "end_line": 310,
       "preview": "**發明背景**",
       "line_span": 27,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "指標二：成交量（Volume）",
       "anchor": "指標二成交量volume",
-      "start_line": 308,
-      "end_line": 339,
+      "start_line": 311,
+      "end_line": 342,
       "preview": "**原理**",
       "line_span": 32,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "指標三：MACD（指數平滑移動平均線）",
       "anchor": "指標三macd指數平滑移動平均線",
-      "start_line": 340,
-      "end_line": 380,
+      "start_line": 343,
+      "end_line": 383,
       "preview": "**發明背景**",
       "line_span": 41,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "指標四：RSI（相對強弱指數）",
       "anchor": "指標四rsi相對強弱指數",
-      "start_line": 381,
-      "end_line": 415,
+      "start_line": 384,
+      "end_line": 418,
       "preview": "**發明背景**",
       "line_span": 35,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "指標五：布林通道（Bollinger Bands）",
       "anchor": "指標五布林通道bollinger-bands",
-      "start_line": 416,
-      "end_line": 444,
+      "start_line": 419,
+      "end_line": 447,
       "preview": "**發明背景**",
       "line_span": 29,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "籌碼面加分：法人買超與融資動向",
       "anchor": "籌碼面加分法人買超與融資動向",
-      "start_line": 445,
-      "end_line": 462,
+      "start_line": 448,
+      "end_line": 465,
       "preview": "**法人買超（外資、投信）**",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第七章：技術分析的限制：誠實的評估",
       "anchor": "第七章技術分析的限制誠實的評估",
-      "start_line": 463,
-      "end_line": 536,
+      "start_line": 466,
+      "end_line": 539,
       "preview": "**可靠，但只在特定條件下有優勢，而且優勢是機率性的，不是確定性的。**",
       "line_span": 74,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\07_第七章技術分析的限制誠實的評估.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\07_第七章技術分析的限制誠實的評估.md"
     },
     {
       "level": 3,
       "title": "這套策略可靠嗎？完整的答案",
       "anchor": "這套策略可靠嗎完整的答案",
-      "start_line": 465,
-      "end_line": 470,
+      "start_line": 468,
+      "end_line": 473,
       "preview": "**可靠，但只在特定條件下有優勢，而且優勢是機率性的，不是確定性的。**",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "支持技術分析的學術證據",
       "anchor": "支持技術分析的學術證據",
-      "start_line": 471,
-      "end_line": 481,
+      "start_line": 474,
+      "end_line": 484,
       "preview": "| 研究 | 發表期刊 | 結論 |",
       "line_span": 11,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "反對技術分析的論點",
       "anchor": "反對技術分析的論點",
-      "start_line": 482,
-      "end_line": 508,
+      "start_line": 485,
+      "end_line": 511,
       "preview": "**1. 效率市場假說（Efficient Market Hypothesis，EMH）**",
       "line_span": 27,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "正確認識這套工具的能力邊界",
       "anchor": "正確認識這套工具的能力邊界",
-      "start_line": 509,
-      "end_line": 523,
+      "start_line": 512,
+      "end_line": 526,
       "preview": "**一個誠實的比喻：**",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "各指標可靠性總結",
       "anchor": "各指標可靠性總結",
-      "start_line": 524,
-      "end_line": 536,
+      "start_line": 527,
+      "end_line": 539,
       "preview": "| 指標 | 學術支持 | 實務穩定性 | 最佳使用情境 | 最差使用情境 |",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "第三部分：五大功能模組詳解",
       "anchor": "第三部分五大功能模組詳解",
-      "start_line": 537,
-      "end_line": 1725,
+      "start_line": 540,
+      "end_line": 1728,
       "preview": "每天掃描台股市場（可選 20 / 100 / 全市場檔），依技術分析條件篩選出符合標準的股票，依強度分數排名輸出。",
       "line_span": 1189,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第八章：選股雷達 — 找值得買的股票",
       "anchor": "第八章選股雷達-—-找值得買的股票",
-      "start_line": 541,
-      "end_line": 982,
+      "start_line": 544,
+      "end_line": 985,
       "preview": "每天掃描台股市場（可選 20 / 100 / 全市場檔），依技術分析條件篩選出符合標準的股票，依強度分數排名輸出。",
       "line_span": 442,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\08_第八章選股雷達-_-找值得買的股票.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\08_第八章選股雷達-_-找值得買的股票.md"
     },
     {
       "level": 3,
       "title": "功能說明",
       "anchor": "功能說明",
-      "start_line": 543,
-      "end_line": 546,
+      "start_line": 546,
+      "end_line": 549,
       "preview": "每天掃描台股市場（可選 20 / 100 / 全市場檔），依技術分析條件篩選出符合標準的股票，依強度分數排名輸出。",
       "line_span": 4,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "掃描範圍選擇建議",
       "anchor": "掃描範圍選擇建議",
-      "start_line": 547,
-      "end_line": 560,
+      "start_line": 550,
+      "end_line": 563,
       "preview": "| 選項 | 股票數量 | 所需時間 | 建議使用時機 |",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "掃描模式與歷史回放",
       "anchor": "掃描模式與歷史回放",
-      "start_line": 561,
-      "end_line": 586,
+      "start_line": 564,
+      "end_line": 589,
       "preview": "新版 Sidebar 多了四個實用功能：",
       "line_span": 26,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "v4 規則總覽",
       "anchor": "v4-規則總覽",
-      "start_line": 587,
-      "end_line": 626,
+      "start_line": 590,
+      "end_line": 629,
       "preview": "目前選股雷達使用的是 **v4 領先攻擊版**。核心思想不再是「已經走很久的強勢股」，而是找出：",
       "line_span": 40,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "v3 / v4 策略差異",
       "anchor": "v3-v4-策略差異",
-      "start_line": 627,
-      "end_line": 645,
+      "start_line": 630,
+      "end_line": 648,
       "preview": "選股雷達可以在 Sidebar 切換 **v4 領先攻擊版**與 **v3 均線突破版**。兩者不是同一套策略：",
       "line_span": 19,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "補充條件與開關",
       "anchor": "補充條件與開關",
-      "start_line": 646,
-      "end_line": 662,
+      "start_line": 649,
+      "end_line": 665,
       "preview": "這些條件不是 v4 核心必要條件，但會影響排序或前置過濾：",
       "line_span": 17,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "過熱股防護機制（ATR 動態門檻）",
       "anchor": "過熱股防護機制atr-動態門檻",
-      "start_line": 663,
-      "end_line": 685,
+      "start_line": 666,
+      "end_line": 688,
       "preview": "選股雷達雖然找啟動股，但仍會防止追得太高。新版改用 **ATR 動態門檻**，取代舊版固定的月線乖離率（%）：",
       "line_span": 23,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "法人新動向篩選（進階選項）",
       "anchor": "法人新動向篩選進階選項",
-      "start_line": 686,
-      "end_line": 701,
+      "start_line": 689,
+      "end_line": 704,
       "preview": "在 Sidebar「🔬 進階選項」裡，有三個額外的法人訊號篩選 checkbox：",
       "line_span": 16,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "分數怎麼看",
       "anchor": "分數怎麼看",
-      "start_line": 702,
-      "end_line": 713,
+      "start_line": 705,
+      "end_line": 716,
       "preview": "| 強度分數 | 解讀 |",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "結果欄位說明",
       "anchor": "結果欄位說明",
-      "start_line": 714,
-      "end_line": 728,
+      "start_line": 717,
+      "end_line": 731,
       "preview": "| 欄位 | 意思 |",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "產業族群分析（第二個頁籤）",
       "anchor": "產業族群分析第二個頁籤",
-      "start_line": 729,
-      "end_line": 752,
+      "start_line": 732,
+      "end_line": 755,
       "preview": "除了個股排行榜，選股雷達還提供「產業族群分析」功能，幫你看懂資金流向。",
       "line_span": 24,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "流動性前置過濾（掃描前先縮小範圍）",
       "anchor": "流動性前置過濾掃描前先縮小範圍",
-      "start_line": 753,
-      "end_line": 766,
+      "start_line": 756,
+      "end_line": 769,
       "preview": "在開始掃描前，可以先用流動性條件過濾股票宇宙，聚焦真正值得關注的標的：",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "產業輪動過濾（只掃最強族群）",
       "anchor": "產業輪動過濾只掃最強族群",
-      "start_line": 767,
-      "end_line": 793,
+      "start_line": 770,
+      "end_line": 796,
       "preview": "在流動性過濾之上，還可以再加一層「產業輪動過濾」：",
       "line_span": 27,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "掃描歷史紀錄（第四個頁籤）",
       "anchor": "掃描歷史紀錄第四個頁籤",
-      "start_line": 794,
-      "end_line": 817,
+      "start_line": 797,
+      "end_line": 820,
       "preview": "每次掃描完成後，系統會自動將結果儲存到本機資料庫。在「歷史紀錄」頁籤中可以：",
       "line_span": 24,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "篩選漏斗（🔬 第二個頁籤）",
       "anchor": "篩選漏斗🔬-第二個頁籤",
-      "start_line": 818,
-      "end_line": 837,
+      "start_line": 821,
+      "end_line": 840,
       "preview": "掃描完成後，「篩選漏斗」頁籤會顯示每個條件在篩選過程中排除了多少股票，讓你清楚看到條件的嚴格程度。",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "基本面過濾（財報品質篩選）",
       "anchor": "基本面過濾財報品質篩選",
-      "start_line": 838,
-      "end_line": 854,
+      "start_line": 841,
+      "end_line": 857,
       "preview": "在 Sidebar 的「基本面過濾」區塊，可以選擇啟用財報條件，在技術篩選之前先排除虧損股與財務地雷。",
       "line_span": 17,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "族群集體突破偵測（🔥 新功能）",
       "anchor": "族群集體突破偵測🔥-新功能",
-      "start_line": 855,
-      "end_line": 899,
+      "start_line": 858,
+      "end_line": 902,
       "preview": "在 Sidebar「族群集體突破偵測」區塊可啟用兩個進階的族群動量指標，掃描後在「產業族群」頁籤的最底部顯示結果。",
       "line_span": 45,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "籌碼面條件：法人買超（可自訂模式）",
       "anchor": "籌碼面條件法人買超可自訂模式",
-      "start_line": 900,
-      "end_line": 940,
+      "start_line": 903,
+      "end_line": 943,
       "preview": "三大法人條件現在支援兩種模式，在 Sidebar 的「納入三大法人買賣超」區塊操作：",
       "line_span": 41,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "掃描前法人資料確認 Dialog",
       "anchor": "掃描前法人資料確認-dialog",
-      "start_line": 941,
-      "end_line": 958,
+      "start_line": 944,
+      "end_line": 961,
       "preview": "當你啟用了法人條件（必要條件或加分條件），並且執行**今日掃描**（非歷史回放）時，系統會先確認法人資料的完整程度。若 FinMind 今日尚未充分發布法人資料，頁面會彈出確認對話框。",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "正確使用選股雷達的步驟",
       "anchor": "正確使用選股雷達的步驟",
-      "start_line": 959,
-      "end_line": 982,
+      "start_line": 962,
+      "end_line": 985,
       "preview": "```",
       "line_span": 24,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第九章：持股監控 — 管理手上的股票",
       "anchor": "第九章持股監控-—-管理手上的股票",
-      "start_line": 983,
-      "end_line": 1237,
+      "start_line": 986,
+      "end_line": 1240,
       "preview": "輸入你持有的股票，系統自動計算損益狀態，並在出現 5 種危險訊號時即時發出警示，可推播到 LINE。",
       "line_span": 255,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\09_第九章持股監控-_-管理手上的股票.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\09_第九章持股監控-_-管理手上的股票.md"
     },
     {
       "level": 3,
       "title": "功能說明",
       "anchor": "功能說明",
-      "start_line": 985,
-      "end_line": 988,
+      "start_line": 988,
+      "end_line": 991,
       "preview": "輸入你持有的股票，系統自動計算損益狀態，並在出現 5 種危險訊號時即時發出警示，可推播到 LINE。",
       "line_span": 4,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "如何新增持股",
       "anchor": "如何新增持股",
-      "start_line": 989,
-      "end_line": 1006,
+      "start_line": 992,
+      "end_line": 1009,
       "preview": "進入「管理持股」頁籤，填入以下資料：",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "持股圖表與布林帶寬",
       "anchor": "持股圖表與布林帶寬",
-      "start_line": 1007,
-      "end_line": 1026,
+      "start_line": 1010,
+      "end_line": 1029,
       "preview": "持股監控的個股圖表現在會同時畫出：",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "持股資料可直接在網頁編輯",
       "anchor": "持股資料可直接在網頁編輯",
-      "start_line": 1027,
-      "end_line": 1042,
+      "start_line": 1030,
+      "end_line": 1045,
       "preview": "在「管理持股」頁籤中，現在可以直接在表格中批次修改現有資料：",
       "line_span": 16,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "持股資料匯出 / 匯入",
       "anchor": "持股資料匯出-匯入",
-      "start_line": 1043,
-      "end_line": 1082,
+      "start_line": 1046,
+      "end_line": 1085,
       "preview": "「管理持股」頁籤新增了 CSV 匯出與匯入功能。",
       "line_span": 40,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "停損價如何設定？",
       "anchor": "停損價如何設定",
-      "start_line": 1083,
-      "end_line": 1103,
+      "start_line": 1086,
+      "end_line": 1106,
       "preview": "這是最重要的欄位。以下是幾種常見的設定方法：",
       "line_span": 21,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "五種警示規則完整說明",
       "anchor": "五種警示規則完整說明",
-      "start_line": 1104,
-      "end_line": 1165,
+      "start_line": 1107,
+      "end_line": 1168,
       "preview": "**危險一：跌破停損價**",
       "line_span": 62,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Premium 風險警示（Sponsor 試用）",
       "anchor": "premium-風險警示sponsor-試用",
-      "start_line": 1166,
-      "end_line": 1185,
+      "start_line": 1169,
+      "end_line": 1188,
       "preview": "若啟用 FinMind Sponsor / Premium 功能，持股監控會在既有停損、停利、均線、回撤與布林警示之外，額外讀取本機快取中的 Premium 風險訊號。這些警示不會批次呼叫 Premium API，只使用已經存在的 cach",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "持股統計指標說明",
       "anchor": "持股統計指標說明",
-      "start_line": 1186,
-      "end_line": 1197,
+      "start_line": 1189,
+      "end_line": 1200,
       "preview": "| 指標 | 計算公式 | 說明 |",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "週報：籌碼面背離偵測",
       "anchor": "週報籌碼面背離偵測",
-      "start_line": 1198,
-      "end_line": 1237,
+      "start_line": 1201,
+      "end_line": 1240,
       "preview": "「📆 週報」頁籤以每週為單位，比對大戶（>1000張）與散戶（≤50張）的持股比例變化，搭配該週股價漲跌，偵測兩種籌碼異常型態。",
       "line_span": 40,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十章：風險控制 — 每次應該買幾張",
       "anchor": "第十章風險控制-—-每次應該買幾張",
-      "start_line": 1238,
-      "end_line": 1565,
+      "start_line": 1241,
+      "end_line": 1568,
       "preview": "「很多投資人失敗，不是因為選錯股，而是押注太大。一筆重押的虧損，足以把好幾筆獲利全部抵銷。」",
       "line_span": 328,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\10_第十章風險控制-_-每次應該買幾張.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\10_第十章風險控制-_-每次應該買幾張.md"
     },
     {
       "level": 3,
       "title": "為什麼需要科學計算部位大小",
       "anchor": "為什麼需要科學計算部位大小",
-      "start_line": 1240,
-      "end_line": 1253,
+      "start_line": 1243,
+      "end_line": 1256,
       "preview": "「很多投資人失敗，不是因為選錯股，而是押注太大。一筆重押的虧損，足以把好幾筆獲利全部抵銷。」",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "計算方法一：固定風險法（日常使用首選）",
       "anchor": "計算方法一固定風險法日常使用首選",
-      "start_line": 1254,
-      "end_line": 1296,
+      "start_line": 1257,
+      "end_line": 1299,
       "preview": "**核心原則：每筆交易，最多虧損帳戶總資金的 2%。**",
       "line_span": 43,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "計算方法二：Kelly Criterion（有歷史記錄後使用）",
       "anchor": "計算方法二kelly-criterion有歷史記錄後使用",
-      "start_line": 1297,
-      "end_line": 1340,
+      "start_line": 1300,
+      "end_line": 1343,
       "preview": "Kelly 公式由數學家 John Larry Kelly Jr. 於 1956 年發表，最初用於電話訊號的傳輸，後來被賭博界和投資界廣泛採用。",
       "line_span": 44,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "計算方法三：ATR 正金字塔加碼計畫（趨勢持續時使用）",
       "anchor": "計算方法三atr-正金字塔加碼計畫趨勢持續時使用",
-      "start_line": 1341,
-      "end_line": 1408,
+      "start_line": 1344,
+      "end_line": 1411,
       "preview": "很多人加碼的方式是錯的：股價一跌就想攤平，股價一漲又一次重壓。這樣做會讓風險越來越失控。",
       "line_span": 68,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "報酬風險比（R:R）— 每次進場前的必算指標",
       "anchor": "報酬風險比rr—-每次進場前的必算指標",
-      "start_line": 1409,
-      "end_line": 1445,
+      "start_line": 1412,
+      "end_line": 1448,
       "preview": "**公式：**",
       "line_span": 37,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "方法三：ATR 移動停利（持倉中使用）",
       "anchor": "方法三atr-移動停利持倉中使用",
-      "start_line": 1446,
-      "end_line": 1499,
+      "start_line": 1449,
+      "end_line": 1502,
       "preview": "**從「固定停利」進化到「動態停利」**",
       "line_span": 54,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "帳戶整體曝險監控",
       "anchor": "帳戶整體曝險監控",
-      "start_line": 1500,
-      "end_line": 1512,
+      "start_line": 1503,
+      "end_line": 1515,
       "preview": "除了單筆交易的風險，系統也監控你整個帳戶的健康狀況：",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "產業集中度曝險（進階風控）",
       "anchor": "產業集中度曝險進階風控",
-      "start_line": 1513,
-      "end_line": 1565,
+      "start_line": 1516,
+      "end_line": 1568,
       "preview": "**為什麼單看「每筆 2% 風險」還不夠？**",
       "line_span": 53,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十一章：市場環境 — 積極還是保守",
       "anchor": "第十一章市場環境-—-積極還是保守",
-      "start_line": 1566,
-      "end_line": 1629,
+      "start_line": 1569,
+      "end_line": 1632,
       "preview": "個股再好，在空頭環境下也容易被大盤拖累。研究顯示，在多頭環境中，約 70% 的股票會跟著上漲；在空頭環境中，約 70% 的股票會跟著下跌。",
       "line_span": 64,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\11_第十一章市場環境-_-積極還是保守.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\11_第十一章市場環境-_-積極還是保守.md"
     },
     {
       "level": 3,
       "title": "為什麼要先看大盤",
       "anchor": "為什麼要先看大盤",
-      "start_line": 1568,
-      "end_line": 1573,
+      "start_line": 1571,
+      "end_line": 1576,
       "preview": "個股再好，在空頭環境下也容易被大盤拖累。研究顯示，在多頭環境中，約 70% 的股票會跟著上漲；在空頭環境中，約 70% 的股票會跟著下跌。",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "三個判斷訊號",
       "anchor": "三個判斷訊號",
-      "start_line": 1574,
-      "end_line": 1581,
+      "start_line": 1577,
+      "end_line": 1584,
       "preview": "| 訊號 | 判斷條件 | 代表意義 |",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "四種環境與對應策略",
       "anchor": "四種環境與對應策略",
-      "start_line": 1582,
-      "end_line": 1623,
+      "start_line": 1585,
+      "end_line": 1626,
       "preview": "**🟢 多頭（3 個訊號都滿足）**",
       "line_span": 42,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "一個重要提醒",
       "anchor": "一個重要提醒",
-      "start_line": 1624,
-      "end_line": 1629,
+      "start_line": 1627,
+      "end_line": 1632,
       "preview": "市場環境判斷是大方向的參考，不是 100% 精準的預測。偶爾會出現大盤空頭但個股強勢的情況，或大盤多頭但個股弱勢的情況。環境判斷是機率的考量，不是鐵律。",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十二章：交易日誌 — 記錄與學習",
       "anchor": "第十二章交易日誌-—-記錄與學習",
-      "start_line": 1630,
-      "end_line": 1725,
+      "start_line": 1633,
+      "end_line": 1728,
       "preview": "傳奇操盤手 Paul Tudor Jones 說：「不分析自己的交易，等於在黑暗中射箭。」",
       "line_span": 96,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\12_第十二章交易日誌-_-記錄與學習.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\12_第十二章交易日誌-_-記錄與學習.md"
     },
     {
       "level": 3,
       "title": "為什麼記錄比選股更重要",
       "anchor": "為什麼記錄比選股更重要",
-      "start_line": 1632,
-      "end_line": 1640,
+      "start_line": 1635,
+      "end_line": 1643,
       "preview": "傳奇操盤手 Paul Tudor Jones 說：「不分析自己的交易，等於在黑暗中射箭。」",
       "line_span": 9,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "每筆交易需要記錄的內容",
       "anchor": "每筆交易需要記錄的內容",
-      "start_line": 1641,
-      "end_line": 1653,
+      "start_line": 1644,
+      "end_line": 1656,
       "preview": "| 欄位 | 必填 | 說明 |",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "買賣交易會自動同步到持股監控",
       "anchor": "買賣交易會自動同步到持股監控",
-      "start_line": 1654,
-      "end_line": 1666,
+      "start_line": 1657,
+      "end_line": 1669,
       "preview": "新增交易日誌時，系統會自動同步「持股監控」：",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "情緒標記的選項與意義",
       "anchor": "情緒標記的選項與意義",
-      "start_line": 1667,
-      "end_line": 1680,
+      "start_line": 1670,
+      "end_line": 1683,
       "preview": "| 情緒 | 描述 | 常見的錯誤 |",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "三個核心績效指標",
       "anchor": "三個核心績效指標",
-      "start_line": 1681,
-      "end_line": 1725,
+      "start_line": 1684,
+      "end_line": 1728,
       "preview": "**指標一：勝率**",
       "line_span": 45,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "第四部分：日常使用指南",
       "anchor": "第四部分日常使用指南",
-      "start_line": 1726,
-      "end_line": 2516,
+      "start_line": 1729,
+      "end_line": 2533,
       "preview": "| 時間 | 推播內容 | 觸發條件 |",
-      "line_span": 791,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "line_span": 805,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十三章：LINE 自動推播設定",
       "anchor": "第十三章line-自動推播設定",
-      "start_line": 1730,
-      "end_line": 1823,
+      "start_line": 1733,
+      "end_line": 1840,
       "preview": "| 時間 | 推播內容 | 觸發條件 |",
-      "line_span": 94,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\13_第十三章line-自動推播設定.md"
+      "line_span": 108,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\13_第十三章line-自動推播設定.md"
     },
     {
       "level": 3,
       "title": "推播種類與時間",
       "anchor": "推播種類與時間",
-      "start_line": 1732,
-      "end_line": 1742,
+      "start_line": 1735,
+      "end_line": 1745,
       "preview": "| 時間 | 推播內容 | 觸發條件 |",
       "line_span": 11,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "國定假日自動跳過（交易日守門）",
       "anchor": "國定假日自動跳過交易日守門",
-      "start_line": 1743,
-      "end_line": 1759,
+      "start_line": 1746,
+      "end_line": 1762,
       "preview": "排程器除了 cron 的「週一至週五」過濾外，**所有與盤勢有關的任務都會在每次觸發時再查一次台股官方交易日曆**。落在週一到週五但休市的國定假日（例如勞動節 5/1、農曆春節、國慶連假等），這些任務會直接 return 不執行，避免推送異",
       "line_span": 17,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "ETF 持股資料完整性（避免某次 miss 導致整天斷層）",
+      "anchor": "etf-持股資料完整性避免某次-miss-導致整天斷層",
+      "start_line": 1763,
+      "end_line": 1776,
+      "preview": "ETF 持股快照採 **三層冗餘設計**，即使機器某段時間沒開或抓取失敗，也不會永久缺一天：",
+      "line_span": 14,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "推播格式範例",
       "anchor": "推播格式範例",
-      "start_line": 1760,
-      "end_line": 1789,
+      "start_line": 1777,
+      "end_line": 1806,
       "preview": "**選股雷達推播：**",
       "line_span": 30,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "手動觸發推播",
       "anchor": "手動觸發推播",
-      "start_line": 1790,
-      "end_line": 1793,
+      "start_line": 1807,
+      "end_line": 1810,
       "preview": "如果不想等自動時間，可以在「市場環境」頁面的「排程控制」頁籤，隨時手動觸發任何推播任務。",
       "line_span": 4,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "訂閱者管理（新版）",
       "anchor": "訂閱者管理新版",
-      "start_line": 1794,
-      "end_line": 1809,
+      "start_line": 1811,
+      "end_line": 1826,
       "preview": "現在推播不再只綁定單一 `LINE_USER_ID`。系統改成：",
       "line_span": 16,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Webhook 自動訂閱",
       "anchor": "webhook-自動訂閱",
-      "start_line": 1810,
-      "end_line": 1823,
+      "start_line": 1827,
+      "end_line": 1840,
       "preview": "如果你有啟動 `webhook.py` 並在 LINE Developers Console 設定 Webhook URL，使用者可以透過 Bot 自動加入或暫停群播：",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十四章：每日標準操作流程",
       "anchor": "第十四章每日標準操作流程",
-      "start_line": 1824,
-      "end_line": 1880,
+      "start_line": 1841,
+      "end_line": 1897,
       "preview": "```",
       "line_span": 57,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\14_第十四章每日標準操作流程.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\14_第十四章每日標準操作流程.md"
     },
     {
       "level": 3,
       "title": "開盤前（早上 9:00 前）",
       "anchor": "開盤前早上-900-前",
-      "start_line": 1826,
-      "end_line": 1840,
+      "start_line": 1843,
+      "end_line": 1857,
       "preview": "```",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "盤中（上午 9:00 — 下午 1:30）",
       "anchor": "盤中上午-900-—-下午-130",
-      "start_line": 1841,
-      "end_line": 1848,
+      "start_line": 1858,
+      "end_line": 1865,
       "preview": "```",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "收盤後（下午 2:30 — 4:00）",
       "anchor": "收盤後下午-230-—-400",
-      "start_line": 1849,
-      "end_line": 1866,
+      "start_line": 1866,
+      "end_line": 1883,
       "preview": "```",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "每週五收盤後（特別流程）",
       "anchor": "每週五收盤後特別流程",
-      "start_line": 1867,
-      "end_line": 1880,
+      "start_line": 1884,
+      "end_line": 1897,
       "preview": "```",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十五章：五大交易紀律",
       "anchor": "第十五章五大交易紀律",
-      "start_line": 1881,
-      "end_line": 1945,
+      "start_line": 1898,
+      "end_line": 1962,
       "preview": "這五條紀律是長期獲利的根基，不是選項，是必須遵守的規則。",
       "line_span": 65,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\15_第十五章五大交易紀律.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\15_第十五章五大交易紀律.md"
     },
     {
       "level": 3,
       "title": "紀律一：嚴格執行停損",
       "anchor": "紀律一嚴格執行停損",
-      "start_line": 1887,
-      "end_line": 1899,
+      "start_line": 1904,
+      "end_line": 1916,
       "preview": "**規則：** 進場前設好停損，到點必須執行，不能找任何理由拖延。",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "紀律二：先看大盤再選股",
       "anchor": "紀律二先看大盤再選股",
-      "start_line": 1900,
-      "end_line": 1907,
+      "start_line": 1917,
+      "end_line": 1924,
       "preview": "**規則：** 開盤前必須先確認市場環境，空頭或偏空環境下不主動建立新倉位。",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "紀律三：部位大小要計算，不要憑感覺",
       "anchor": "紀律三部位大小要計算不要憑感覺",
-      "start_line": 1908,
-      "end_line": 1917,
+      "start_line": 1925,
+      "end_line": 1934,
       "preview": "**規則：** 每次進場前，必須用「風險控制」頁面計算建議張數，不能因為「這次很有把握」就增加張數。",
       "line_span": 10,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "紀律四：虧損時絕對不加碼（不攤平）",
       "anchor": "紀律四虧損時絕對不加碼不攤平",
-      "start_line": 1918,
-      "end_line": 1932,
+      "start_line": 1935,
+      "end_line": 1949,
       "preview": "**規則：** 買進的股票跌了，絕對不能再買更多來「降低成本」。",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "紀律五：不懂的股票不買",
       "anchor": "紀律五不懂的股票不買",
-      "start_line": 1933,
-      "end_line": 1945,
+      "start_line": 1950,
+      "end_line": 1962,
       "preview": "**規則：** 對於買進的每一檔股票，你需要能夠清楚說出：「我買它的理由是____，我的停損在____，我的目標是____。」",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十六章：工具限制與風險提示",
       "anchor": "第十六章工具限制與風險提示",
-      "start_line": 1946,
-      "end_line": 1999,
+      "start_line": 1963,
+      "end_line": 2016,
       "preview": "**1. 大多數策略資料不是即時**",
       "line_span": 54,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\16_第十六章工具限制與風險提示.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\16_第十六章工具限制與風險提示.md"
     },
     {
       "level": 3,
       "title": "技術面的限制",
       "anchor": "技術面的限制",
-      "start_line": 1948,
-      "end_line": 1963,
+      "start_line": 1965,
+      "end_line": 1980,
       "preview": "**1. 大多數策略資料不是即時**",
       "line_span": 16,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "市場面的風險",
       "anchor": "市場面的風險",
-      "start_line": 1964,
-      "end_line": 1987,
+      "start_line": 1981,
+      "end_line": 2004,
       "preview": "**1. 黑天鵝事件**",
       "line_span": 24,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "心理風險（最被低估的風險）",
       "anchor": "心理風險最被低估的風險",
-      "start_line": 1988,
-      "end_line": 1999,
+      "start_line": 2005,
+      "end_line": 2016,
       "preview": "**連續虧損的影響**",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十九章：個股分析 — 逐項檢視單一股票條件",
       "anchor": "第十九章個股分析-—-逐項檢視單一股票條件",
-      "start_line": 2000,
-      "end_line": 2131,
+      "start_line": 2017,
+      "end_line": 2148,
       "preview": "在選股雷達找到候選標的後，進入「9 - 個股分析」可以針對**單一股票**深度確認 v3 / v4 技術條件是否真的達標，以及查看完整的圖表與數值細節。",
       "line_span": 132,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\17_第十九章個股分析-_-逐項檢視單一股票條件.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\17_第十九章個股分析-_-逐項檢視單一股票條件.md"
     },
     {
       "level": 3,
       "title": "功能說明",
       "anchor": "功能說明",
-      "start_line": 2002,
-      "end_line": 2007,
+      "start_line": 2019,
+      "end_line": 2024,
       "preview": "在選股雷達找到候選標的後，進入「9 - 個股分析」可以針對**單一股票**深度確認 v3 / v4 技術條件是否真的達標，以及查看完整的圖表與數值細節。",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "查詢方式",
       "anchor": "查詢方式",
-      "start_line": 2008,
-      "end_line": 2022,
+      "start_line": 2025,
+      "end_line": 2039,
       "preview": "在左側側邊欄輸入股票代號（例如 2330），選擇分析基準日後按「🔎 開始分析」。",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "盤中即時資訊（Sponsor）",
       "anchor": "盤中即時資訊sponsor",
-      "start_line": 2023,
-      "end_line": 2028,
+      "start_line": 2040,
+      "end_line": 2045,
       "preview": "今日模式下，個股分析會顯示「盤中即時資訊」區塊。此區塊使用 FinMind Sponsor 的 `taiwan_stock_tick_snapshot` 即時快照，顯示最新成交價、漲跌、買賣價、累積量、開高低與資料時間。",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "條件評分卡",
       "anchor": "條件評分卡",
-      "start_line": 2029,
-      "end_line": 2069,
+      "start_line": 2046,
+      "end_line": 2086,
       "preview": "頁面左側會依所選策略版本顯示逐項評分。v4 分為「必要條件」與「加分條件」兩組；v3 則用均線突破、量能、MACD/RSI、布林位置與主力連買來確認。",
       "line_span": 41,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "圖表區",
       "anchor": "圖表區",
-      "start_line": 2070,
-      "end_line": 2090,
+      "start_line": 2087,
+      "end_line": 2107,
       "preview": "頁面右側顯示日K線圖，包含：",
       "line_span": 21,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "技術指標數值彙整",
       "anchor": "技術指標數值彙整",
-      "start_line": 2091,
-      "end_line": 2100,
+      "start_line": 2108,
+      "end_line": 2117,
       "preview": "在圖表下方提供一張數值摘要表，列出所有計算中間值：",
       "line_span": 10,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "歷史回溯模式",
       "anchor": "歷史回溯模式",
-      "start_line": 2101,
-      "end_line": 2109,
+      "start_line": 2118,
+      "end_line": 2126,
       "preview": "在左側選擇**過去的日期**，系統會：",
       "line_span": 9,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Premium 摘要區（Sponsor 試用）",
       "anchor": "premium-摘要區sponsor-試用",
-      "start_line": 2110,
-      "end_line": 2121,
+      "start_line": 2127,
+      "end_line": 2138,
       "preview": "若啟用 FinMind Sponsor / Premium 功能，個股分析頁會在技術條件之外顯示 Premium 摘要。這個區塊以本機快取與頁面已載入資料為主，不會為了摘要額外批次呼叫 Premium API。",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "注意事項",
       "anchor": "注意事項",
-      "start_line": 2122,
-      "end_line": 2131,
+      "start_line": 2139,
+      "end_line": 2148,
       "preview": "個股分析的日K與歷史模式讀取**本機快取**，若快取無資料會提示去「資料管理」頁面更新",
       "line_span": 10,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第二十章：FinMind Sponsor Premium 試用功能",
       "anchor": "第二十章finmind-sponsor-premium-試用功能",
-      "start_line": 2132,
-      "end_line": 2215,
+      "start_line": 2149,
+      "end_line": 2232,
       "preview": "Sponsor Premium 功能是這套工具的「增強層」，不是核心策略本身。v3 / v4 的技術條件、掃描流程、持股監控與風控原則都可以在 Free 模式下運作。Premium 資料只用來補強三件事：",
       "line_span": 84,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\18_第二十章finmind-sponsor-premium-試用功能.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\18_第二十章finmind-sponsor-premium-試用功能.md"
     },
     {
       "level": 3,
       "title": "功能定位",
       "anchor": "功能定位",
-      "start_line": 2134,
-      "end_line": 2141,
+      "start_line": 2151,
+      "end_line": 2158,
       "preview": "Sponsor Premium 功能是這套工具的「增強層」，不是核心策略本身。v3 / v4 的技術條件、掃描流程、持股監控與風控原則都可以在 Free 模式下運作。Premium 資料只用來補強三件事：",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "降級原則",
       "anchor": "降級原則",
-      "start_line": 2142,
-      "end_line": 2150,
+      "start_line": 2159,
+      "end_line": 2167,
       "preview": "系統採用「可關閉、可降級、可觀察」的設計：",
       "line_span": 9,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "在各頁面看到什麼",
       "anchor": "在各頁面看到什麼",
-      "start_line": 2151,
-      "end_line": 2159,
+      "start_line": 2168,
+      "end_line": 2176,
       "preview": "| 頁面 | Premium 相關內容 | 是否會額外呼叫 Premium API |",
       "line_span": 9,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "目前資料種類與使用狀態",
       "anchor": "目前資料種類與使用狀態",
-      "start_line": 2160,
-      "end_line": 2179,
+      "start_line": 2177,
+      "end_line": 2196,
       "preview": "| 資料類別 | FinMind dataset | 權限 | 本機快取 / 狀態 | 目前用在哪裡 |",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Known Issues / 後續確認",
       "anchor": "known-issues-後續確認",
-      "start_line": 2180,
-      "end_line": 2186,
+      "start_line": 2197,
+      "end_line": 2203,
       "preview": "`TaiwanStockShareholdingTransfer`（申報轉讓）目前列入管線與顯示，但實際資料來源仍需確認。若個別股票新聞有申報轉讓、FinMind 回傳沒有資料，先不要把它視為程式漏抓。",
       "line_span": 7,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "分數欄位怎麼看",
       "anchor": "分數欄位怎麼看",
-      "start_line": 2187,
-      "end_line": 2202,
+      "start_line": 2204,
+      "end_line": 2219,
       "preview": "選股雷達現在保留原本的 `score` 相容性，同時拆出更清楚的欄位：",
       "line_span": 16,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "試用期評估怎麼用",
       "anchor": "試用期評估怎麼用",
-      "start_line": 2203,
-      "end_line": 2215,
+      "start_line": 2220,
+      "end_line": 2232,
       "preview": "進入「選股雷達 → 歷史紀錄」，上方會看到 Premium 試用期評估。建議用法：",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第二十一章：問題回報 — 回報問題與功能建議",
       "anchor": "第二十一章問題回報-—-回報問題與功能建議",
-      "start_line": 2216,
-      "end_line": 2249,
+      "start_line": 2233,
+      "end_line": 2266,
       "preview": "「問題回報」頁面用來收集使用者遇到的錯誤、操作疑問與功能建議。送出後，系統會把內容存成 Markdown 檔，放在專案根目錄的 `user_reports/` 資料夾，方便後續集中整理與處理。",
       "line_span": 34,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\19_第二十一章問題回報-_-回報問題與功能建議.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\19_第二十一章問題回報-_-回報問題與功能建議.md"
     },
     {
       "level": 3,
       "title": "功能說明",
       "anchor": "功能說明",
-      "start_line": 2218,
-      "end_line": 2221,
+      "start_line": 2235,
+      "end_line": 2238,
       "preview": "「問題回報」頁面用來收集使用者遇到的錯誤、操作疑問與功能建議。送出後，系統會把內容存成 Markdown 檔，放在專案根目錄的 `user_reports/` 資料夾，方便後續集中整理與處理。",
       "line_span": 4,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "問題回報",
       "anchor": "問題回報",
-      "start_line": 2222,
-      "end_line": 2230,
+      "start_line": 2239,
+      "end_line": 2247,
       "preview": "選擇「問題回報」後，需要填寫：",
       "line_span": 9,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "功能新增",
       "anchor": "功能新增",
-      "start_line": 2231,
-      "end_line": 2237,
+      "start_line": 2248,
+      "end_line": 2254,
       "preview": "選擇「功能新增」後，需要填寫：",
       "line_span": 7,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "檔案保存位置",
       "anchor": "檔案保存位置",
-      "start_line": 2238,
-      "end_line": 2249,
+      "start_line": 2255,
+      "end_line": 2266,
       "preview": "每次送出會建立一個獨立 Markdown 檔，檔名包含時間、回報類型與頁面名稱，例如：",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第二十二章：交易計畫 — 進場前的計畫與風控自動審查",
       "anchor": "第二十二章交易計畫-—-進場前的計畫與風控自動審查",
-      "start_line": 2250,
-      "end_line": 2342,
+      "start_line": 2267,
+      "end_line": 2359,
       "preview": "「沒有計畫的進場，是最貴的衝動。」",
       "line_span": 93,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\20_第二十二章交易計畫-_-進場前的計畫與風控自動審查.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\20_第二十二章交易計畫-_-進場前的計畫與風控自動審查.md"
     },
     {
       "level": 3,
       "title": "功能說明",
       "anchor": "功能說明",
-      "start_line": 2254,
-      "end_line": 2261,
+      "start_line": 2271,
+      "end_line": 2278,
       "preview": "「交易計畫」頁面（側邊欄第 4 頁）讓你在**真正下單之前**，先以文字明確記錄這次交易的邏輯，並由系統自動執行 5 條風控規則即時審查。通過後才能送出計畫，系統將計畫放入「待執行清單」；你確認成交後點「執行」，計畫自動寫入**交易日誌**",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "新建交易計畫",
       "anchor": "新建交易計畫",
-      "start_line": 2262,
-      "end_line": 2280,
+      "start_line": 2279,
+      "end_line": 2297,
       "preview": "進入「📋 交易計畫」頁面，選擇「➕ 新建計畫」頁籤，填寫以下欄位：",
       "line_span": 19,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "風控自動檢查（5 條規則）",
       "anchor": "風控自動檢查5-條規則",
-      "start_line": 2281,
-      "end_line": 2298,
+      "start_line": 2298,
+      "end_line": 2315,
       "preview": "填寫過程中，右側「風控自動檢查」區塊即時更新，逐條顯示通過 ✅、警告 ⚠️ 或禁止 🚫 狀態。",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "待執行清單",
       "anchor": "待執行清單",
-      "start_line": 2299,
-      "end_line": 2316,
+      "start_line": 2316,
+      "end_line": 2333,
       "preview": "計畫送出後，進入「⏳ 待執行清單」頁籤。每一條計畫以摺疊卡片顯示：",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "歷史計畫",
       "anchor": "歷史計畫",
-      "start_line": 2317,
-      "end_line": 2322,
+      "start_line": 2334,
+      "end_line": 2339,
       "preview": "「📜 歷史計畫」頁籤顯示所有已執行或已取消的計畫，以表格呈現，包含 RR 比、有無警告（紅色標注）、對應日誌 ID，方便事後複盤。",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "正確使用步驟",
       "anchor": "正確使用步驟",
-      "start_line": 2323,
-      "end_line": 2342,
+      "start_line": 2340,
+      "end_line": 2359,
       "preview": "```",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第二十三章：事件日誌 — 決策時間線與 AI 分析匯出",
       "anchor": "第二十三章事件日誌-—-決策時間線與-ai-分析匯出",
-      "start_line": 2343,
-      "end_line": 2464,
+      "start_line": 2360,
+      "end_line": 2481,
       "preview": "「如果不記錄決策過程，回頭只能看到結果，看不到原因。」",
       "line_span": 122,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\21_第二十三章事件日誌-_-決策時間線與-ai-分析匯出.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\21_第二十三章事件日誌-_-決策時間線與-ai-分析匯出.md"
     },
     {
       "level": 3,
       "title": "什麼是事件日誌",
       "anchor": "什麼是事件日誌",
-      "start_line": 2347,
-      "end_line": 2365,
+      "start_line": 2364,
+      "end_line": 2382,
       "preview": "事件日誌是系統的**黑盒子紀錄器**，自動把以下重要事件記錄下來：",
       "line_span": 19,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "為什麼需要事件日誌",
       "anchor": "為什麼需要事件日誌",
-      "start_line": 2366,
-      "end_line": 2377,
+      "start_line": 2383,
+      "end_line": 2394,
       "preview": "只看交易結果，無法回答：",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "使用事件日誌頁面",
       "anchor": "使用事件日誌頁面",
-      "start_line": 2378,
-      "end_line": 2408,
+      "start_line": 2395,
+      "end_line": 2425,
       "preview": "開啟側邊欄的「📋 事件日誌」頁面（第 11 頁）：",
       "line_span": 31,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "匯出供 AI 分析",
       "anchor": "匯出供-ai-分析",
-      "start_line": 2409,
-      "end_line": 2455,
+      "start_line": 2426,
+      "end_line": 2472,
       "preview": "頁面底部提供三種匯出格式，適合不同用途：",
       "line_span": 47,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "注意事項",
       "anchor": "注意事項",
-      "start_line": 2456,
-      "end_line": 2464,
+      "start_line": 2473,
+      "end_line": 2481,
       "preview": "事件日誌是**附加紀錄**，不影響選股雷達、持股監控、交易日誌等現有功能",
       "line_span": 9,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第二十四章：資料備份與雲端同步",
       "anchor": "第二十四章資料備份與雲端同步",
-      "start_line": 2465,
-      "end_line": 2516,
+      "start_line": 2482,
+      "end_line": 2533,
       "preview": "「資料是比程式碼更難重建的東西。」",
       "line_span": 52,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\22_第二十四章資料備份與雲端同步.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\22_第二十四章資料備份與雲端同步.md"
     },
     {
       "level": 3,
       "title": "為什麼備份很重要",
       "anchor": "為什麼備份很重要",
-      "start_line": 2469,
-      "end_line": 2476,
+      "start_line": 2486,
+      "end_line": 2493,
       "preview": "`srock.db` 是本工具的唯一資料儲存，包含所有持股、交易日誌、快取與設定。",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "備份腳本",
       "anchor": "備份腳本",
-      "start_line": 2477,
-      "end_line": 2490,
+      "start_line": 2494,
+      "end_line": 2507,
       "preview": "```",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "備份流程",
       "anchor": "備份流程",
-      "start_line": 2491,
-      "end_line": 2505,
+      "start_line": 2508,
+      "end_line": 2522,
       "preview": "| 步驟 | 動作 |",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "首次部署注意事項",
       "anchor": "首次部署注意事項",
-      "start_line": 2506,
-      "end_line": 2516,
+      "start_line": 2523,
+      "end_line": 2533,
       "preview": "過去曾嘗試用 Google Cloud 服務帳號（`secrets/gcp_backup.json`），但 Service Account **沒有個人 Drive 配額**，上傳會 403 storageQuotaExceeded。改用 ",
       "line_span": 11,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "n (New remote)",
       "anchor": "n-new-remote",
-      "start_line": 2517,
-      "end_line": 2517,
+      "start_line": 2534,
+      "end_line": 2534,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "name: gdrive               ← 名稱固定，腳本寫死",
       "anchor": "name-gdrive-←-名稱固定腳本寫死",
-      "start_line": 2518,
-      "end_line": 2518,
+      "start_line": 2535,
+      "end_line": 2535,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "storage type: drive",
       "anchor": "storage-type-drive",
-      "start_line": 2519,
-      "end_line": 2519,
+      "start_line": 2536,
+      "end_line": 2536,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "client_id: 留空            ← 用 rclone 預設 OAuth client",
       "anchor": "client_id-留空-←-用-rclone-預設-oauth-client",
-      "start_line": 2520,
-      "end_line": 2520,
+      "start_line": 2537,
+      "end_line": 2537,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "client_secret: 留空",
       "anchor": "client_secret-留空",
-      "start_line": 2521,
-      "end_line": 2521,
+      "start_line": 2538,
+      "end_line": 2538,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "scope: 1 (drive 完整存取)",
       "anchor": "scope-1-drive-完整存取",
-      "start_line": 2522,
-      "end_line": 2522,
+      "start_line": 2539,
+      "end_line": 2539,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "service_account_file: 留空 ← 切換 OAuth 的關鍵",
       "anchor": "service_account_file-留空-←-切換-oauth-的關鍵",
-      "start_line": 2523,
-      "end_line": 2523,
+      "start_line": 2540,
+      "end_line": 2540,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "root_folder_id: 貼個人 Drive 中 srock_backups 資料夾的 ID",
       "anchor": "root_folder_id-貼個人-drive-中-srock_backups-資料夾的-id",
-      "start_line": 2524,
-      "end_line": 2524,
+      "start_line": 2541,
+      "end_line": 2541,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "advanced config: n",
       "anchor": "advanced-config-n",
-      "start_line": 2525,
-      "end_line": 2525,
+      "start_line": 2542,
+      "end_line": 2542,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "auto config: y → 瀏覽器登入個人 Google 帳號",
       "anchor": "auto-config-y-→-瀏覽器登入個人-google-帳號",
-      "start_line": 2526,
-      "end_line": 2526,
+      "start_line": 2543,
+      "end_line": 2543,
       "preview": "",
       "line_span": 1,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "team drive: n",
       "anchor": "team-drive-n",
-      "start_line": 2527,
-      "end_line": 2545,
+      "start_line": 2544,
+      "end_line": 2562,
       "preview": "```",
       "line_span": 19,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": ".env 設定",
       "anchor": "env-設定",
-      "start_line": 2541,
-      "end_line": 2545,
+      "start_line": 2558,
+      "end_line": 2562,
       "preview": "```env",
       "line_span": 5,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "三選一（優先序）",
       "anchor": "三選一優先序",
-      "start_line": 2546,
-      "end_line": 2589,
+      "start_line": 2563,
+      "end_line": 2651,
       "preview": "TELEGRAM_CHAT_ID=           # 備份專用通知頻道（推薦）",
-      "line_span": 44,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "line_span": 89,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "排程時間",
       "anchor": "排程時間",
-      "start_line": 2554,
-      "end_line": 2561,
-      "preview": "備份已整合進 `scheduler/jobs.py`，排程器啟動後**每週一到週五 21:30 自動執行**，無需另外設定。",
-      "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "start_line": 2571,
+      "end_line": 2581,
+      "preview": "備份已整合進 `scheduler/jobs.py`，排程器啟動後**每週一到週五 06:50 自動執行**，無需另外設定。",
+      "line_span": 11,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "資料覆蓋率自動報告",
+      "anchor": "資料覆蓋率自動報告",
+      "start_line": 2582,
+      "end_line": 2601,
+      "preview": "`scheduler/jobs.py` 同樣排了一個 `job_coverage_report`，**週二到週六 06:30** 推播一份簡短覆蓋率到 Telegram，內容是 `srock.db` 三表（股價 / 法人 / 融資）對前一交",
+      "line_span": 20,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "備份期間的併發限制與 UI 警示",
+      "anchor": "備份期間的併發限制與-ui-警示",
+      "start_line": 2602,
+      "end_line": 2622,
+      "preview": "`VACUUM INTO` 會對 `srock.db` 拿 SHARED 鎖：",
+      "line_span": 21,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Telegram 推播通知",
       "anchor": "telegram-推播通知",
-      "start_line": 2562,
-      "end_line": 2586,
+      "start_line": 2623,
+      "end_line": 2648,
       "preview": "| 情況 | 推播內容 |",
-      "line_span": 25,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "line_span": 26,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "緊急還原",
       "anchor": "緊急還原",
-      "start_line": 2587,
-      "end_line": 2589,
+      "start_line": 2649,
+      "end_line": 2651,
       "preview": "```bash",
       "line_span": 3,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "列出備份",
       "anchor": "列出備份",
-      "start_line": 2590,
-      "end_line": 2592,
+      "start_line": 2652,
+      "end_line": 2654,
       "preview": "rclone ls gdrive: --include \"srock_backup_*.db.gz\"",
       "line_span": 3,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "下載並解壓",
       "anchor": "下載並解壓",
-      "start_line": 2593,
-      "end_line": 2596,
+      "start_line": 2655,
+      "end_line": 2658,
       "preview": "rclone copyto \"gdrive:srock_backup_20260427.db.gz\" temp_restore.db.gz",
       "line_span": 4,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "替換（先備份現有）",
       "anchor": "替換先備份現有",
-      "start_line": 2597,
-      "end_line": 2604,
+      "start_line": 2659,
+      "end_line": 3038,
       "preview": "move srock.db srock.db.bak",
+      "line_span": 380,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 2,
+      "title": "第二十五章：盤中 N 字底突破監控",
+      "anchor": "第二十五章盤中-n-字底突破監控",
+      "start_line": 2667,
+      "end_line": 2758,
+      "preview": "針對台股科技類股，每日開盤前自動掃描出所有「已形成 N 字底結構（A→B→C）但尚未突破」的候選股，盤中每分鐘檢查是否突破 B 點，一旦發生立刻推送 Telegram 警示。",
+      "line_span": 92,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\23_第二十五章盤中-n-字底突破監控.md"
+    },
+    {
+      "level": 3,
+      "title": "這個模組在做什麼",
+      "anchor": "這個模組在做什麼",
+      "start_line": 2669,
+      "end_line": 2683,
+      "preview": "針對台股科技類股，每日開盤前自動掃描出所有「已形成 N 字底結構（A→B→C）但尚未突破」的候選股，盤中每分鐘檢查是否突破 B 點，一旦發生立刻推送 Telegram 警示。",
+      "line_span": 15,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "三層 pipeline 架構",
+      "anchor": "三層-pipeline-架構",
+      "start_line": 2684,
+      "end_line": 2691,
+      "preview": "| 階段 | 何時跑 | 做什麼 |",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "Telegram 警示訊息範例",
+      "anchor": "telegram-警示訊息範例",
+      "start_line": 2692,
+      "end_line": 2709,
+      "preview": "```",
+      "line_span": 18,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "設計決策（重要）",
+      "anchor": "設計決策重要",
+      "start_line": 2710,
+      "end_line": 2717,
+      "preview": "**不加防禦緩衝**：嚴格 D > B（無 B × 1.005），避免錯過剛突破第一根；以「⚠ 留意假突破」文字提醒人工判斷誘多。",
+      "line_span": 8,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "actionable 過濾參數",
+      "anchor": "actionable-過濾參數",
+      "start_line": 2718,
+      "end_line": 2729,
+      "preview": "| 參數 | 預設 | 用途 |",
+      "line_span": 12,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "操作流程",
+      "anchor": "操作流程",
+      "start_line": 2730,
+      "end_line": 2742,
+      "preview": "**每日早上：**",
+      "line_span": 13,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "警示歷史與審視",
+      "anchor": "警示歷史與審視",
+      "start_line": 2743,
+      "end_line": 2750,
+      "preview": "頁面下方「突破警示歷史」分頁可查看近 14 天：",
+      "line_span": 8,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "已知限制",
+      "anchor": "已知限制",
+      "start_line": 2751,
+      "end_line": 2758,
+      "preview": "**Shioaji 必須登入才能跑 P2**：使用者帳號或 CA 憑證若未在當日上午登入，整個盤中檢查會安靜略過（Streamlit 頁面狀態會顯示）。",
+      "line_span": 8,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 2,
+      "title": "第二十六章：盤中 V5 狙擊手版突破監控",
+      "anchor": "第二十六章盤中-v5-狙擊手版突破監控",
+      "start_line": 2759,
+      "end_line": 2917,
+      "preview": "V5 狙擊手版是台股科技類股「精準型突破與回檔再上」雙軌選股雷達，盤中以即時報價驗證並推播 Telegram 警示。對應頁面 `pages/14_盤中v5狙擊.py`。",
+      "line_span": 159,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\24_第二十六章盤中-v5-狙擊手版突破監控.md"
+    },
+    {
+      "level": 3,
+      "title": "這個模組在做什麼",
+      "anchor": "這個模組在做什麼",
+      "start_line": 2761,
+      "end_line": 2769,
+      "preview": "V5 狙擊手版是台股科技類股「精準型突破與回檔再上」雙軌選股雷達，盤中以即時報價驗證並推播 Telegram 警示。對應頁面 `pages/14_盤中v5狙擊.py`。",
+      "line_span": 9,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "共同 Gate（A/B 都要過，11 條）",
+      "anchor": "共同-gateab-都要過11-條",
+      "start_line": 2770,
+      "end_line": 2785,
+      "preview": "| # | 條件 | 預設 |",
+      "line_span": 16,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "型態 A 專屬條件（共同 gate 之外）",
+      "anchor": "型態-a-專屬條件共同-gate-之外",
+      "start_line": 2786,
+      "end_line": 2794,
+      "preview": "| 條件 | 公式 | 預設 |",
+      "line_span": 9,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "型態 B 專屬條件（守月線 pullback 模式）",
+      "anchor": "型態-b-專屬條件守月線-pullback-模式",
+      "start_line": 2795,
+      "end_line": 2806,
+      "preview": "| 條件 | 公式 | 預設 |",
+      "line_span": 12,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "雙軌道架構",
+      "anchor": "雙軌道架構",
+      "start_line": 2807,
+      "end_line": 2819,
+      "preview": "V5 狙擊手版盤中採「雙軌並行」設計：",
+      "line_span": 13,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "late qualifier 設計參數",
+      "anchor": "late-qualifier-設計參數",
+      "start_line": 2820,
+      "end_line": 2837,
+      "preview": "| 參數 | 預設 | 用途 |",
+      "line_span": 18,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "Telegram 警示訊息範例",
+      "anchor": "telegram-警示訊息範例",
+      "start_line": 2838,
+      "end_line": 2877,
+      "preview": "**主軌道（morning）：**",
+      "line_span": 40,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "設計決策（重要）",
+      "anchor": "設計決策重要",
+      "start_line": 2878,
+      "end_line": 2886,
+      "preview": "**A 優先於 B**：同時命中兩型態時標記為 A（突破訊號 > 回檔訊號）。",
+      "line_span": 9,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "操作流程",
+      "anchor": "操作流程",
+      "start_line": 2887,
+      "end_line": 2901,
+      "preview": "**每日早上：**",
+      "line_span": 15,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "警示歷史與審視",
+      "anchor": "警示歷史與審視",
+      "start_line": 2902,
+      "end_line": 2908,
+      "preview": "頁面下方「突破警示歷史」分三頁：",
+      "line_span": 7,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "已知限制",
+      "anchor": "已知限制",
+      "start_line": 2909,
+      "end_line": 2917,
+      "preview": "**共同 gate 極嚴**：「今日 0 檔」屬正常空倉；UI 端會明示這是 feature 不是 bug。",
+      "line_span": 9,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 2,
+      "title": "第二十七章：盤中搶 V 型反轉監控",
+      "anchor": "第二十七章盤中搶-v-型反轉監控",
+      "start_line": 2918,
+      "end_line": 3038,
+      "preview": "搶 V 型反轉是**逆勢抄底型**策略：抓「股價急跌到低檔後，出現恐慌爆量 → 止跌 → 過高確認」的由弱轉強結構，搭配 KD 在低檔黃金交叉當進場濾網。對應頁面 `pages/15_盤中V反.py`；策略定義見 `ref/搶V反轉_策略定",
+      "line_span": 121,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\25_第二十七章盤中搶-v-型反轉監控.md"
+    },
+    {
+      "level": 3,
+      "title": "這個模組在做什麼",
+      "anchor": "這個模組在做什麼",
+      "start_line": 2920,
+      "end_line": 2925,
+      "preview": "搶 V 型反轉是**逆勢抄底型**策略：抓「股價急跌到低檔後，出現恐慌爆量 → 止跌 → 過高確認」的由弱轉強結構，搭配 KD 在低檔黃金交叉當進場濾網。對應頁面 `pages/15_盤中V反.py`；策略定義見 `ref/搶V反轉_策略定",
+      "line_span": 6,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "四個必備條件",
+      "anchor": "四個必備條件",
+      "start_line": 2926,
+      "end_line": 2932,
+      "preview": "**急跌**：股價連續下跌數天，或從高點累積跌幅很深（例：從高點跌超過 20%）。",
+      "line_span": 7,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "量化規格（定案值）",
+      "anchor": "量化規格定案值",
+      "start_line": 2933,
+      "end_line": 2948,
+      "preview": "數值取捨原則：**既有策略有對應值就沿用、沒有才用新建議**（方便跨策略一致）。",
+      "line_span": 16,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "雙相位架構（同 N 字底：盤前找型態、盤中確認突破）",
+      "anchor": "雙相位架構同-n-字底盤前找型態盤中確認突破",
+      "start_line": 2949,
+      "end_line": 2957,
+      "preview": "| 相位 | 何時 | 做什麼 |",
+      "line_span": 9,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "三段式通知",
+      "anchor": "三段式通知",
+      "start_line": 2958,
+      "end_line": 2965,
+      "preview": "| 時機 | 判定依據 | 推播 |",
+      "line_span": 8,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "Telegram 警示訊息範例",
+      "anchor": "telegram-警示訊息範例",
+      "start_line": 2966,
+      "end_line": 2997,
+      "preview": "**盤中預警：**",
+      "line_span": 32,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "設計決策（重要）",
+      "anchor": "設計決策重要",
+      "start_line": 2998,
+      "end_line": 3007,
+      "preview": "**KD 是必要條件**：2026-08-27 為此一併補上 `indicators.kdj(9,3,3)` 與 `scanner.compute_indicators()` 的 `k_value/d_value/j_value` 欄位；V",
+      "line_span": 10,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "操作流程",
+      "anchor": "操作流程",
+      "start_line": 3008,
+      "end_line": 3023,
+      "preview": "**每日自動：**",
+      "line_span": 16,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "警示歷史與審視",
+      "anchor": "警示歷史與審視",
+      "start_line": 3024,
+      "end_line": 3029,
+      "preview": "頁面下方分兩頁：",
+      "line_span": 6,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
+    },
+    {
+      "level": 3,
+      "title": "已知限制",
+      "anchor": "已知限制",
+      "start_line": 3030,
+      "end_line": 3038,
+      "preview": "**逆勢策略假訊號多**：勝率天生低於順勢策略；推播已標「僅供觀察」，未來可考慮加大盤環境 gate（空頭時更嚴）。",
+      "line_span": 9,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "附錄：未來功能備忘",
       "anchor": "附錄未來功能備忘",
-      "start_line": 2605,
-      "end_line": 2621,
+      "start_line": 3039,
+      "end_line": 3055,
       "preview": "目前 Streamlit App 可以在同一個 Python 程序內啟動背景預抓取工作器，對本機使用最方便，也不需要額外管理服務。",
       "line_span": 17,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Worker 獨立服務化（暫列未來考量）",
       "anchor": "worker-獨立服務化暫列未來考量",
-      "start_line": 2607,
-      "end_line": 2621,
+      "start_line": 3041,
+      "end_line": 3055,
       "preview": "目前 Streamlit App 可以在同一個 Python 程序內啟動背景預抓取工作器，對本機使用最方便，也不需要額外管理服務。",
       "line_span": 15,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "附錄：常見問題 Q&A",
       "anchor": "附錄常見問題-q&a",
-      "start_line": 2622,
-      "end_line": 2670,
+      "start_line": 3056,
+      "end_line": 3104,
       "preview": "**Q：選股雷達選出來的股票可以直接買嗎？**",
       "line_span": 49,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 1,
       "title": "附錄：名詞解釋",
       "anchor": "附錄名詞解釋",
-      "start_line": 2671,
-      "end_line": 3182,
+      "start_line": 3105,
+      "end_line": 3622,
       "preview": "| 名詞 | 解釋 |",
-      "line_span": 512,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "line_span": 518,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十七章：資料管理 — 快取與背景抓取",
       "anchor": "第十七章資料管理-—-快取與背景抓取",
-      "start_line": 2715,
-      "end_line": 2995,
+      "start_line": 3149,
+      "end_line": 3433,
       "preview": "FinMind 免費帳號每小時只有 600 次 API 請求；Sponsor 帳號可用額度較高，目前系統會依 `user_info` 回傳額度調整，Sponsor 盤後/非交易時間可用到每小時 6000 次。全市場約 950 檔普通股，每次",
-      "line_span": 281,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\23_第十七章資料管理-_-快取與背景抓取.md"
+      "line_span": 285,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\26_第十七章資料管理-_-快取與背景抓取.md"
     },
     {
       "level": 3,
       "title": "為什麼需要本機快取？",
       "anchor": "為什麼需要本機快取",
-      "start_line": 2717,
-      "end_line": 2722,
+      "start_line": 3151,
+      "end_line": 3156,
       "preview": "FinMind 免費帳號每小時只有 600 次 API 請求；Sponsor 帳號可用額度較高，目前系統會依 `user_info` 回傳額度調整，Sponsor 盤後/非交易時間可用到每小時 6000 次。全市場約 950 檔普通股，每次",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "背景預抓取工作器",
       "anchor": "背景預抓取工作器",
-      "start_line": 2723,
-      "end_line": 2742,
+      "start_line": 3157,
+      "end_line": 3176,
       "preview": "App 啟動後，系統會自動在背景開始下載全市場的歷史價格資料。工作器由三條並行執行緒組成：",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "執行緒即時狀態面板",
       "anchor": "執行緒即時狀態面板",
-      "start_line": 2743,
-      "end_line": 2759,
+      "start_line": 3177,
+      "end_line": 3193,
       "preview": "「資料管理」頁面的工作器狀態區新增「執行緒即時狀態」三欄面板，讓你一眼看到三條執行緒各自的即時情況：",
       "line_span": 17,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "休市模式",
       "anchor": "休市模式",
-      "start_line": 2760,
-      "end_line": 2767,
+      "start_line": 3194,
+      "end_line": 3201,
       "preview": "連假或停市期間，法人資料不會更新。開啟「🏖️ 休市模式」可讓法人快取永不過期，避免反覆呼叫 API 浪費配額。",
       "line_span": 8,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "交易日判斷與參考日期",
       "anchor": "交易日判斷與參考日期",
-      "start_line": 2768,
-      "end_line": 2780,
+      "start_line": 3202,
+      "end_line": 3214,
       "preview": "資料管理頁現在會先判斷「今天是否應該有交易資料」，再決定狀態文字與進度基準：",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "資料管理頁（6 - 資料管理）功能說明",
       "anchor": "資料管理頁6-資料管理功能說明",
-      "start_line": 2781,
-      "end_line": 2808,
+      "start_line": 3215,
+      "end_line": 3242,
       "preview": "進入「資料管理」頁時，系統會確認內建背景工作器是否正在執行；若工作器尚未啟動，頁面會自動啟動它，不需要使用者再手動按一次「啟動」。這是為了避免服務已上線但快取沒有自動補資料的情況。",
       "line_span": 28,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "目前資料庫狀態快照（2026-04-20 08:58）",
       "anchor": "目前資料庫狀態快照2026-04-20-0858",
-      "start_line": 2809,
-      "end_line": 2824,
+      "start_line": 3243,
+      "end_line": 3258,
       "preview": "目前正式資料庫是專案根目錄的 `srock.db`，不是 `data/stock_data.db`。`data/stock_data.db` 是 0 bytes 舊路徑，不應用來判斷資料完整度。",
       "line_span": 16,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "快取品質診斷怎麼看",
       "anchor": "快取品質診斷怎麼看",
-      "start_line": 2825,
-      "end_line": 2838,
+      "start_line": 3259,
+      "end_line": 3272,
       "preview": "「🔍 快取品質診斷」會把本機資料分成 5 類，幫你快速找出為什麼某些股票掃不到、回測跑不動、或資料明顯不完整：",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "市場指數資料（TAIEX）為什麼重要",
       "anchor": "市場指數資料taiex為什麼重要",
-      "start_line": 2839,
-      "end_line": 2860,
+      "start_line": 3273,
+      "end_line": 3294,
       "preview": "回測模組現在會使用 **TAIEX（台灣加權股價指數）** 當作市場基準。這筆資料主要用在：",
       "line_span": 22,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "每日自動更新流程",
       "anchor": "每日自動更新流程",
-      "start_line": 2861,
-      "end_line": 2880,
+      "start_line": 3295,
+      "end_line": 3314,
       "preview": "每個交易日，背景工作器會自動依序完成以下階段：",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "工作器狀態儀表板說明",
       "anchor": "工作器狀態儀表板說明",
-      "start_line": 2881,
-      "end_line": 2900,
+      "start_line": 3315,
+      "end_line": 3334,
       "preview": "資料管理頁的狀態卡會顯示目前所在的工作階段，讓你一眼看出系統在做什麼：",
       "line_span": 20,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "為什麼法人/融資資料比 OHLCV 晚？",
       "anchor": "為什麼法人融資資料比-ohlcv-晚",
-      "start_line": 2901,
-      "end_line": 2911,
+      "start_line": 3335,
+      "end_line": 3349,
       "preview": "法人籌碼與融資融券的資料源（FinMind）通常在盤後數小時才發布，且發布時間每日不固定。系統採用**持續輪詢**策略應對這種不確定性：",
-      "line_span": 11,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "line_span": 15,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "法人/融資連續確認機制",
       "anchor": "法人融資連續確認機制",
-      "start_line": 2912,
-      "end_line": 2923,
+      "start_line": 3350,
+      "end_line": 3361,
       "preview": "| 機制 | 說明 |",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "背景工作器的優先順序",
       "anchor": "背景工作器的優先順序",
-      "start_line": 2924,
-      "end_line": 2937,
+      "start_line": 3362,
+      "end_line": 3375,
       "preview": "```",
       "line_span": 14,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "主力券商補完排查紀錄（2026-04-20）",
       "anchor": "主力券商補完排查紀錄2026-04-20",
-      "start_line": 2938,
-      "end_line": 2954,
+      "start_line": 3376,
+      "end_line": 3392,
       "preview": "2026-04-20 早上排查時發現，主力券商補完前一晚雖然有執行，但補完進度不合理。原因不是 API 額度不足，而是舊版欄位對應造成壞快取：",
       "line_span": 17,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "失敗股票與自動略過",
       "anchor": "失敗股票與自動略過",
-      "start_line": 2955,
-      "end_line": 2964,
+      "start_line": 3393,
+      "end_line": 3402,
       "preview": "若某檔股票長期抓不到新資料，系統會自動區分：",
       "line_span": 10,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "首次安裝建議流程",
       "anchor": "首次安裝建議流程",
-      "start_line": 2965,
-      "end_line": 2974,
+      "start_line": 3403,
+      "end_line": 3412,
       "preview": "啟動 App（建議 `srock up --profile local`；傳統方式也可用 `streamlit run app.py`）",
       "line_span": 10,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "Yahoo Finance 補充機制",
       "anchor": "yahoo-finance-補充機制",
-      "start_line": 2975,
-      "end_line": 2995,
+      "start_line": 3413,
+      "end_line": 3433,
       "preview": "系統有兩種使用 Yahoo Finance 的情境，機制不同：",
       "line_span": 21,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 2,
       "title": "第十八章：回測模組 — 驗證策略歷史績效",
       "anchor": "第十八章回測模組-—-驗證策略歷史績效",
-      "start_line": 2996,
-      "end_line": 3182,
+      "start_line": 3434,
+      "end_line": 3622,
       "preview": "回測模組讓你用歷史資料**模擬**選股策略的過去表現，驗證策略邏輯是否有效，避免用未經驗證的條件進行實際交易。",
-      "line_span": 187,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md",
-      "section_file": "E:\\workspace\\srock tool\\ref\\manual_sections\\24_第十八章回測模組-_-驗證策略歷史績效.md"
+      "line_span": 189,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md",
+      "section_file": "C:\\Workspace\\Captain-Trade\\ref\\manual_sections\\27_第十八章回測模組-_-驗證策略歷史績效.md"
     },
     {
       "level": 3,
       "title": "功能說明",
       "anchor": "功能說明",
-      "start_line": 2998,
-      "end_line": 3003,
+      "start_line": 3436,
+      "end_line": 3441,
       "preview": "回測模組讓你用歷史資料**模擬**選股策略的過去表現，驗證策略邏輯是否有效，避免用未經驗證的條件進行實際交易。",
       "line_span": 6,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "開始前：確認資料就緒",
       "anchor": "開始前確認資料就緒",
-      "start_line": 3004,
-      "end_line": 3010,
+      "start_line": 3442,
+      "end_line": 3448,
       "preview": "回測模組**不提供內建下載按鈕**，所有歷史資料需透過 **6 - 資料管理** 頁面補充：",
       "line_span": 7,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "兩個步驟",
       "anchor": "兩個步驟",
-      "start_line": 3011,
-      "end_line": 3023,
+      "start_line": 3449,
+      "end_line": 3461,
       "preview": "**步驟一：設定參數並執行**（⚙️ 設定回測參數 頁籤）",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "資金管理參數",
       "anchor": "資金管理參數",
-      "start_line": 3024,
-      "end_line": 3036,
+      "start_line": 3462,
+      "end_line": 3474,
       "preview": "最近版本的回測不再只是「每次看到訊號就固定買 1 檔」。系統改成更接近真實交易的資金管理模型，會根據帳戶大小、剩餘現金與單筆風險限制來決定是否進場與買多少股。",
       "line_span": 13,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "系統如何決定買幾股",
       "anchor": "系統如何決定買幾股",
-      "start_line": 3037,
-      "end_line": 3054,
+      "start_line": 3475,
+      "end_line": 3492,
       "preview": "回測引擎會先估算這筆交易的停損距離，再用「單筆風險預算」反推出可買股數。簡化理解如下：",
       "line_span": 18,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "報告新增了哪些欄位",
       "anchor": "報告新增了哪些欄位",
-      "start_line": 3055,
-      "end_line": 3077,
+      "start_line": 3493,
+      "end_line": 3515,
       "preview": "新版績效報告改成以「帳戶淨值」而不是單純百分比累乘來計算，因此你會看到更多接近實際資金管理的欄位：",
       "line_span": 23,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "出場規則：移動式停損/停利",
       "anchor": "出場規則移動式停損停利",
-      "start_line": 3078,
-      "end_line": 3127,
+      "start_line": 3516,
+      "end_line": 3565,
       "preview": "回測引擎使用**移動式**出場規則，比傳統固定停損更能讓利潤奔跑：",
       "line_span": 50,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "績效指標解讀",
       "anchor": "績效指標解讀",
-      "start_line": 3128,
-      "end_line": 3139,
+      "start_line": 3566,
+      "end_line": 3577,
       "preview": "| 指標 | 健康範圍 | 說明 |",
       "line_span": 12,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "AI 深度解讀",
       "anchor": "ai-深度解讀",
-      "start_line": 3140,
-      "end_line": 3161,
+      "start_line": 3578,
+      "end_line": 3599,
       "preview": "回測結果頁籤底部提供兩種報告輸出方式：",
       "line_span": 22,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     },
     {
       "level": 3,
       "title": "回測的常見誤解",
       "anchor": "回測的常見誤解",
-      "start_line": 3162,
-      "end_line": 3182,
+      "start_line": 3600,
+      "end_line": 3622,
       "preview": "**誤解一：「回測績效 80%，未來也會有 80%」**",
-      "line_span": 21,
-      "path": "E:\\workspace\\srock tool\\使用說明手冊.md"
+      "line_span": 23,
+      "path": "C:\\Workspace\\Captain-Trade\\使用說明手冊.md"
     }
   ]
 }

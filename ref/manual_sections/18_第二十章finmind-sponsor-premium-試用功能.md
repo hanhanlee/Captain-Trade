@@ -23,7 +23,7 @@ Sponsor Premium 功能是這套工具的「增強層」，不是核心策略本�
 |------|------------------|----------------------------|
 | 資料管理 | tier、quota、degraded、last quota check、Premium cache 完成度、Sponsor 主力券商背景補完 | 手動檢查狀態時會查 user_info；手動補完與背景補完會呼叫對應 API |
 | 選股雷達 | score 拆分、risk_penalty、Premium / 風險 flags、試用期評估報表 | 掃描結果只讀 cache |
-| 個股分析 | Sponsor 即時快照、官方風險旗標、Premium 摘要、大戶 / 主力 / 缺資料欄位 | 歷史模式只讀 cache；今日模式可為單股載入即時快照與缺少的主力/風險/大戶資料 |
+| 個股分析 | 即時快照（Shioaji→Yahoo fallback）、官方風險旗標、Premium 摘要、大戶 / 主力 / 缺資料欄位 | 歷史模式只讀 cache；今日模式可為單股載入即時快照與缺少的主力/風險/大戶資料 |
 | 持股監控 | Premium 風險摘要、官方風險、大戶比例、主力反手警示 | 只讀 cache |
 
 ### 目前資料種類與使用狀態
