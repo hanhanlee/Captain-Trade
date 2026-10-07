@@ -101,13 +101,55 @@ def _intraday_monitor_enabled_count() -> int:
         )
 
 
+def lookup_stock_name(stock_id: str) -> str:
+    """依股票代號自動抓名稱：FinMind 股票清單優先、退 Shioaji 商品檔。查不到回空字串。
+
+    讓使用者「只輸代號」即可——名稱由權威來源帶入，避免手動輸入錯字或不一致。
+    """
+    sid = str(stock_id or "").strip()
+    if not sid:
+        return ""
+    try:
+        from data.finmind_client import get_stock_list
+        sl = get_stock_list()
+        if sl is not None and not sl.empty:
+            row = sl[sl["stock_id"].astype(str) == sid]
+            if not row.empty:
+                nm = str(row["stock_name"].iloc[0] or "").strip()
+                if nm:
+                    return nm
+    except Exception:
+        pass
+    try:
+        from broker.shioaji_adapter import get_adapter
+        adapter = get_adapter()
+        if adapter.is_logged_in():
+            c = adapter.get_contract(sid)
+            nm = str(getattr(c, "name", "") or "").strip()
+            if nm:
+                return nm
+    except Exception:
+        pass
+    return ""
+
+
+def _invalidate_portfolio_cache() -> None:
+    """持股異動後清即時監控快取，讓下次進「即時監控」自動重算（避免顯示舊名稱/損益）。"""
+    for _k in ("portfolio_stats", "portfolio_alerts", "portfolio_premium_alerts"):
+        st.session_state.pop(_k, None)
+
+
 def save_holding(stock_id, stock_name, shares, cost_price, stop_loss, take_profit, notes):
     """新增持股，回傳 (ok, err)。
 
     寫入後讀回驗證，確保不會「commit 沒生效卻當成功」；任何例外（含 DB 鎖）
     都明確回報並寫 event_log，不再靜默失敗。
+    stock_name 留空時自動以 lookup_stock_name() 依代號帶入權威名稱。
     """
     try:
+        # 名稱留空 → 自動帶入（使用者只輸代號的情況）
+        if not str(stock_name or "").strip():
+            stock_name = lookup_stock_name(stock_id)
         # 擋重複：同 stock_id 已存在時不再新增第二筆，避免持股與損益被重複計算。
         with get_session() as sess:
             exists = (
@@ -1663,7 +1705,7 @@ with tab_manage:
         c1, c2, c3 = st.columns(3)
         with c1:
             new_id = st.text_input("股票代碼 *", placeholder="例：2330")
-            new_name = st.text_input("股票名稱", placeholder="例：台積電")
+            new_name = st.text_input("股票名稱（留空自動帶入）", placeholder="留空→依代號自動抓")
         with c2:
             new_shares = st.number_input("持有股數 *", min_value=1, value=1000, step=1)
             new_cost = st.number_input("成本價 *", min_value=0.01, value=100.0, step=0.1)
@@ -1677,9 +1719,14 @@ with tab_manage:
             if not new_id:
                 st.error("請輸入股票代碼")
             else:
+                _sid = new_id.strip()
+                # 名稱留空 → 依代號自動帶入權威名稱（FinMind → Shioaji）
+                _name = new_name.strip() or lookup_stock_name(_sid)
+                if not new_name.strip() and not _name:
+                    st.warning(f"查不到 {_sid} 的名稱（可能非交易代號或資料源暫時無回應），已用空名稱新增，可至下方表格補。")
                 ok, err = save_holding(
-                    stock_id=new_id.strip(),
-                    stock_name=new_name.strip(),
+                    stock_id=_sid,
+                    stock_name=_name,
                     shares=new_shares,
                     cost_price=new_cost,
                     stop_loss=new_sl if new_sl > 0 else None,
@@ -1687,7 +1734,8 @@ with tab_manage:
                     notes=new_note,
                 )
                 if ok:
-                    st.success(f"已新增 {new_id} {new_name}")
+                    _invalidate_portfolio_cache()  # 新增後即時監控自動重算，不顯示舊快取
+                    st.success(f"已新增 {_sid} {_name}".rstrip())
                     st.rerun()
                 else:
                     st.error(f"新增失敗：{err}")
@@ -1752,6 +1800,7 @@ with tab_manage:
                 else:
                     ok, err = replace_holdings(clean_df)
                     if ok:
+                        _invalidate_portfolio_cache()
                         st.success(f"已覆寫資料庫，共儲存 {len(clean_df)} 筆持股。")
                         st.session_state.pop("portfolio_import_df", None)
                         st.session_state.pop("portfolio_import_meta", None)
@@ -1767,6 +1816,7 @@ with tab_manage:
                 else:
                     ok, err, skipped = append_holdings(clean_df)
                     if ok:
+                        _invalidate_portfolio_cache()
                         added = len(clean_df) - len(skipped)
                         st.success(f"已附加至資料庫，共新增 {added} 筆持股。")
                         if skipped:
@@ -2011,6 +2061,7 @@ with tab_manage:
                 ]
                 ok, err = update_holdings_bulk(records)
                 if ok:
+                    _invalidate_portfolio_cache()
                     st.toast("持股資料已更新 ✅")
                     st.rerun()
                 else:
@@ -2026,6 +2077,7 @@ with tab_manage:
                 if st.button("刪除", key=f"del_{h['id']}", type="secondary", use_container_width=True):
                     ok, err = delete_holding(h["id"])
                     if ok:
+                        _invalidate_portfolio_cache()
                         st.rerun()
                     else:
                         st.error(f"刪除失敗：{err}")
