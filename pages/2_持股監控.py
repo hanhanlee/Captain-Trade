@@ -1960,6 +1960,11 @@ with tab_manage:
                         _sess.commit()
                     for _k in ("sinopac_positions", "sinopac_overwrite", "sinopac_add", "sinopac_remove", "sinopac_journal"):
                         st.session_state.pop(_k, None)
+                    # 同步改動了持股（新增/移除/覆蓋股數）→ 清即時監控與本日損益快取，
+                    # 避免畫面仍顯示同步前的舊持股/舊損益（含已賣出的幻影持股）。
+                    _invalidate_portfolio_cache()
+                    for _k in ("today_pnl_df_map", "today_pnl_updated_at", "today_pnl_failed_ids"):
+                        st.session_state.pop(_k, None)
                     _msg = f"已套用：標永豐 {_stat['to_sinopac']}、待確認 {_stat['to_pending']}、保留 {_stat['kept']}"
                     if _overwrite:
                         _msg += f"、覆蓋 {_stat.get('shares_updated', 0)}"
