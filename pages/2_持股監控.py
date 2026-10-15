@@ -1039,6 +1039,12 @@ with tab_monitor:
                                 if _cur is None:
                                     _cur = _yahoo_price(h["stock_id"])
                                 if _cur is not None:
+                                    # 先移除 df 既有的今日列（13:35 收盤補正後 price_cache 可能已
+                                    # 寫入今日列）。否則補上即時列後會有兩根今日列，使 iloc[-2]
+                                    # （昨收）誤抓成「今日」而非昨天 → 現價/昨收/本日損益全歪。
+                                    if "date" in df_p.columns:
+                                        _dser = pd.to_datetime(df_p["date"], errors="coerce").dt.date
+                                        df_p = df_p[_dser < date_type.today()].copy()
                                     _today_row = pd.DataFrame([{
                                         "date": pd.Timestamp(_today_str),
                                         "open": _cur, "max": _cur, "min": _cur,
