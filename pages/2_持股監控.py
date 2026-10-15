@@ -835,6 +835,7 @@ with tab_monitor:
                 st.session_state["portfolio_prices"] = price_data
                 st.session_state["portfolio_failed_ids"] = failed_ids
                 st.session_state["portfolio_fallback_mode"] = dsm.fallback_mode if dsm is not None else False
+                st.session_state["portfolio_updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             else:
                 st.session_state["portfolio_failed_ids"] = [h["stock_id"] for h in holdings]
 
@@ -844,6 +845,20 @@ with tab_monitor:
         price_data = st.session_state.get("portfolio_prices", {})
         failed_ids = st.session_state.get("portfolio_failed_ids", [])
         fallback_mode = st.session_state.get("portfolio_fallback_mode", False)
+
+        # 報價更新時間：讓使用者一眼看出畫面是不是舊快取（現價/警示都以此時點計算）
+        _upd = st.session_state.get("portfolio_updated_at")
+        if _upd:
+            _is_today = str(_upd)[:10] == date_type.today().isoformat()
+            if _is_today:
+                st.caption(f"🕒 報價更新時間：{_upd}　（現價/警示以此時點計算；如與現價不符，請按「🔄 更新報價」重抓）")
+            else:
+                st.warning(
+                    f"⚠️ 目前即時監控的報價為 **{_upd}**（非今日，可能是舊快取）。"
+                    "現價與警示可能過時，請按「🔄 更新報價」重新抓取。"
+                )
+        elif stats_list:
+            st.caption("🕒 報價更新時間：未知（舊 session）。建議按「🔄 更新報價」重抓以確保現價正確。")
 
         # Premium 風險重檢只讀本機 cache，避免每次 rerun 都卡住頁面。
         if premium_recheck_btn and stats_list and price_data:
