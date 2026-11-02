@@ -38,6 +38,7 @@ class TradeJournal(Base):
     reason = Column(Text)                          # 進出場理由
     emotion = Column(String(20))                   # 情緒標記
     pnl = Column(Float)                            # 損益（賣出時計算）
+    broker_dseq = Column(String(20))               # 永豐成交唯一鍵（詳細交易匯入用，去重）
     created_at = Column(DateTime, default=datetime.now)
 
 

@@ -2012,6 +2012,63 @@ with tab_manage:
                     st.rerun()
                 except Exception as _e:
                     st.error(f"套用失敗：{_e}")
+
+        # ── 永豐詳細交易匯入（逐筆真實成交，依區間；比 net-diff 保真）────────────
+        st.markdown("---")
+        with st.expander("📜 永豐詳細交易匯入（逐筆，依區間）", expanded=False):
+            st.caption(
+                "撈永豐帳務的每一筆實際成交（買進 lot / 賣出平倉），依**真實日期逐筆**寫入交易日誌，"
+                "不像上面的同步把多日多筆壓成一次。以成交唯一鍵 dseq 去重，重匯不會重複。"
+            )
+            _di_c1, _di_c2 = st.columns(2)
+            with _di_c1:
+                _di_begin = st.date_input("起始日", value=date_type.today() - timedelta(days=30), key="di_begin")
+            with _di_c2:
+                _di_end = st.date_input("結束日", value=date_type.today(), key="di_end")
+            if st.button("🔍 查詢並預覽", use_container_width=True, key="di_query"):
+                try:
+                    from broker.sinopac_detailed_import import fetch_detailed_trades
+                    st.session_state["di_trades"] = fetch_detailed_trades(_di_begin.isoformat(), _di_end.isoformat())
+                    st.session_state["di_range"] = (_di_begin, _di_end)
+                except Exception as _e:
+                    st.session_state.pop("di_trades", None)
+                    st.error(f"查詢失敗（帳戶帳務查詢/認證問題？）：{_e}")
+            _di_trades = st.session_state.get("di_trades")
+            if _di_trades is not None:
+                if not _di_trades:
+                    st.info("此區間查無成交明細。")
+                else:
+                    _di_df = pd.DataFrame([{
+                        "日期": t["trade_date"], "代碼": t["stock_id"], "名稱": t["stock_name"],
+                        "動作": t["action"], "股數": t["shares"], "每股價": t["price"],
+                        "損益": t["pnl"],
+                    } for t in _di_trades])
+                    st.dataframe(_di_df, use_container_width=True, hide_index=True)
+                    st.caption(f"共 {len(_di_trades)} 筆逐筆成交。")
+                    _di_clear = st.checkbox(
+                        "匯入前，先清除此區間『舊的 net-diff 合併日誌』（無 dseq 的列）再寫入逐筆",
+                        value=True, key="di_clear",
+                        help="建議勾選：把之前同步產生的合併/估價列換成逐筆真實成交。只清無 dseq 的列，手動記錄不受影響。",
+                    )
+                    if st.button("✅ 確認匯入交易日誌", type="primary", use_container_width=True, key="di_apply"):
+                        try:
+                            from broker.sinopac_detailed_import import apply_detailed_import
+                            _b, _e2 = st.session_state.get("di_range", (_di_begin, _di_end))
+                            _sids = {t["stock_id"] for t in _di_trades}
+                            _st = apply_detailed_import(
+                                _di_trades,
+                                clear_range=(_b, _e2) if _di_clear else None,
+                                clear_stock_ids=_sids if _di_clear else None,
+                            )
+                            _invalidate_portfolio_cache()
+                            st.success(
+                                f"匯入完成：清除舊列 {_st['cleared']}、寫入 {_st['inserted']}、略過重複 {_st['skipped_dup']}。"
+                            )
+                            st.session_state.pop("di_trades", None)
+                            st.info("請到「交易日誌」頁核對；逐筆已帶入真實日期 / 每股價 / 損益。")
+                        except Exception as _e:
+                            st.error(f"匯入失敗：{_e}")
+
         st.markdown("---")
 
         holdings_df = pd.DataFrame(holdings)[

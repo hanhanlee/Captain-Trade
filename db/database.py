@@ -63,6 +63,11 @@ def _migrate_schema():
             conn.execute(text("ALTER TABLE portfolio ADD COLUMN intraday_monitor INTEGER DEFAULT 0"))
             logger.info("migration: portfolio 新增 intraday_monitor 欄位")
 
+        # trade_journal broker_dseq 欄位（永豐詳細交易匯入去重用；舊 DB 補建）
+        if _table_exists(conn, "trade_journal") and not _column_exists(conn, "trade_journal", "broker_dseq"):
+            conn.execute(text("ALTER TABLE trade_journal ADD COLUMN broker_dseq VARCHAR(20)"))
+            logger.info("migration: trade_journal 新增 broker_dseq 欄位")
+
         # portfolio broker 欄位（券商標記：永豐/新光/待確認，持股同步用）
         if not _column_exists(conn, "portfolio", "broker"):
             conn.execute(text("ALTER TABLE portfolio ADD COLUMN broker TEXT"))
